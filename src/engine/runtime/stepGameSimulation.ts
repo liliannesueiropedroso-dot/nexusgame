@@ -75,12 +75,14 @@ export interface BodyPhysicsState {
 }
 
 export interface PendingSoundEvent {
-  kind: 'asset' | 'synth' | 'setVolume';
+  kind: 'asset' | 'synth' | 'setVolume' | 'musicPlay' | 'musicStop' | 'stopAll';
   assetId?: string;
   preset?: 'coin' | 'jump' | 'hit' | 'powerup' | 'step' | 'win';
   channel: 'music' | 'sfx' | 'ui';
   volume?: number;
   pitch?: number;
+  loop?: boolean;
+  keepIfSame?: boolean;
   setChannel?: 'master' | 'music' | 'sfx' | 'ui';
 }
 
@@ -757,14 +759,46 @@ function executeActionList(
           const basePitch = Number(p.pitch ?? 1);
           const randPitch = Number(p.randomPitch ?? 0);
           const pitch = basePitch + (randPitch > 0 ? (Math.random() * 2 - 1) * randPitch : 0);
+          const channel = (p.channel as 'music' | 'sfx' | 'ui') ?? 'sfx';
+          const loop = Boolean(p.loop);
           state.soundQueue.push({
-            kind: 'asset',
+            kind: channel === 'music' ? 'musicPlay' : 'asset',
             assetId,
-            channel: (p.channel as 'music' | 'sfx' | 'ui') ?? 'sfx',
-            volume: baseVol,
+            channel,
+            volume: Math.max(0, Math.min(2, baseVol)),
             pitch: Math.max(0.25, Math.min(3, pitch)),
+            loop,
           });
         }
+        break;
+      }
+      case 'music.play': {
+        const assetId = String(p.assetId ?? p.asset ?? '');
+        if (assetId) {
+          state.soundQueue.push({
+            kind: 'musicPlay',
+            assetId,
+            channel: 'music',
+            volume: Math.max(0, Math.min(1.5, Number(p.volume ?? 0.85))),
+            pitch: Math.max(0.25, Math.min(3, Number(p.pitch ?? 1))),
+            loop: p.loop !== false,
+            keepIfSame: p.keepIfSame !== false,
+          });
+        }
+        break;
+      }
+      case 'music.stop': {
+        state.soundQueue.push({
+          kind: 'musicStop',
+          channel: 'music',
+        });
+        break;
+      }
+      case 'audio.stopAll': {
+        state.soundQueue.push({
+          kind: 'stopAll',
+          channel: 'sfx',
+        });
         break;
       }
       case 'audio.beep': {
@@ -795,7 +829,28 @@ function executeActionList(
       case 'object.destroy':
       case 'object.hide': {
         const target = p.target ? objectMap.get(String(p.target)) : undefined;
-        if (target) target.visible = false;
+        if (target && target.visible) {
+          target.visible = false;
+          for (const c of target.components) {
+            if (c.enabled && c.type === 'audio.sound_trigger' && c.config.event === 'onDestroy') {
+              const aid = String(c.config.audioAssetId ?? '');
+              const ch = (c.config.channel as 'sfx' | 'music' | 'ui') ?? 'sfx';
+              const vol = Number(c.config.volume ?? 1);
+              const pitch = Number(c.config.pitch ?? 1);
+              if (aid) {
+                state.soundQueue.push({ kind: 'asset', assetId: aid, channel: ch, volume: vol, pitch });
+              } else {
+                state.soundQueue.push({
+                  kind: 'synth',
+                  preset: (c.config.preset as PendingSoundEvent['preset']) ?? 'hit',
+                  channel: ch,
+                  volume: vol,
+                  pitch,
+                });
+              }
+            }
+          }
+        }
         break;
       }
       case 'object.show': {
@@ -1208,7 +1263,21 @@ export function stepSimulation(
   for (const cid of clickedSet) {
     const btn = objectMap.get(cid);
     if (btn && btn.visible && btn.type === 'ui_button' && btn.uiButton) {
-      state.soundQueue.push({ kind: 'synth', preset: 'coin', channel: 'ui' });
+      if (btn.uiButton.clickSoundAssetId) {
+        state.soundQueue.push({
+          kind: 'asset',
+          assetId: btn.uiButton.clickSoundAssetId,
+          channel: 'ui',
+          volume: btn.uiButton.clickSoundVolume ?? 1,
+        });
+      } else if (btn.uiButton.clickSoundPreset !== 'none') {
+        state.soundQueue.push({
+          kind: 'synth',
+          preset: (btn.uiButton.clickSoundPreset as PendingSoundEvent['preset']) || 'coin',
+          channel: 'ui',
+          volume: btn.uiButton.clickSoundVolume ?? 1,
+        });
+      }
       const act = btn.uiButton.onClickAction;
       if (act === 'load_scene' && btn.uiButton.targetSceneId) {
         state.pendingSceneCommand = {
@@ -1381,6 +1450,7 @@ export function stepSimulation(
           input,
           hasKey: isKeyPressed,
           wasKey: wasKeyFn,
+          clickedIds: clickedSet,
           solids,
           resolveHorizontal: (o) => resolveAxisHorizontal(o, state.bodies.get(o.id)!, solids),
           resolveVertical: (o) => resolveAxisVertical(o, state.bodies.get(o.id)!, solids),
@@ -1518,6 +1588,10 @@ export function stepSimulation(
           body.coyoteTimer = 0;
           body.jumpBufferTimer = 0;
           body.jumpsUsed += 1;
+          const jumpAssetId = String(cfg.jumpSoundAssetId ?? '');
+          if (jumpAssetId) {
+            state.soundQueue.push({ kind: 'asset', assetId: jumpAssetId, channel: 'sfx' });
+          }
         }
       }
 
@@ -1570,6 +1644,10 @@ export function stepSimulation(
         body.coyoteTimer = 0;
         body.jumpBufferTimer = 0;
         body.jumpsUsed += 1;
+        const jumpAssetId = String(plat.config.jumpSoundAssetId ?? '');
+        if (jumpAssetId) {
+          state.soundQueue.push({ kind: 'asset', assetId: jumpAssetId, channel: 'sfx' });
+        }
       }
 
       if (jumpReleased && body.vy < 0) {
@@ -1888,7 +1966,13 @@ export function stepSimulation(
         state.score = nextScore;
         state.variables.set('puntos', nextScore);
         persistVariableIfNeeded(state, 'puntos', nextScore);
-        state.soundQueue.push({ kind: 'synth', preset: 'coin', channel: 'sfx' });
+        const colSoundId = String(col.config.soundAssetId ?? '');
+        const colSoundVol = Number(col.config.soundVolume ?? 1);
+        if (colSoundId) {
+          state.soundQueue.push({ kind: 'asset', assetId: colSoundId, channel: 'sfx', volume: colSoundVol });
+        } else {
+          state.soundQueue.push({ kind: 'synth', preset: 'coin', channel: 'sfx', volume: colSoundVol });
+        }
         state.particles.push({
           x: obj.transform.x,
           y: obj.transform.y,

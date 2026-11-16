@@ -89,6 +89,20 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     for (const snd of sounds) {
       if (snd.kind === 'setVolume' && snd.setChannel && snd.volume !== undefined) {
         sharedAudioEngine.setChannelVolume(snd.setChannel, snd.volume);
+      } else if (snd.kind === 'musicStop') {
+        sharedAudioEngine.stopMusic();
+      } else if (snd.kind === 'stopAll') {
+        sharedAudioEngine.stopAll();
+      } else if (snd.kind === 'musicPlay' && snd.assetId) {
+        const blob = assetBlobs.get(snd.assetId);
+        if (blob) {
+          void sharedAudioEngine.playMusicAsset(snd.assetId, blob, {
+            volume: snd.volume,
+            loop: snd.loop ?? true,
+            pitch: snd.pitch,
+            keepIfSame: snd.keepIfSame ?? true,
+          });
+        }
       } else if (snd.kind === 'synth' && snd.preset) {
         sharedAudioEngine.playSynthPreset(snd.preset, snd.channel, {
           volume: snd.volume,
@@ -101,6 +115,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
             channel: snd.channel,
             volume: snd.volume,
             pitch: snd.pitch,
+            loop: snd.loop,
           });
         }
       }
@@ -145,6 +160,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
   useEffect(() => {
     if (!open) return;
     sharedAudioEngine.setBusSettings(audioBuses);
+    sharedAudioEngine.unlock();
     setPaused(false);
     setHoverUi(false);
 
@@ -181,6 +197,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
+      sharedAudioEngine.unlock();
       if (e.key === 'Escape') {
         onStop();
         return;
@@ -351,6 +368,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       renderer.destroy();
       rendererRef.current = null;
       managerRef.current = null;
+      sharedAudioEngine.stopAll();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearAllInputs);
@@ -387,6 +405,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    sharedAudioEngine.unlock();
     if (e.button !== 0) return;
     const pt = toStageCoords(e.clientX, e.clientY);
     const manager = managerRef.current;

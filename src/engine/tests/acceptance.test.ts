@@ -21,6 +21,7 @@ import { compileProjectToHtml5Zip } from '../../export/html5/html5Compiler';
 import { BEHAVIOR_REGISTRY } from '../components/behaviorRegistry';
 import { ALL_KEY_CODES, KEY_CODE_GROUPS, formatKeyCodeLabel } from '../input/keyCodes';
 import { applyObjectTweens, evaluateEasing } from '../runtime/behaviorRuntime';
+import { detectAudioFormat, findUnusedAssetIds } from '../../assets/library/assetUtils';
 
 function makeInput(overrides: Partial<InputState> = {}): InputState {
   return {
@@ -701,3 +702,190 @@ test('Variables persistentes, ui_leaderboard Top-10 y exclusión de capa UI func
   assert.ok(pPortal.includes('submitScore'));
   assert.ok(pConfig.includes('playgama-bridge'));
 });
+
+test('Audio de PC (formatos ampliados), findUnusedAssetIds, música por escena, sound_trigger y paridad HTML5 funcionan end-to-end', async () => {
+  // 1. Detección de formatos de audio de PC
+  assert.equal(detectAudioFormat('musica.mp3', 'audio/mpeg'), 'mp3');
+  assert.equal(detectAudioFormat('efecto.wav', 'audio/wav'), 'wav');
+  assert.equal(detectAudioFormat('ambiente.ogg', 'audio/ogg'), 'ogg');
+  assert.equal(detectAudioFormat('tema.m4a', 'audio/mp4'), 'm4a');
+  assert.equal(detectAudioFormat('voz.aac', 'audio/aac'), 'aac');
+  assert.equal(detectAudioFormat('banda.flac', 'audio/flac'), 'flac');
+  assert.equal(detectAudioFormat('clip.webm', 'audio/webm'), 'webm');
+
+  // 2. findUnusedAssetIds respeta música de escena, botón UI y disparador de sonido
+  const assets = [
+    { id: 'bgm_1', name: 'bgm', filename: 'bgm.mp3', kind: 'audio' as const, format: 'mp3' as const, mimeType: 'audio/mpeg', size: 1200, width: 0, height: 0, thumbnailDataUrl: '', folderId: null, createdAt: 1 },
+    { id: 'sfx_btn', name: 'click', filename: 'click.wav', kind: 'audio' as const, format: 'wav' as const, mimeType: 'audio/wav', size: 400, width: 0, height: 0, thumbnailDataUrl: '', folderId: null, createdAt: 1 },
+    { id: 'sfx_trig', name: 'boom', filename: 'boom.ogg', kind: 'audio' as const, format: 'ogg' as const, mimeType: 'audio/ogg', size: 500, width: 0, height: 0, thumbnailDataUrl: '', folderId: null, createdAt: 1 },
+    { id: 'sfx_orphan', name: 'sin_uso', filename: 'sin_uso.mp3', kind: 'audio' as const, format: 'mp3' as const, mimeType: 'audio/mpeg', size: 300, width: 0, height: 0, thumbnailDataUrl: '', folderId: null, createdAt: 1 },
+  ];
+  const btn = createGameObject('ui_button', [], { name: 'Btn', x: 100, y: 100, width: 120, height: 44 });
+  btn.uiButton = { ...btn.uiButton!, clickSoundAssetId: 'sfx_btn' };
+  const trigObj = createGameObject('rectangle', [btn], { name: 'Cofre', x: 200, y: 200, width: 40, height: 40 });
+  trigObj.components.push({
+    id: 'st_1',
+    type: 'audio.sound_trigger',
+    enabled: true,
+    config: { event: 'onTouchPlayer', audioAssetId: 'sfx_trig', channel: 'sfx', volume: 0.9, pitch: 1, cooldown: 0.2 },
+  });
+  const scene1: SceneData = {
+    id: 'sc_1',
+    name: 'Nivel 1',
+    kind: 'level',
+    backgroundColor: '#131b2e',
+    gridVisible: false,
+    gridSize: 32,
+    snapToGrid: false,
+    backgroundMusic: { assetId: 'bgm_1', volume: 0.75, loop: true, autoPlay: true, keepPlayingIfSameTrack: true },
+    objects: [btn, trigObj],
+    mechanics: [],
+  };
+  const sceneSilent: SceneData = {
+    id: 'sc_2',
+    name: 'Fin',
+    kind: 'level',
+    backgroundColor: '#000',
+    gridVisible: false,
+    gridSize: 32,
+    snapToGrid: false,
+    objects: [],
+    mechanics: [],
+  };
+  assert.deepEqual(findUnusedAssetIds(assets, [scene1, sceneSilent]), ['sfx_orphan']);
+
+  // 3. RuntimeSceneManager encola musicPlay al arrancar y musicStop al pasar a escena silenciosa
+  const mgr = new RuntimeSceneManager({
+    scenes: [scene1, sceneSilent],
+    initialSceneId: 'sc_1',
+    stage: { width: 1280, height: 720 },
+  });
+  const initSounds = mgr.step(1 / 60, makeInput());
+  assert.ok(initSounds.some((s) => s.kind === 'musicPlay' && s.assetId === 'bgm_1'));
+
+  mgr.loadScene('sc_2', 'none');
+  const nextSounds = mgr.step(1 / 60, makeInput());
+  assert.ok(nextSounds.some((s) => s.kind === 'musicStop'));
+
+  // 4. Disparadores de sonido por evento (onStart, onTouchPlayer, onClick, onKeyPressed, onInterval, onDestroy) y acciones music.play/music.stop/audio.stopAll
+  const hero = createGameObject('rectangle', [], { name: 'Hero', x: 200, y: 200, width: 32, height: 32 });
+  hero.components.push({ id: 'p', type: 'player_topdown', enabled: true, config: { maxSpeed: 100 } });
+
+  const box = createGameObject('rectangle', [hero], { name: 'CajaSonora', x: 200, y: 200, width: 40, height: 40 });
+  box.components.push(
+    { id: 't_start', type: 'audio.sound_trigger', enabled: true, config: { event: 'onStart', audioAssetId: 'sfx_start', channel: 'sfx', volume: 1, pitch: 1 } },
+    { id: 't_touch', type: 'audio.sound_trigger', enabled: true, config: { event: 'onTouchPlayer', audioAssetId: 'sfx_trig', channel: 'sfx', volume: 0.9, pitch: 1, cooldown: 0.2 } },
+    { id: 't_click', type: 'audio.sound_trigger', enabled: true, config: { event: 'onClick', audioAssetId: 'sfx_btn', channel: 'ui', volume: 1, pitch: 1, cooldown: 0.1 } },
+    { id: 't_key', type: 'audio.sound_trigger', enabled: true, config: { event: 'onKeyPressed', key: 'KeyF', audioAssetId: 'sfx_key', channel: 'sfx', volume: 1, pitch: 1, cooldown: 0.1 } },
+    { id: 't_int', type: 'audio.sound_trigger', enabled: true, config: { event: 'onInterval', audioAssetId: 'sfx_int', channel: 'sfx', volume: 0.8, pitch: 1, cooldown: 0.2 } },
+    { id: 't_dest', type: 'audio.sound_trigger', enabled: true, config: { event: 'onDestroy', audioAssetId: 'sfx_boom', channel: 'sfx', volume: 1, pitch: 1 } },
+    { id: 'm_zone', type: 'audio.music_zone', enabled: true, config: { audioAssetId: 'bgm_boss', triggerMode: 'onTouchPlayer', volume: 0.85, loop: true, keepIfSame: true } }
+  );
+
+  const sim = createSimulationState({
+    id: 'sc_audio',
+    name: 'Audio Test',
+    backgroundColor: '#000',
+    gridVisible: false,
+    gridSize: 32,
+    snapToGrid: false,
+    objects: [hero, box],
+    mechanics: [
+      {
+        id: 'm_key_music',
+        name: 'Control musica',
+        enabled: true,
+        priority: 1,
+        trigger: { event: 'input.pressed', key: 'KeyM' },
+        conditions: [],
+        actions: [
+          { id: 'a_mp', type: 'music.play', parameters: { assetId: 'bgm_1', volume: 0.7, loop: true } },
+          { id: 'a_ms', type: 'music.stop', parameters: {} },
+          { id: 'a_sa', type: 'audio.stopAll', parameters: {} },
+        ],
+      },
+      {
+        id: 'm_destroy_box',
+        name: 'Destruir caja',
+        enabled: true,
+        priority: 1,
+        trigger: { event: 'input.pressed', key: 'KeyK' },
+        conditions: [],
+        actions: [{ id: 'a_des', type: 'object.destroy', parameters: { target: box.id } }],
+      },
+    ],
+  });
+
+  sim.clickedObjectIds.push(box.id);
+  stepSimulationFixed(sim, 1 / 60, makeInput({ pressedKeys: new Set(['KeyF', 'KeyM']) }));
+  const q1 = sim.soundQueue.splice(0, sim.soundQueue.length);
+  assert.ok(q1.some((s) => s.assetId === 'sfx_start'));
+  assert.ok(q1.some((s) => s.assetId === 'sfx_trig'));
+  assert.ok(q1.some((s) => s.assetId === 'sfx_btn'));
+  assert.ok(q1.some((s) => s.assetId === 'sfx_key'));
+  assert.ok(q1.some((s) => s.kind === 'musicPlay' && s.assetId === 'bgm_boss'));
+  assert.ok(q1.some((s) => s.kind === 'musicPlay' && s.assetId === 'bgm_1'));
+  assert.ok(q1.some((s) => s.kind === 'musicStop'));
+  assert.ok(q1.some((s) => s.kind === 'stopAll'));
+
+  // Avanzar ~0.25s para disparar onInterval y luego pulsar KeyK para onDestroy
+  for (let i = 0; i < 15; i++) stepSimulationFixed(sim, 1 / 60, makeInput());
+  const q2 = sim.soundQueue.splice(0, sim.soundQueue.length);
+  assert.ok(q2.some((s) => s.assetId === 'sfx_int'));
+
+  stepSimulationFixed(sim, 1 / 60, makeInput({ pressedKeys: new Set(['KeyK']) }));
+  const q3 = sim.soundQueue.splice(0, sim.soundQueue.length);
+  assert.ok(q3.some((s) => s.assetId === 'sfx_boom'));
+
+  // 5. Compilación HTML5 incluye audio en assets/ y paridad completa en runtime
+  const proj = buildProjectFromTemplate({
+    name: 'Audio Parity',
+    width: 1280,
+    height: 720,
+    orientation: 'horizontal',
+    backgroundColor: '#131b2e',
+    template: 'empty_single',
+  });
+  proj.assets.push({
+    id: 'bgm_1',
+    name: 'tema_nivel',
+    filename: 'tema_nivel.mp3',
+    kind: 'audio',
+    format: 'mp3',
+    mimeType: 'audio/mpeg',
+    size: 8,
+    width: 0,
+    height: 0,
+    thumbnailDataUrl: '',
+    folderId: null,
+    createdAt: Date.now(),
+  });
+  proj.scenes[0].backgroundMusic = {
+    assetId: 'bgm_1',
+    volume: 0.8,
+    loop: true,
+    autoPlay: true,
+    keepPlayingIfSameTrack: true,
+  };
+  const blobs = new Map<string, Blob>([['bgm_1', new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/mpeg' })]]);
+  const pkg = await compileProjectToHtml5Zip(
+    proj,
+    blobs,
+    { portal: 'web', scaleMode: 'letterbox', touchControls: false, showFullscreenButton: true },
+    '/* pixi */'
+  );
+  const zip = await JSZip.loadAsync(await pkg.blob.arrayBuffer());
+  const rt = await zip.file('js/nexus-runtime.js')!.async('string');
+  const gameJson = JSON.parse(await zip.file('data/game.json')!.async('string'));
+  assert.ok(zip.file('assets/bgm_1_tema_nivel.mp3'), 'El archivo de audio importado debe incluirse en assets/ del ZIP');
+  assert.equal(gameJson.assets[0].kind, 'audio');
+  assert.equal(gameJson.assets[0].path, 'assets/bgm_1_tema_nivel.mp3');
+  assert.equal(gameJson.scenes[0].backgroundMusic.assetId, 'bgm_1');
+  assert.ok(rt.includes('syncBusGains'));
+  assert.ok(rt.includes('playMusicAsset'));
+  assert.ok(rt.includes('rawAudioData'));
+  assert.ok(rt.includes('audio.sound_trigger'));
+  assert.ok(rt.includes('audio.music_zone'));
+  assert.ok(rt.includes('queueSceneMusic'));
+});
+

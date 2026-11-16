@@ -70,6 +70,26 @@ export class RuntimeSceneManager {
       storageAdapter: this.storageAdapter,
       leaderboard: params.leaderboard,
     });
+    this.queueSceneMusic(this.baseState, false);
+  }
+
+  private queueSceneMusic(state: SimulationState, isOverlay: boolean): void {
+    const bgm = state.scene.backgroundMusic;
+    if (bgm?.assetId && bgm.autoPlay !== false) {
+      state.soundQueue.push({
+        kind: 'musicPlay',
+        assetId: bgm.assetId,
+        channel: 'music',
+        volume: bgm.volume ?? 0.8,
+        loop: bgm.loop !== false,
+        keepIfSame: bgm.keepPlayingIfSameTrack !== false,
+      });
+    } else if (!isOverlay && !bgm?.keepPlayingIfSameTrack) {
+      state.soundQueue.push({
+        kind: 'musicStop',
+        channel: 'music',
+      });
+    }
   }
 
   get activeTopState(): SimulationState {
@@ -116,6 +136,7 @@ export class RuntimeSceneManager {
       storageAdapter: this.storageAdapter,
       leaderboard: lb,
     });
+    this.queueSceneMusic(this.baseState, false);
     this.sceneChangeCount += 1;
     if (transition !== 'none') {
       this.transition = { type: transition, progress: 0, duration: 0.3 };
@@ -136,6 +157,7 @@ export class RuntimeSceneManager {
       storageAdapter: this.storageAdapter,
       leaderboard: lb,
     });
+    this.queueSceneMusic(overlayState, true);
     this.overlays.push(overlayState);
     if (transition !== 'none') {
       this.transition = { type: transition, progress: 0, duration: 0.2 };
@@ -148,6 +170,9 @@ export class RuntimeSceneManager {
     const popped = this.overlays.pop()!;
     this.syncPersistentVarsFrom(popped);
     this.syncPersistentVarsInto(this.activeTopState);
+    if (popped.scene.backgroundMusic?.assetId) {
+      this.queueSceneMusic(this.activeTopState, this.overlays.length > 0);
+    }
     return true;
   }
 

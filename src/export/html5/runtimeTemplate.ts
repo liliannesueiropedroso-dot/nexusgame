@@ -587,31 +587,180 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
   }
 
-  // Web Audio API autónomo
+  // Web Audio API autónomo profesional con buses persistentes y música de fondo
+  var buses = { master: 0.85, music: 0.7, sfx: 0.9, ui: 0.8, muted: {} };
   var audioCtx = null;
+  var masterGain = null;
+  var busGains = { music: null, sfx: null, ui: null };
+  var rawAudioData = new Map();
   var audioBuffers = new Map();
+  var decodingPromises = new Map();
+  var activeSfxSources = new Set();
+  var currentMusicSource = null;
+  var currentMusicGain = null;
+  var currentMusicAssetId = null;
+  var pendingMusicCmd = null;
+
+  function syncBusGains() {
+    if (!audioCtx || !masterGain) return;
+    var now = audioCtx.currentTime;
+    var mMuted = Boolean(buses.muted && buses.muted.master);
+    masterGain.gain.setValueAtTime(mMuted ? 0 : Math.max(0, Math.min(1, buses.master !== undefined ? buses.master : 0.85)), now);
+    ['music', 'sfx', 'ui'].forEach(function (ch) {
+      var node = busGains[ch];
+      if (!node) return;
+      var chMuted = Boolean(buses.muted && buses.muted[ch]);
+      var val = buses[ch] !== undefined ? buses[ch] : 0.85;
+      node.gain.setValueAtTime(chMuted ? 0 : Math.max(0, Math.min(1, val)), now);
+    });
+  }
+
+  function getBusNode(ch) {
+    if (!audioCtx) return null;
+    return busGains[ch] || busGains.sfx || masterGain || audioCtx.destination;
+  }
+
+  function decodeAssetIfNeeded(assetId) {
+    if (audioBuffers.has(assetId)) return Promise.resolve(audioBuffers.get(assetId));
+    if (decodingPromises.has(assetId)) return decodingPromises.get(assetId);
+    if (!audioCtx || !rawAudioData.has(assetId)) return Promise.resolve(null);
+    var copy = rawAudioData.get(assetId).slice(0);
+    var pr = audioCtx.decodeAudioData(copy).then(function (buf) {
+      audioBuffers.set(assetId, buf);
+      decodingPromises.delete(assetId);
+      return buf;
+    }).catch(function () {
+      decodingPromises.delete(assetId);
+      return null;
+    });
+    decodingPromises.set(assetId, pr);
+    return pr;
+  }
+
+  function startBufferedSound(buf, vol, pitchMul, ch, loop) {
+    if (!audioCtx || !buf) return null;
+    var src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.loop = Boolean(loop);
+    src.playbackRate.value = Math.max(0.25, Math.min(3, pitchMul || 1));
+    var g = audioCtx.createGain();
+    g.gain.value = Math.max(0, Math.min(2, vol !== undefined ? vol : 1));
+    src.connect(g);
+    g.connect(getBusNode(ch || 'sfx'));
+    activeSfxSources.add(src);
+    src.onended = function () { activeSfxSources.delete(src); };
+    src.start(0);
+    return src;
+  }
+
+  function stopMusic() {
+    pendingMusicCmd = null;
+    if (currentMusicSource) {
+      try { currentMusicSource.stop(); } catch (_) {}
+      try { currentMusicSource.disconnect(); } catch (_) {}
+      currentMusicSource = null;
+    }
+    if (currentMusicGain) {
+      try { currentMusicGain.disconnect(); } catch (_) {}
+      currentMusicGain = null;
+    }
+    currentMusicAssetId = null;
+  }
+
+  function stopAllAudio() {
+    stopMusic();
+    activeSfxSources.forEach(function (src) {
+      try { src.stop(); } catch (_) {}
+      try { src.disconnect(); } catch (_) {}
+    });
+    activeSfxSources.clear();
+  }
+
+  function playMusicAsset(assetId, vol, loop, keepIfSame) {
+    if (!assetId) return;
+    var safeVol = Math.max(0, Math.min(1.5, vol !== undefined ? vol : 0.8));
+    if (keepIfSame !== false && currentMusicAssetId === assetId && currentMusicSource) {
+      if (currentMusicGain && audioCtx) currentMusicGain.gain.setValueAtTime(safeVol, audioCtx.currentTime);
+      return;
+    }
+    stopMusic();
+    var cmd = { assetId: assetId, volume: safeVol, loop: loop !== false, keepIfSame: keepIfSame !== false };
+    pendingMusicCmd = cmd;
+    var ctx = ensureAudio();
+    if (!ctx || ctx.state !== 'running') return;
+    function startBuf(buf) {
+      if (!buf || !pendingMusicCmd || pendingMusicCmd.assetId !== assetId || !audioCtx || audioCtx.state !== 'running') return;
+      pendingMusicCmd = null;
+      var src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.loop = cmd.loop;
+      var g = audioCtx.createGain();
+      g.gain.value = cmd.volume;
+      src.connect(g);
+      g.connect(getBusNode('music'));
+      currentMusicSource = src;
+      currentMusicGain = g;
+      currentMusicAssetId = assetId;
+      src.onended = function () {
+        if (currentMusicSource === src) {
+          currentMusicSource = null;
+          currentMusicGain = null;
+          currentMusicAssetId = null;
+        }
+      };
+      src.start(0);
+    }
+    if (audioBuffers.has(assetId)) startBuf(audioBuffers.get(assetId));
+    else decodeAssetIfNeeded(assetId).then(startBuf);
+  }
+
   function ensureAudio() {
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
-    if (!audioCtx) audioCtx = new AC();
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(function () {});
+    if (!audioCtx) {
+      audioCtx = new AC();
+      masterGain = audioCtx.createGain();
+      masterGain.connect(audioCtx.destination);
+      busGains.music = audioCtx.createGain();
+      busGains.sfx = audioCtx.createGain();
+      busGains.ui = audioCtx.createGain();
+      busGains.music.connect(masterGain);
+      busGains.sfx.connect(masterGain);
+      busGains.ui.connect(masterGain);
+      syncBusGains();
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().then(function () {
+        if (pendingMusicCmd) {
+          var cmd = pendingMusicCmd;
+          playMusicAsset(cmd.assetId, cmd.volume, cmd.loop, cmd.keepIfSame);
+        }
+      }).catch(function () {});
+    } else if (pendingMusicCmd && !currentMusicSource) {
+      var pcmd = pendingMusicCmd;
+      playMusicAsset(pcmd.assetId, pcmd.volume, pcmd.loop, pcmd.keepIfSame);
+    }
     return audioCtx;
   }
-  function playSynth(preset, busGain, pitchMul) {
+
+  function playSynth(preset, volume, pitchMul, ch) {
     var ctx = ensureAudio();
-    if (!ctx || busGain <= 0.001) return;
+    var chName = ch || 'sfx';
+    if (!ctx || getChannelGain(chName) <= 0.001) return;
     var now = ctx.currentTime;
     var pMul = Math.max(0.25, Math.min(3, pitchMul || 1));
+    var vMul = Math.max(0.05, Math.min(2, volume !== undefined ? volume : 1));
+    var dest = getBusNode(chName);
     function tone(type, f1, f2, off, dur, vol) {
       var o = ctx.createOscillator();
       var g = ctx.createGain();
       o.type = type;
       o.frequency.setValueAtTime(f1 * pMul, now + off);
       o.frequency.exponentialRampToValueAtTime(Math.max(20, f2 * pMul), now + off + dur);
-      g.gain.setValueAtTime(Math.min(1, vol * busGain), now + off);
+      g.gain.setValueAtTime(Math.min(1, vol * vMul), now + off);
       g.gain.exponentialRampToValueAtTime(0.001, now + off + dur);
       o.connect(g);
-      g.connect(ctx.destination);
+      g.connect(dest);
       o.start(now + off);
       o.stop(now + off + dur + 0.01);
     }
@@ -627,18 +776,30 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       tone('square', 1318.51, 1318.51, 0.07, 0.16, 0.18);
     }
   }
-  function playAudioAsset(assetId, busGain, pitchMul) {
+
+  function playAudioAsset(assetId, volume, pitchMul, ch, loop) {
+    if (!assetId) return;
+    var chName = ch || 'sfx';
+    if (chName === 'music') {
+      playMusicAsset(assetId, volume, loop !== false, false);
+      return;
+    }
     var ctx = ensureAudio();
-    var buf = audioBuffers.get(assetId);
-    if (!ctx || !buf || busGain <= 0.001) return;
-    var src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.playbackRate.value = Math.max(0.25, Math.min(3, pitchMul || 1));
-    var g = ctx.createGain();
-    g.gain.value = Math.min(1.5, busGain);
-    src.connect(g);
-    g.connect(ctx.destination);
-    src.start(0);
+    if (!ctx || getChannelGain(chName) <= 0.001) return;
+    if (audioBuffers.has(assetId)) {
+      startBufferedSound(audioBuffers.get(assetId), volume, pitchMul, chName, loop);
+    } else {
+      decodeAssetIfNeeded(assetId).then(function (buf) {
+        if (buf) startBufferedSound(buf, volume, pitchMul, chName, loop);
+      });
+    }
+  }
+
+  function getChannelGain(ch) {
+    if (buses.muted && (buses.muted.master || buses.muted[ch])) return 0;
+    var m = buses.master !== undefined ? buses.master : 0.85;
+    var c = buses[ch] !== undefined ? buses[ch] : 0.85;
+    return Math.max(0, Math.min(1, m * c));
   }
 
   function evalEasing(easing, t) {
@@ -716,11 +877,8 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     var prefabMap = new Map();
     (gameData.prefabs || []).forEach(function (pf) { prefabMap.set(pf.id, pf); });
 
-    var buses = gameData.audioBuses || { master: 0.85, music: 0.7, sfx: 0.9, ui: 0.8, muted: {} };
-    function getChannelGain(ch) {
-      if (buses.muted && (buses.muted.master || buses.muted[ch])) return 0;
-      return Math.max(0, Math.min(1, (buses.master || 0.85) * (buses[ch] || 0.85)));
-    }
+    buses = gameData.audioBuses || { master: 0.85, music: 0.7, sfx: 0.9, ui: 0.8, muted: {} };
+    syncBusGains();
 
     var host = document.getElementById('nx-stage-wrap');
     var app = new PIXI.Application();
@@ -737,14 +895,18 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
 
     var textures = new Map();
     var assets = gameData.assets || [];
+    var audioExts = ['wav', 'mp3', 'ogg', 'm4a', 'aac', 'flac', 'webm'];
     for (var i = 0; i < assets.length; i++) {
       var asset = assets[i];
       try {
-        if (asset.kind === 'audio' || asset.format === 'wav' || asset.format === 'mp3' || asset.format === 'ogg') {
+        if (asset.kind === 'audio' || audioExts.indexOf(asset.format) >= 0) {
           var aRes = await fetch(asset.path);
-          if (aRes.ok && ensureAudio()) {
+          if (aRes.ok) {
             var ab = await aRes.arrayBuffer();
-            audioBuffers.set(asset.id, await audioCtx.decodeAudioData(ab));
+            rawAudioData.set(asset.id, ab);
+            if (audioCtx && audioCtx.state === 'running') {
+              await decodeAssetIfNeeded(asset.id);
+            }
           }
         } else {
           var tex = await PIXI.Assets.load(asset.path);
@@ -1134,6 +1296,15 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       });
     }
 
+    function queueSceneMusic(sim, isOverlay) {
+      var bgm = sim && sim.scene && sim.scene.backgroundMusic;
+      if (bgm && bgm.assetId && bgm.autoPlay !== false) {
+        playMusicAsset(bgm.assetId, bgm.volume !== undefined ? bgm.volume : 0.8, bgm.loop !== false, bgm.keepPlayingIfSameTrack !== false);
+      } else if (!isOverlay && !(bgm && bgm.keepPlayingIfSameTrack)) {
+        stopMusic();
+      }
+    }
+
     function loadSceneById(sceneId, transition) {
       var target = scenes.find(function (s) { return s.id === sceneId; });
       if (!target) return false;
@@ -1141,6 +1312,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       sceneStack = [];
       activeSim = buildSimState(target);
       mountActiveScene(activeSim);
+      queueSceneMusic(activeSim, false);
       if (transition && transition !== 'none') transitionEffect = { type: transition, progress: 0, duration: 0.3 };
       return true;
     }
@@ -1154,16 +1326,21 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       }
       activeSim = buildSimState(target);
       mountActiveScene(activeSim);
+      queueSceneMusic(activeSim, true);
       if (transition && transition !== 'none') transitionEffect = { type: transition, progress: 0, duration: 0.2 };
       return true;
     }
 
     function popOverlay() {
       if (sceneStack.length === 0) return false;
+      var popped = activeSim;
       if (activeSim) syncPersistentFrom(activeSim);
       activeSim = sceneStack.pop();
       persistentVars.forEach(function (val, k) { activeSim.variables.set(k, val); });
       mountActiveScene(activeSim);
+      if (popped && popped.scene && popped.scene.backgroundMusic && popped.scene.backgroundMusic.assetId) {
+        queueSceneMusic(activeSim, sceneStack.length > 0);
+      }
       return true;
     }
 
@@ -1234,13 +1411,15 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       };
     }
 
-    function pickUiAt(clientX, clientY) {
+    function pickClickableAt(clientX, clientY, uiOnly) {
       if (!activeSim) return null;
       var pt = toWorldCoords(clientX, clientY);
       var objs = activeSim.scene.objects;
       for (var i = objs.length - 1; i >= 0; i--) {
         var o = objs[i];
-        if (!o.visible || o.type !== 'ui_button') continue;
+        if (!o.visible) continue;
+        var hasClickTrigger = !uiOnly && o.components && o.components.some(function (c) { return c.enabled && c.type === 'audio.sound_trigger' && c.config && c.config.event === 'onClick'; });
+        if (o.type !== 'ui_button' && !hasClickTrigger) continue;
         var w = Math.abs(o.transform.width * o.transform.scaleX);
         var h = Math.abs(o.transform.height * o.transform.scaleY);
         var l = o.transform.x - w * o.transform.anchorX;
@@ -1254,9 +1433,9 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       var pt = toWorldCoords(e.clientX, e.clientY);
       input.pointerX = pt.x; input.pointerY = pt.y;
       if (!activeSim) return;
-      var hid = pickUiAt(e.clientX, e.clientY);
+      var hid = pickClickableAt(e.clientX, e.clientY, true);
       activeSim.hoveredObjectId = hid;
-      app.canvas.style.cursor = hid ? 'pointer' : 'default';
+      app.canvas.style.cursor = pickClickableAt(e.clientX, e.clientY, false) ? 'pointer' : 'default';
     });
     app.canvas.addEventListener('pointerdown', function (e) {
       ensureAudio();
@@ -1265,7 +1444,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       input.pointerDown = true; input.pointerJustPressed = true;
       swipeStart = { x: e.clientX, y: e.clientY };
       if (!activeSim) return;
-      var cid = pickUiAt(e.clientX, e.clientY);
+      var cid = pickClickableAt(e.clientX, e.clientY, false);
       if (cid) activeSim.clickedObjectIds.push(cid);
     });
     window.addEventListener('pointerup', function (e) {
@@ -1469,7 +1648,19 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           if (dvn === 'puntos' && scoreSpan) scoreSpan.textContent = String(dnext);
         }
         var hpSys = comps.find(function (c) { return c.enabled && c.type === 'combat.health_system'; });
-        if (!hpSys || hpSys.config.destroyOnZero !== false) target.visible = false;
+        if (!hpSys || hpSys.config.destroyOnZero !== false) {
+          target.visible = false;
+          comps.forEach(function (c) {
+            if (c.enabled && c.type === 'audio.sound_trigger' && c.config && c.config.event === 'onDestroy') {
+              var aid = String(c.config.audioAssetId || '');
+              var chD = c.config.channel || 'sfx';
+              var vD = Number(c.config.volume !== undefined ? c.config.volume : 1);
+              var pD = Number(c.config.pitch || 1);
+              if (aid) playAudioAsset(aid, vD, pD, chD, false);
+              else playSynth(c.config.preset || 'hit', vD, pD, chD);
+            }
+          });
+        }
       }
       return true;
     }
@@ -1552,16 +1743,36 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           var rp = Number(p.randomPitch || 0); var rv = Number(p.randomVolume || 0);
           var pitch = Number(p.pitch || 1) + (rp > 0 ? (Math.random() * 2 - 1) * rp : 0);
           var vol = Number(p.volume || 1) + (rv > 0 ? (Math.random() * 2 - 1) * rv : 0);
-          playSynth(p.preset || 'coin', getChannelGain(p.channel || 'sfx') * Math.max(0.05, Math.min(2, vol)), pitch);
+          playSynth(p.preset || 'coin', Math.max(0.05, Math.min(2, vol)), pitch, p.channel || 'sfx');
         } else if (act.type === 'audio.play') {
           var rpA = Number(p.randomPitch || 0);
           var pitchA = Number(p.pitch || 1) + (rpA > 0 ? (Math.random() * 2 - 1) * rpA : 0);
-          playAudioAsset(p.assetId || p.asset, getChannelGain(p.channel || 'sfx') * Number(p.volume || 1), pitchA);
+          playAudioAsset(p.assetId || p.asset, Number(p.volume !== undefined ? p.volume : 1), pitchA, p.channel || 'sfx', Boolean(p.loop));
+        } else if (act.type === 'music.play') {
+          playMusicAsset(p.assetId || p.asset, p.volume !== undefined ? Number(p.volume) : 0.85, p.loop !== false, p.keepIfSame !== false);
+        } else if (act.type === 'music.stop') {
+          stopMusic();
+        } else if (act.type === 'audio.stopAll') {
+          stopAllAudio();
         } else if (act.type === 'audio.setVolume') {
           var ch = p.channel || 'master';
           buses[ch] = Math.max(0, Math.min(1, Number(p.volume !== undefined ? p.volume : 0.8)));
+          syncBusGains();
         } else if (act.type === 'object.destroy' || act.type === 'object.hide') {
-          var to = objMap.get(p.target); if (to) to.visible = false;
+          var to = objMap.get(p.target);
+          if (to && to.visible) {
+            to.visible = false;
+            (to.components || []).forEach(function (c) {
+              if (c.enabled && c.type === 'audio.sound_trigger' && c.config && c.config.event === 'onDestroy') {
+                var aid = String(c.config.audioAssetId || '');
+                var chD = c.config.channel || 'sfx';
+                var vD = Number(c.config.volume !== undefined ? c.config.volume : 1);
+                var pD = Number(c.config.pitch || 1);
+                if (aid) playAudioAsset(aid, vD, pD, chD, false);
+                else playSynth(c.config.preset || 'hit', vD, pD, chD);
+              }
+            });
+          }
         } else if (act.type === 'object.show') {
           var ts = objMap.get(p.target); if (ts) ts.visible = true;
         } else if (act.type === 'object.move') {
@@ -1702,7 +1913,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       }
     }
 
-    function stepExtendedComp(obj, c, sim, objMap, players, solids, dt) {
+    function stepExtendedComp(obj, c, sim, objMap, players, solids, dt, clickedSet) {
       var body = sim.bodies.get(obj.id);
       if (!body) return;
       var cfg = c.config || {};
@@ -1921,7 +2132,8 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           } else {
             spawnProjRuntime(sim, objMap, obj, Math.cos(bAng) * prSpd, Math.sin(bAng) * prSpd, prDmg, prCol, 'Projectile');
           }
-          playSynth('step', getChannelGain('sfx'), 1.4);
+          if (cfg.soundAssetId) playAudioAsset(String(cfg.soundAssetId), 1, 1, 'sfx', false);
+          else playSynth('step', 1, 1.4, 'sfx');
         }
       } else if (c.type === 'combat.homing_missile') {
         var hSpd = Number(cfg.speed || 320); var hTurn = Number(cfg.turnRate || 6); var hTag = String(cfg.targetTag || 'Enemy');
@@ -1959,6 +2171,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
               if (Math.hypot(oth.transform.x - hx, oth.transform.y - hy) <= mrng) applyDamage(sim, oth, mdmg, 0.25);
             }
           });
+          if (cfg.soundAssetId) playAudioAsset(String(cfg.soundAssetId), 1, 1, 'sfx', false);
         }
       } else if (c.type === 'combat.shield_block') {
         cfg._active = keyMatch(String(cfg.shieldKey || 'KeyL'), input);
@@ -2017,7 +2230,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
         players.forEach(function (pl) {
           var plC = getWorldColliders(pl);
           if (bpCols.some(function (pc) { return plC.some(function (lc) { return colsOverlap(pc, lc); }); })) {
-            var pb = sim.bodies.get(pl.id); if (pb) { pb.vy = -Number(cfg.bounceForce || 760); pb.grounded = false; playSynth('jump', getChannelGain('sfx'), 1.3); }
+            var pb = sim.bodies.get(pl.id); if (pb) { pb.vy = -Number(cfg.bounceForce || 760); pb.grounded = false; playSynth('jump', 1, 1.3, 'sfx'); }
           }
         });
       } else if (c.type === 'arcade.teleporter') {
@@ -2028,7 +2241,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             var plC = getWorldColliders(pl);
             if (tpCols.some(function (pc) { return plC.some(function (lc) { return colsOverlap(pc, lc); }); })) {
               pl.transform.x = Number(cfg.destX || 200); pl.transform.y = Number(cfg.destY || 200);
-              sim.runtimeTimers.set(tpK, Number(cfg.cooldown || 1)); playSynth('powerup', getChannelGain('sfx'), 1);
+              sim.runtimeTimers.set(tpK, Number(cfg.cooldown || 1)); playSynth('powerup', 1, 1, 'sfx');
             }
           });
         }
@@ -2071,7 +2284,69 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           var myCols = getWorldColliders(obj);
           if (players.some(function (pl) { var pc = getWorldColliders(pl); return myCols.some(function (mc) { return pc.some(function (lc) { return colsOverlap(mc, lc); }); }); })) {
             sim.runtimeTimers.set(scK, Number(cfg.cooldown || 0.35));
-            playSynth(cfg.preset || 'hit', getChannelGain('sfx'), 1);
+            var scAid = String(cfg.audioAssetId || '');
+            var scVol = Number(cfg.volume !== undefined ? cfg.volume : 1);
+            var scPitch = Number(cfg.pitch || 1);
+            if (scAid) playAudioAsset(scAid, scVol, scPitch, 'sfx', false);
+            else playSynth(cfg.preset || 'hit', scVol, scPitch, 'sfx');
+          }
+        }
+      } else if (c.type === 'audio.sound_trigger') {
+        var stEv = String(cfg.event || 'onTouchPlayer');
+        if (stEv !== 'onDestroy') {
+          var stCdK = 'snd_trig_cd:' + c.id;
+          var stCd = Math.max(0, (sim.runtimeTimers.get(stCdK) || 0) - dt);
+          sim.runtimeTimers.set(stCdK, stCd);
+          var stFire = false;
+          if (stEv === 'onStart') {
+            var stStartK = 'snd_trig_start:' + c.id;
+            if (!sim.runtimeTimers.has(stStartK)) { sim.runtimeTimers.set(stStartK, 1); stFire = true; }
+          } else if (stEv === 'onClick') {
+            if (clickedSet && clickedSet.has(obj.id) && stCd <= 0) stFire = true;
+          } else if (stEv === 'onKeyPressed') {
+            var stKey = String(cfg.key || 'KeyE');
+            if (keyMatch(stKey, input) && !wasK(stKey) && stCd <= 0) stFire = true;
+          } else if (stEv === 'onInterval') {
+            var stIv = Math.max(0.05, Number(cfg.cooldown || 2));
+            var stIntK = 'snd_trig_int:' + c.id;
+            var stAcc = (sim.runtimeTimers.get(stIntK) || 0) + dt;
+            if (stAcc >= stIv) { sim.runtimeTimers.set(stIntK, stAcc - stIv); stFire = true; }
+            else sim.runtimeTimers.set(stIntK, stAcc);
+          } else if (stEv === 'onTouchPlayer' && stCd <= 0 && players.length > 0) {
+            var stCols = getWorldColliders(obj);
+            if (players.some(function (pl) { var pc = getWorldColliders(pl); return stCols.some(function (mc) { return pc.some(function (lc) { return colsOverlap(mc, lc); }); }); })) stFire = true;
+          }
+          if (stFire) {
+            if (stEv !== 'onInterval') sim.runtimeTimers.set(stCdK, Math.max(0.05, Number(cfg.cooldown || 0.4)));
+            var stAid = String(cfg.audioAssetId || '');
+            var stCh = cfg.channel || 'sfx';
+            var stVol = Math.max(0, Math.min(2, Number(cfg.volume !== undefined ? cfg.volume : 1)));
+            var stBaseP = Number(cfg.pitch || 1);
+            var stRandP = Number(cfg.randomPitch || 0);
+            var stPitch = Math.max(0.25, Math.min(3, stBaseP + (stRandP > 0 ? (Math.random() * 2 - 1) * stRandP : 0)));
+            if (stAid) playAudioAsset(stAid, stVol, stPitch, stCh, Boolean(cfg.loop));
+            else playSynth(cfg.preset || 'powerup', stVol, stPitch, stCh);
+          }
+        }
+      } else if (c.type === 'audio.music_zone') {
+        var mzAid = String(cfg.audioAssetId || '');
+        if (mzAid) {
+          var mzMode = String(cfg.triggerMode || 'onTouchPlayer');
+          var mzK = 'mzone_fired:' + c.id;
+          if (mzMode === 'onStart') {
+            if (!sim.runtimeTimers.has(mzK)) {
+              sim.runtimeTimers.set(mzK, 1);
+              playMusicAsset(mzAid, Number(cfg.volume !== undefined ? cfg.volume : 0.8), cfg.loop !== false, cfg.keepIfSame !== false);
+            }
+          } else if (players.length > 0) {
+            var mzCols = getWorldColliders(obj);
+            var mzTouch = players.some(function (pl) { var pc = getWorldColliders(pl); return mzCols.some(function (mc) { return pc.some(function (lc) { return colsOverlap(mc, lc); }); }); });
+            if (mzTouch && !sim.runtimeTimers.get(mzK)) {
+              sim.runtimeTimers.set(mzK, 1);
+              playMusicAsset(mzAid, Number(cfg.volume !== undefined ? cfg.volume : 0.8), cfg.loop !== false, cfg.keepIfSame !== false);
+            } else if (!mzTouch && sim.runtimeTimers.get(mzK)) {
+              sim.runtimeTimers.delete(mzK);
+            }
           }
         }
       }
@@ -2101,7 +2376,11 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       clickedSet.forEach(function (cid) {
         var btn = objMap.get(cid);
         if (btn && btn.visible && btn.type === 'ui_button' && btn.uiButton) {
-          playSynth('coin', getChannelGain('ui'), 1);
+          if (btn.uiButton.clickSoundAssetId) {
+            playAudioAsset(btn.uiButton.clickSoundAssetId, btn.uiButton.clickSoundVolume !== undefined ? btn.uiButton.clickSoundVolume : 1, 1, 'ui', false);
+          } else if (btn.uiButton.clickSoundPreset !== 'none') {
+            playSynth(btn.uiButton.clickSoundPreset || 'coin', btn.uiButton.clickSoundVolume !== undefined ? btn.uiButton.clickSoundVolume : 1, 1, 'ui');
+          }
           var act = btn.uiButton.onClickAction;
           if (act === 'load_scene' && btn.uiButton.targetSceneId) sim.pendingSceneCommand = { kind: 'load', sceneId: btn.uiButton.targetSceneId, transition: btn.uiButton.transition || 'fadeBlack' };
           else if (act === 'overlay_scene' && btn.uiButton.targetSceneId) sim.pendingSceneCommand = { kind: 'overlay', sceneId: btn.uiButton.targetSceneId, transition: btn.uiButton.transition || 'none' };
@@ -2169,7 +2448,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             }
             if (body.lifetimeRemaining !== undefined) { body.lifetimeRemaining -= dt; if (body.lifetimeRemaining <= 0) obj.visible = false; }
           } else {
-            stepExtendedComp(obj, c, sim, objMap, players, solids, dt);
+            stepExtendedComp(obj, c, sim, objMap, players, solids, dt, clickedSet);
           }
         });
 
@@ -2191,7 +2470,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             var dl = Math.hypot(dX, dY) || 1; var dSp = Number(pcfg.dashSpeed || 640);
             body.vx = (dX / dl) * dSp; body.vy = (dY / dl) * dSp * 0.65;
             sim.runtimeTimers.set(daK, Number(pcfg.dashDuration || 0.16)); sim.runtimeTimers.set(dcK, Number(pcfg.dashCooldown || 0.5));
-            playSynth('step', getChannelGain('sfx'), 1.6);
+            playSynth('step', 1, 1.6, 'sfx');
           }
           if (body.grounded) { body.coyoteTimer = Number(pcfg.coyoteTime || 0.12); body.jumpsUsed = 0; } else body.coyoteTimer = Math.max(0, body.coyoteTimer - dt);
           if (jumpJustPressed) body.jumpBufferTimer = 0.12; else body.jumpBufferTimer = Math.max(0, body.jumpBufferTimer - dt);
@@ -2203,7 +2482,10 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             body.vx = (mvX > 0 ? -1 : 1) * Number(pcfg.wallJumpForceX || 320); body.vy = -Number(pcfg.wallJumpForceY || 490); body.jumpBufferTimer = 0;
           } else {
             var cg = body.coyoteTimer > 0 && body.jumpsUsed === 0; var ca2 = !cg && body.jumpsUsed < pMaxJ && jumpJustPressed;
-            if (body.jumpBufferTimer > 0 && (cg || ca2)) { body.vy = -pJump; body.grounded = false; body.coyoteTimer = 0; body.jumpBufferTimer = 0; body.jumpsUsed += 1; }
+            if (body.jumpBufferTimer > 0 && (cg || ca2)) {
+              body.vy = -pJump; body.grounded = false; body.coyoteTimer = 0; body.jumpBufferTimer = 0; body.jumpsUsed += 1;
+              if (pcfg.jumpSoundAssetId) playAudioAsset(String(pcfg.jumpSoundAssetId), 1, 1, 'sfx', false);
+            }
           }
           if (jumpReleased && body.vy < 0) body.vy *= 0.5;
           if (da <= 0) { body.vy = Math.min(wallS ? Number(pcfg.wallSlideSpeed || 95) : 960, body.vy + (pGrav + body.ay) * dt); body.ay = 0; }
@@ -2224,6 +2506,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           var canA = !canG && body.jumpsUsed < prm.maxJumps && jumpJustPressed;
           if (body.jumpBufferTimer > 0 && (canG || canA)) {
             body.vy = -prm.jumpForce; body.grounded = false; body.coyoteTimer = 0; body.jumpBufferTimer = 0; body.jumpsUsed += 1;
+            if (plat.config && plat.config.jumpSoundAssetId) playAudioAsset(String(plat.config.jumpSoundAssetId), 1, 1, 'sfx', false);
           }
           if (jumpReleased && body.vy < 0) body.vy *= prm.variableJumpCut;
           var grav = body.vy > 0 ? prm.gravity * prm.fallGravityMultiplier : prm.gravity;
@@ -2375,7 +2658,9 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             sim.variables.set('puntos', np);
             if (sim.persistentVarNames.has('puntos')) writeStoredVar('puntos', np);
             if (scoreSpan) scoreSpan.textContent = String(np);
-            playSynth('coin', getChannelGain('sfx'), 1);
+            var colVol = Number(col.config.soundVolume !== undefined ? col.config.soundVolume : 1);
+            if (col.config.soundAssetId) playAudioAsset(String(col.config.soundAssetId), colVol, 1, 'sfx', false);
+            else playSynth('coin', colVol, 1, 'sfx');
             sim.particles.push({ x: obj.transform.x, y: obj.transform.y, color: 0x34d399, count: 10, age: 0, duration: 0.4 });
           }
         });

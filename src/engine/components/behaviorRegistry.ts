@@ -4,6 +4,7 @@ export type BehaviorCategory =
   | 'Combate e IA'
   | 'Arcade y Economía'
   | 'Juice y Partículas'
+  | 'Sonido y Música'
   | 'Cámara y Escena';
 
 export type BehaviorFieldType =
@@ -12,7 +13,8 @@ export type BehaviorFieldType =
   | 'string'
   | 'select'
   | 'color'
-  | 'keyCode';
+  | 'keyCode'
+  | 'audioAsset';
 
 export interface BehaviorSchemaField {
   key: string;
@@ -43,6 +45,7 @@ export const BEHAVIOR_CATEGORIES: BehaviorCategory[] = [
   'Combate e IA',
   'Arcade y Economía',
   'Juice y Partículas',
+  'Sonido y Música',
   'Cámara y Escena',
 ];
 
@@ -96,6 +99,7 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
       { key: 'coyoteTime', label: 'Coyote Time (s)', type: 'number', min: 0, max: 0.5, step: 0.01, defaultValue: 0.1 },
       { key: 'jumpBuffer', label: 'Jump Buffer (s)', type: 'number', min: 0, max: 0.5, step: 0.01, defaultValue: 0.12 },
       { key: 'maxJumps', label: 'Saltos máximos', type: 'number', min: 1, max: 5, step: 1, defaultValue: 1 },
+      { key: 'jumpSoundAssetId', label: 'Sonido de salto (PC)', type: 'audioAsset', defaultValue: '' },
     ],
   }),
   buildEntry({
@@ -122,6 +126,7 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
       { key: 'wallJumpForceX', label: 'Impulso X salto pared', type: 'number', min: 100, max: 900, step: 10, defaultValue: 320 },
       { key: 'wallJumpForceY', label: 'Impulso Y salto pared', type: 'number', min: 150, max: 1000, step: 10, defaultValue: 490 },
       { key: 'coyoteTime', label: 'Coyote Time (s)', type: 'number', min: 0, max: 0.4, step: 0.01, defaultValue: 0.12 },
+      { key: 'jumpSoundAssetId', label: 'Sonido de salto (PC)', type: 'audioAsset', defaultValue: '' },
     ],
   }),
   buildEntry({
@@ -526,6 +531,7 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
       { key: 'fanCount', label: 'Balas en abanico', type: 'number', min: 2, max: 9, step: 1, defaultValue: 3 },
       { key: 'spreadDeg', label: 'Ángulo apertura (°)', type: 'number', min: 5, max: 120, step: 5, defaultValue: 30 },
       { key: 'color', label: 'Color proyectil', type: 'color', defaultValue: '#facc15' },
+      { key: 'soundAssetId', label: 'Sonido disparo (PC)', type: 'audioAsset', defaultValue: '' },
     ],
   }),
   buildEntry({
@@ -614,6 +620,7 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
       { key: 'range', label: 'Alcance (px)', type: 'number', min: 24, max: 240, step: 8, defaultValue: 76 },
       { key: 'damage', label: 'Daño', type: 'number', min: 1, max: 500, step: 5, defaultValue: 35 },
       { key: 'cooldown', label: 'Enfriamiento (s)', type: 'number', min: 0.1, max: 3, step: 0.05, defaultValue: 0.35 },
+      { key: 'soundAssetId', label: 'Sonido ataque (PC)', type: 'audioAsset', defaultValue: '' },
     ],
   }),
   buildEntry({
@@ -646,6 +653,8 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
     keywords: ['moneda', 'gema', 'estrella', 'recoger', 'puntos'],
     schema: [
       { key: 'points', label: 'Puntos que suma', type: 'number', min: 1, max: 10000, step: 5, defaultValue: 10 },
+      { key: 'soundAssetId', label: 'Sonido al recoger (PC)', type: 'audioAsset', defaultValue: '' },
+      { key: 'soundVolume', label: 'Volumen sonido', type: 'number', min: 0, max: 2, step: 0.1, defaultValue: 1 },
     ],
   }),
   buildEntry({
@@ -954,13 +963,14 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
   buildEntry({
     type: 'juice.sound_on_collision',
     label: 'Sonido Automático al Colisionar',
-    category: 'Juice y Partículas',
-    description: 'Emite un efecto de sonido sintetizado cuando este objeto choca con el jugador.',
-    keywords: ['sonido', 'sfx', 'colision', 'audio'],
+    category: 'Sonido y Música',
+    description: 'Reproduce un archivo de audio importado o efecto sintetizado cuando este objeto choca con el jugador.',
+    keywords: ['sonido', 'sfx', 'colision', 'audio', 'mp3', 'wav'],
     schema: [
+      { key: 'audioAssetId', label: 'Archivo de audio (PC)', type: 'audioAsset', defaultValue: '' },
       {
         key: 'preset',
-        label: 'Sonido',
+        label: 'Respaldo sintetizado',
         type: 'select',
         options: [
           { value: 'hit', label: 'Impacto' },
@@ -972,7 +982,87 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
         ],
         defaultValue: 'hit',
       },
+      { key: 'volume', label: 'Volumen', type: 'number', min: 0, max: 2, step: 0.05, defaultValue: 1 },
+      { key: 'pitch', label: 'Tono (Pitch)', type: 'number', min: 0.4, max: 2, step: 0.05, defaultValue: 1 },
       { key: 'cooldown', label: 'Cooldown (s)', type: 'number', min: 0.05, max: 5, step: 0.05, defaultValue: 0.35 },
+    ],
+  }),
+  buildEntry({
+    type: 'audio.sound_trigger',
+    label: 'Disparador de Sonido por Evento',
+    category: 'Sonido y Música',
+    description: 'Asocia cualquier audio importado desde PC (WAV/MP3/OGG) a este objeto y dispáralo al iniciar, tocar, hacer clic, pulsar tecla o cada X segundos.',
+    keywords: ['audio', 'sonido', 'disparador', 'trigger', 'efecto', 'sfx', 'clic', 'tecla', 'mp3', 'wav'],
+    schema: [
+      {
+        key: 'event',
+        label: 'Cuándo reproducir',
+        type: 'select',
+        options: [
+          { value: 'onTouchPlayer', label: 'Al tocar al Jugador' },
+          { value: 'onStart', label: 'Al iniciar la escena' },
+          { value: 'onClick', label: 'Al hacer clic en el objeto' },
+          { value: 'onKeyPressed', label: 'Al pulsar una tecla' },
+          { value: 'onInterval', label: 'Cada X segundos (ambiente)' },
+          { value: 'onDestroy', label: 'Al ocultarse o quedarse sin vida' },
+        ],
+        defaultValue: 'onTouchPlayer',
+      },
+      { key: 'audioAssetId', label: 'Audio importado (PC)', type: 'audioAsset', defaultValue: '' },
+      {
+        key: 'preset',
+        label: 'Si no hay archivo, usar synth',
+        type: 'select',
+        options: [
+          { value: 'coin', label: 'Moneda' },
+          { value: 'jump', label: 'Salto' },
+          { value: 'hit', label: 'Impacto' },
+          { value: 'powerup', label: 'Power-Up' },
+          { value: 'step', label: 'Paso' },
+          { value: 'win', label: 'Victoria' },
+        ],
+        defaultValue: 'powerup',
+      },
+      {
+        key: 'channel',
+        label: 'Canal de mezcla',
+        type: 'select',
+        options: [
+          { value: 'sfx', label: 'Efectos (SFX)' },
+          { value: 'music', label: 'Música' },
+          { value: 'ui', label: 'Interfaz (UI)' },
+        ],
+        defaultValue: 'sfx',
+      },
+      { key: 'key', label: 'Tecla (si aplica)', type: 'keyCode', defaultValue: 'KeyE' },
+      { key: 'volume', label: 'Volumen (0 - 2)', type: 'number', min: 0, max: 2, step: 0.05, defaultValue: 1 },
+      { key: 'pitch', label: 'Tono base', type: 'number', min: 0.4, max: 2.5, step: 0.05, defaultValue: 1 },
+      { key: 'randomPitch', label: 'Variación tono (+/-)', type: 'number', min: 0, max: 0.5, step: 0.02, defaultValue: 0 },
+      { key: 'loop', label: 'Repetir en bucle', type: 'boolean', defaultValue: false },
+      { key: 'cooldown', label: 'Enfriamiento / Intervalo (s)', type: 'number', min: 0.05, max: 30, step: 0.05, defaultValue: 0.5 },
+    ],
+  }),
+  buildEntry({
+    type: 'audio.music_zone',
+    label: 'Zona / Activador de Música',
+    category: 'Sonido y Música',
+    description: 'Cambia o inicia una pista de música de fondo al iniciar o cuando el jugador entra en esta zona.',
+    keywords: ['musica', 'zona', 'ambiente', 'fondo', 'banda sonora', 'ost'],
+    schema: [
+      {
+        key: 'triggerMode',
+        label: 'Activación',
+        type: 'select',
+        options: [
+          { value: 'onTouchPlayer', label: 'Cuando el Jugador entra en la zona' },
+          { value: 'onStart', label: 'Al empezar la escena' },
+        ],
+        defaultValue: 'onTouchPlayer',
+      },
+      { key: 'audioAssetId', label: 'Pista musical (PC)', type: 'audioAsset', defaultValue: '' },
+      { key: 'volume', label: 'Volumen pista', type: 'number', min: 0, max: 1.5, step: 0.05, defaultValue: 0.8 },
+      { key: 'loop', label: 'Bucle continuo', type: 'boolean', defaultValue: true },
+      { key: 'keepIfSame', label: 'No reiniciar si ya suena', type: 'boolean', defaultValue: true },
     ],
   }),
 ];

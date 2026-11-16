@@ -60,7 +60,10 @@ const ACTION_LABELS: Record<ActionType, string> = {
   'variable.add': 'Sumar a variable',
   'variable.set': 'Asignar variable',
   'audio.beep': 'Reproducir sonido sintetizado',
-  'audio.play': 'Reproducir archivo de audio',
+  'audio.play': 'Reproducir archivo de audio (PC)',
+  'music.play': 'Reproducir música de fondo (music.play)',
+  'music.stop': 'Detener música de fondo (music.stop)',
+  'audio.stopAll': 'Silenciar todos los sonidos (audio.stopAll)',
   'audio.setVolume': 'Ajustar volumen de canal (audio.setVolume)',
   'object.destroy': 'Ocultar / destruir objeto',
   'object.show': 'Mostrar objeto',
@@ -1329,7 +1332,7 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                             <select
                               aria-label="Archivo de audio"
                               value={String(act.parameters.assetId ?? '')}
-                              onChange={(e) => patchParams({ assetId: e.target.value, channel: 'sfx' })}
+                              onChange={(e) => patchParams({ assetId: e.target.value })}
                               className="w-full rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-1 text-[11px] text-zinc-100"
                             >
                               <option value="">Seleccionar archivo de audio...</option>
@@ -1339,7 +1342,17 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                                 </option>
                               ))}
                             </select>
-                            <div className="grid grid-cols-2 gap-1">
+                            <div className="grid grid-cols-3 gap-1">
+                              <select
+                                aria-label="Canal de audio"
+                                value={String(act.parameters.channel ?? 'sfx')}
+                                onChange={(e) => patchParams({ channel: e.target.value })}
+                                className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[10px] text-zinc-100"
+                              >
+                                <option value="sfx">SFX</option>
+                                <option value="music">Música</option>
+                                <option value="ui">UI</option>
+                              </select>
                               <input
                                 type="number"
                                 step={0.1}
@@ -1362,6 +1375,65 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                                 onChange={(e) => patchParams({ pitch: Number(e.target.value) || 1 })}
                                 className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
                               />
+                            </div>
+                            <label className="flex items-center gap-1.5 text-[10px] text-zinc-300 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(act.parameters.loop)}
+                                onChange={(e) => patchParams({ loop: e.target.checked })}
+                                className="accent-sky-500"
+                              />
+                              <span>Repetir en bucle</span>
+                            </label>
+                          </div>
+                        )}
+
+                        {act.type === 'music.play' && (
+                          <div className="space-y-1">
+                            <select
+                              aria-label="Pista musical a reproducir"
+                              value={String(act.parameters.assetId ?? '')}
+                              onChange={(e) => patchParams({ assetId: e.target.value })}
+                              className="w-full rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-1 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Seleccionar pista musical (PC)...</option>
+                              {audioAssets.map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  🎵 {a.name} ({a.format.toUpperCase()})
+                                </option>
+                              ))}
+                            </select>
+                            <div className="flex items-center gap-2 text-[10px] text-zinc-300">
+                              <input
+                                type="number"
+                                step={0.05}
+                                min={0}
+                                max={1.5}
+                                title="Volumen música"
+                                value={Number(act.parameters.volume ?? 0.85)}
+                                onChange={(e) =>
+                                  patchParams({ volume: Math.max(0, Math.min(1.5, Number(e.target.value) || 0.85)) })
+                                }
+                                className="w-16 rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
+                              />
+                              <label className="flex items-center gap-1 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={act.parameters.loop !== false}
+                                  onChange={(e) => patchParams({ loop: e.target.checked })}
+                                  className="accent-sky-500"
+                                />
+                                <span>Bucle</span>
+                              </label>
+                              <label className="flex items-center gap-1 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={act.parameters.keepIfSame !== false}
+                                  onChange={(e) => patchParams({ keepIfSame: e.target.checked })}
+                                  className="accent-sky-500"
+                                />
+                                <span>Continuar si ya suena</span>
+                              </label>
                             </div>
                           </div>
                         )}

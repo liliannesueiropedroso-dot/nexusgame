@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Trash2,
 } from 'lucide-react';
+import { SYNTH_PRESETS } from '../../engine/audio/audioEngine';
 import {
   BEHAVIOR_CATEGORIES,
   getBehaviorEntry,
@@ -418,6 +419,99 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               )}
             </>
           )}
+        </InspectorSection>
+
+        <InspectorSection title="Música de fondo de la escena" defaultOpen={true}>
+          {(() => {
+            const audioList = assets.filter((a) => a.kind === 'audio');
+            const bgm = scene.backgroundMusic ?? {
+              assetId: null,
+              volume: 0.8,
+              loop: true,
+              autoPlay: true,
+              keepPlayingIfSameTrack: true,
+            };
+            const patchBgm = (patch: Partial<NonNullable<SceneData['backgroundMusic']>>) => {
+              onUpdateScene((s) => ({
+                ...s,
+                backgroundMusic: {
+                  assetId: s.backgroundMusic?.assetId ?? null,
+                  volume: s.backgroundMusic?.volume ?? 0.8,
+                  loop: s.backgroundMusic?.loop ?? true,
+                  autoPlay: s.backgroundMusic?.autoPlay ?? true,
+                  keepPlayingIfSameTrack: s.backgroundMusic?.keepPlayingIfSameTrack ?? true,
+                  ...patch,
+                },
+              }));
+            };
+            return (
+              <div className="space-y-2">
+                <div className="space-y-1">
+                  <label htmlFor="scene-bgm-asset" className="block text-[11px] text-zinc-400">
+                    Pista musical (importada desde PC)
+                  </label>
+                  <select
+                    id="scene-bgm-asset"
+                    value={bgm.assetId ?? ''}
+                    onChange={(e) => patchBgm({ assetId: e.target.value || null })}
+                    className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1.5 text-xs text-zinc-100 focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="">Sin música de fondo</option>
+                    {audioList.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        🎵 {a.name} ({a.format.toUpperCase()})
+                      </option>
+                    ))}
+                  </select>
+                  {audioList.length === 0 && (
+                    <p className="text-[10px] text-zinc-500">
+                      Importa un MP3, WAV o OGG usando "+ Audio" en Recursos o en la pestaña Audio inferior.
+                    </p>
+                  )}
+                </div>
+
+                <NumberField
+                  id="scene-bgm-vol"
+                  label="Volumen"
+                  value={bgm.volume ?? 0.8}
+                  min={0}
+                  max={1.5}
+                  step={0.05}
+                  onChange={(volume) => patchBgm({ volume })}
+                />
+
+                <div className="space-y-1 text-xs text-zinc-300">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={bgm.loop !== false}
+                      onChange={(e) => patchBgm({ loop: e.target.checked })}
+                      className="accent-sky-500"
+                    />
+                    <span>Repetir en bucle</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={bgm.autoPlay !== false}
+                      onChange={(e) => patchBgm({ autoPlay: e.target.checked })}
+                      className="accent-sky-500"
+                    />
+                    <span>Iniciar al cargar escena</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      checked={bgm.keepPlayingIfSameTrack !== false}
+                      onChange={(e) => patchBgm({ keepPlayingIfSameTrack: e.target.checked })}
+                      className="accent-sky-500"
+                    />
+                    <span>No reiniciar si otra escena usa la misma pista</span>
+                  </label>
+                </div>
+              </div>
+            );
+          })()}
         </InspectorSection>
 
         <div className="px-3 py-4 text-[11px] text-zinc-500 leading-relaxed">
@@ -1561,6 +1655,58 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100"
             />
           )}
+
+          <div className="space-y-1.5 border-t border-[#2a2a33] pt-2">
+            <label htmlFor="insp-btn-snd-asset" className="block text-[11px] text-zinc-400">
+              Sonido al pulsar (PC o integrado)
+            </label>
+            <select
+              id="insp-btn-snd-asset"
+              value={obj.uiButton.clickSoundAssetId ?? ''}
+              onChange={(e) =>
+                onUpdateObject(obj.id, (prev) => ({
+                  ...prev,
+                  uiButton: {
+                    ...prev.uiButton!,
+                    clickSoundAssetId: e.target.value || null,
+                  },
+                }))
+              }
+              className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100 focus:border-sky-500 focus:outline-none"
+            >
+              <option value="">Usar efecto integrado por defecto</option>
+              {assets
+                .filter((a) => a.kind === 'audio')
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    🔊 {a.name} ({a.format.toUpperCase()})
+                  </option>
+                ))}
+            </select>
+            {!obj.uiButton.clickSoundAssetId && (
+              <select
+                aria-label="Efecto integrado al pulsar"
+                value={obj.uiButton.clickSoundPreset ?? 'coin'}
+                onChange={(e) =>
+                  onUpdateObject(obj.id, (prev) => ({
+                    ...prev,
+                    uiButton: {
+                      ...prev.uiButton!,
+                      clickSoundPreset: e.target.value,
+                    },
+                  }))
+                }
+                className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100"
+              >
+                <option value="none">Silencio (sin sonido)</option>
+                {SYNTH_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </InspectorSection>
       )}
 
@@ -2571,6 +2717,32 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                                   value={String(rawVal || 'Space')}
                                   onChange={(code) => updateCompConfig(field.key, code)}
                                 />
+                              </div>
+                            );
+                          }
+
+                          if (field.type === 'audioAsset') {
+                            const audioList = assets.filter((a) => a.kind === 'audio');
+                            return (
+                              <div key={field.key} className="space-y-0.5">
+                                <label className="block text-[10px] text-zinc-400">
+                                  {field.label}
+                                </label>
+                                <select
+                                  aria-label={field.label}
+                                  value={String(rawVal ?? '')}
+                                  onChange={(e) =>
+                                    updateCompConfig(field.key, e.target.value)
+                                  }
+                                  className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100 focus:border-sky-500 focus:outline-none"
+                                >
+                                  <option value="">Ninguno / usar respaldo</option>
+                                  {audioList.map((a) => (
+                                    <option key={a.id} value={a.id}>
+                                      🔊 {a.name} ({a.format.toUpperCase()})
+                                    </option>
+                                  ))}
+                                </select>
                               </div>
                             );
                           }

@@ -30,7 +30,7 @@ export async function importImageFiles(files: File[]): Promise<AssetImportBatchR
 
     if (!format) {
       errors.push(
-        `"${file.name}": formato no soportado. Permitidos: PNG, JPG, JPEG, WebP, SVG, WAV, MP3 y OGG.`
+        `"${file.name}": formato no soportado. Permitidos: PNG, JPG, WebP, SVG, WAV, MP3, OGG, M4A, AAC, FLAC y WebM.`
       );
       continue;
     }
@@ -43,7 +43,12 @@ export async function importImageFiles(files: File[]): Promise<AssetImportBatchR
     try {
       if (audioFormat) {
         const mimeType =
-          file.type || (audioFormat === 'mp3' ? 'audio/mpeg' : `audio/${audioFormat}`);
+          file.type ||
+          (audioFormat === 'mp3'
+            ? 'audio/mpeg'
+            : audioFormat === 'm4a'
+              ? 'audio/mp4'
+              : `audio/${audioFormat}`);
         const buffer = await file.arrayBuffer();
         const blob = new Blob([buffer], { type: mimeType });
         const baseName = file.name.replace(/\.[^.]+$/, '') || file.name;

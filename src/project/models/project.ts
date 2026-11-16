@@ -36,7 +36,19 @@ export const RESOLUTION_PRESETS: ResolutionPreset[] = [
   { id: 'custom', label: 'Personalizada', width: 1280, height: 720, orientation: 'horizontal' },
 ];
 
-export type AssetFormat = 'png' | 'jpg' | 'jpeg' | 'webp' | 'svg' | 'wav' | 'mp3' | 'ogg';
+export type AssetFormat =
+  | 'png'
+  | 'jpg'
+  | 'jpeg'
+  | 'webp'
+  | 'svg'
+  | 'wav'
+  | 'mp3'
+  | 'ogg'
+  | 'm4a'
+  | 'aac'
+  | 'flac'
+  | 'webm';
 export type AssetKind = 'image' | 'audio';
 
 export interface ProjectFolder {

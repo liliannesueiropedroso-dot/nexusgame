@@ -47,10 +47,13 @@ interface BottomDockProps {
   assetBlobs: Map<string, Blob>;
   diagnostics: EngineDiagnostic[];
   scenes?: SceneData[];
+  activeScene?: SceneData;
   prefabs?: PrefabDefinition[];
   onChangeMechanics: (next: GameMechanic[]) => void;
   onChangeVariables: (next: ProjectVariable[]) => void;
   onChangeAudioBuses: (next: AudioBusSettings) => void;
+  onUpdateScene?: (updater: (scene: SceneData) => SceneData) => void;
+  onImportFiles?: (files: File[]) => void;
   onUpdateObject?: (id: string, updater: (obj: GameObjectData) => GameObjectData) => void;
   onApplyDiagnosticFix: (diag: EngineDiagnostic) => void;
   onSelectObjectById: (id: string) => void;
@@ -70,10 +73,13 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   assetBlobs,
   diagnostics,
   scenes = [],
+  activeScene,
   prefabs = [],
   onChangeMechanics,
   onChangeVariables,
   onChangeAudioBuses,
+  onUpdateScene,
+  onImportFiles,
   onUpdateObject,
   onApplyDiagnosticFix,
   onSelectObjectById,
@@ -251,7 +257,10 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               audioBuses={audioBuses}
               assets={assets}
               assetBlobs={assetBlobs}
+              activeScene={activeScene}
               onChangeAudioBuses={onChangeAudioBuses}
+              onUpdateScene={onUpdateScene}
+              onImportFiles={onImportFiles}
             />
           )}
           {activeTab === 'diagnostics' && (

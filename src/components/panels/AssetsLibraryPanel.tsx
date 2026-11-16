@@ -1,12 +1,14 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Folder,
   FolderPlus,
   ImagePlus,
+  Music,
   Package,
   Play,
   Plus,
   Search,
+  Square,
   Trash2,
   UploadCloud,
 } from 'lucide-react';
@@ -53,11 +55,22 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
   onDeletePrefab,
 }) => {
   const [query, setQuery] = useState('');
+  const [mediaFilter, setMediaFilter] = useState<'all' | 'image' | 'audio'>('all');
   const [selectedFolderId, setSelectedFolderId] = useState<string>('__all__');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(() =>
+    sharedAudioEngine.getCurrentMusicAssetId()
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const audioInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    return sharedAudioEngine.subscribe(() => {
+      setPlayingAudioId(sharedAudioEngine.getCurrentMusicAssetId());
+    });
+  }, []);
 
   const unusedIds = useMemo(() => findUnusedAssetIds(assets, scenes), [assets, scenes]);
   const unusedSet = useMemo(() => new Set(unusedIds), [unusedIds]);
@@ -65,6 +78,9 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
   const filteredAssets = useMemo(() => {
     const q = query.trim().toLowerCase();
     return assets.filter((a) => {
+      const isAudio = a.kind === 'audio';
+      if (mediaFilter === 'image' && isAudio) return false;
+      if (mediaFilter === 'audio' && !isAudio) return false;
       if (selectedFolderId === '__root__' && a.folderId) return false;
       if (
         selectedFolderId !== '__all__' &&
@@ -80,7 +96,7 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
         a.format.toLowerCase().includes(q)
       );
     });
-  }, [assets, query, selectedFolderId]);
+  }, [assets, query, selectedFolderId, mediaFilter]);
 
   const handleDropFiles = (e: React.DragEvent) => {
     e.preventDefault();
@@ -130,7 +146,7 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".png,.jpg,.jpeg,.webp,.svg,.wav,.mp3,.ogg,image/png,image/jpeg,image/webp,image/svg+xml,audio/wav,audio/mpeg,audio/ogg"
+          accept=".png,.jpg,.jpeg,.webp,.svg,.wav,.mp3,.ogg,.m4a,.aac,.flac,.webm,image/*,audio/*"
           className="hidden"
           onChange={(e) => {
             const list = e.target.files ? Array.from(e.target.files) : [];
@@ -140,15 +156,40 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
             }
           }}
         />
+        <input
+          ref={audioInputRef}
+          type="file"
+          multiple
+          accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.webm,audio/*"
+          className="hidden"
+          onChange={(e) => {
+            const list = e.target.files ? Array.from(e.target.files) : [];
+            if (list.length > 0) {
+              onImportFiles(list);
+              setMediaFilter('audio');
+              e.target.value = '';
+            }
+          }}
+        />
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-500 whitespace-nowrap"
+            className="inline-flex flex-1 items-center justify-center gap-1 rounded bg-blue-600 px-2 py-1.5 text-[11px] font-medium text-white hover:bg-blue-500 whitespace-nowrap"
           >
             <ImagePlus className="h-3.5 w-3.5" />
             Importar
+          </button>
+
+          <button
+            type="button"
+            onClick={() => audioInputRef.current?.click()}
+            title="Importar música o efectos de sonido desde PC"
+            className="inline-flex items-center justify-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-1.5 text-[11px] font-medium text-sky-300 hover:bg-sky-500/25 whitespace-nowrap"
+          >
+            <Music className="h-3.5 w-3.5" />
+            <span>+ Audio</span>
           </button>
 
           {onCreateFolder && (
@@ -157,7 +198,7 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
               onClick={() => setCreatingFolder((v) => !v)}
               title="Crear carpeta virtual para organizar recursos"
               aria-label="Crear carpeta de recursos"
-              className="inline-flex items-center gap-1 rounded border border-[#34343e] bg-[#24242b] px-2 py-1.5 text-xs text-zinc-300 hover:bg-[#2d2d36]"
+              className="inline-flex items-center gap-1 rounded border border-[#34343e] bg-[#24242b] px-1.5 py-1.5 text-xs text-zinc-300 hover:bg-[#2d2d36]"
             >
               <FolderPlus className="h-3.5 w-3.5 text-amber-400" />
             </button>
@@ -169,11 +210,40 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
             onClick={() => onPurgeUnusedAssets(unusedIds)}
             title="Eliminar recursos no utilizados en ninguna escena"
             aria-label="Eliminar recursos no utilizados"
-            className="inline-flex items-center gap-1 rounded border border-[#34343e] bg-[#24242b] px-2 py-1.5 text-xs text-zinc-300 hover:bg-[#2d2d36] disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap"
+            className="inline-flex items-center gap-1 rounded border border-[#34343e] bg-[#24242b] px-1.5 py-1.5 text-[11px] text-zinc-300 hover:bg-[#2d2d36] disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap"
           >
             <Trash2 className="h-3.5 w-3.5" />
             <span>({unusedIds.length})</span>
           </button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-1 rounded bg-[#141416] p-0.5 text-[10px]">
+          {(
+            [
+              { id: 'all', label: `Todos (${assets.length})` },
+              {
+                id: 'image',
+                label: `Img (${assets.filter((a) => a.kind !== 'audio').length})`,
+              },
+              {
+                id: 'audio',
+                label: `Audio (${assets.filter((a) => a.kind === 'audio').length})`,
+              },
+            ] as const
+          ).map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setMediaFilter(f.id)}
+              className={`rounded py-1 font-medium transition-colors whitespace-nowrap ${
+                mediaFilter === f.id
+                  ? 'bg-[#2a2a33] text-zinc-100'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
 
         {creatingFolder && (
@@ -366,18 +436,36 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
 
                     <div className="absolute right-1 top-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                       {isAudio ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const blob = assetBlobs?.get(asset.id);
-                            if (blob) void sharedAudioEngine.playAssetBlob(asset.id, blob);
-                          }}
-                          title="Reproducir audio"
-                          aria-label={`Reproducir ${asset.name}`}
-                          className="rounded bg-sky-600 p-1 text-white shadow hover:bg-sky-500"
-                        >
-                          <Play className="h-3 w-3" />
-                        </button>
+                        playingAudioId === asset.id ? (
+                          <button
+                            type="button"
+                            onClick={() => sharedAudioEngine.stopAll()}
+                            title="Detener audio"
+                            aria-label={`Detener ${asset.name}`}
+                            className="rounded bg-red-600 p-1 text-white shadow hover:bg-red-500"
+                          >
+                            <Square className="h-3 w-3 fill-current" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const blob = assetBlobs?.get(asset.id);
+                              if (blob) {
+                                sharedAudioEngine.unlock();
+                                void sharedAudioEngine.playMusicAsset(asset.id, blob, {
+                                  loop: false,
+                                  volume: 1,
+                                });
+                              }
+                            }}
+                            title="Reproducir audio"
+                            aria-label={`Reproducir ${asset.name}`}
+                            className="rounded bg-sky-600 p-1 text-white shadow hover:bg-sky-500"
+                          >
+                            <Play className="h-3 w-3" />
+                          </button>
+                        )
                       ) : (
                         <button
                           type="button"

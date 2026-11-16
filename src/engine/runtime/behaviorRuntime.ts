@@ -513,6 +513,25 @@ export function applyDamageToObject(
     const hpSys = target.components.find((c) => c.enabled && c.type === 'combat.health_system');
     if (!hpSys || hpSys.config.destroyOnZero !== false) {
       target.visible = false;
+      for (const c of target.components) {
+        if (c.enabled && c.type === 'audio.sound_trigger' && c.config.event === 'onDestroy') {
+          const aid = String(c.config.audioAssetId ?? '');
+          const ch = (c.config.channel as 'sfx' | 'music' | 'ui') ?? 'sfx';
+          const vol = Number(c.config.volume ?? 1);
+          const pitch = Number(c.config.pitch ?? 1);
+          if (aid) {
+            state.soundQueue.push({ kind: 'asset', assetId: aid, channel: ch, volume: vol, pitch });
+          } else {
+            state.soundQueue.push({
+              kind: 'synth',
+              preset: (c.config.preset as 'hit' | 'coin' | 'jump' | 'powerup' | 'step' | 'win') ?? 'hit',
+              channel: ch,
+              volume: vol,
+              pitch,
+            });
+          }
+        }
+      }
     }
   }
   return true;
@@ -527,6 +546,7 @@ export function stepExtendedObjectBehavior(params: {
   input: InputState;
   hasKey: (code: string, inp: InputState) => boolean;
   wasKey: (code: string) => boolean;
+  clickedIds?: Set<string>;
   solids: Array<{ left: number; right: number; top: number; bottom: number; layer: CollisionLayer; mask?: CollisionLayer[] }>;
   resolveHorizontal: (o: GameObjectData) => void;
   resolveVertical: (o: GameObjectData) => void;
@@ -542,6 +562,7 @@ export function stepExtendedObjectBehavior(params: {
     input,
     hasKey,
     wasKey,
+    clickedIds,
     solids,
     resolveHorizontal,
     resolveVertical,
@@ -1129,7 +1150,12 @@ export function stepExtendedObjectBehavior(params: {
             'Projectile'
           );
         }
-        state.soundQueue.push({ kind: 'synth', preset: 'step', channel: 'sfx', pitch: 1.4 });
+        const fireSoundId = String(cfg.soundAssetId ?? '');
+        if (fireSoundId) {
+          state.soundQueue.push({ kind: 'asset', assetId: fireSoundId, channel: 'sfx' });
+        } else {
+          state.soundQueue.push({ kind: 'synth', preset: 'step', channel: 'sfx', pitch: 1.4 });
+        }
       }
       break;
     }
@@ -1211,6 +1237,10 @@ export function stepExtendedObjectBehavior(params: {
           if (Math.hypot(other.transform.x - hitX, other.transform.y - hitY) <= range) {
             applyDamageToObject(state, other, dmg, 0.25);
           }
+        }
+        const meleeSoundId = String(cfg.soundAssetId ?? '');
+        if (meleeSoundId) {
+          state.soundQueue.push({ kind: 'asset', assetId: meleeSoundId, channel: 'sfx' });
         }
       }
       break;
@@ -1492,11 +1522,139 @@ export function stepExtendedObjectBehavior(params: {
         });
         if (hit) {
           state.runtimeTimers.set(cdKey, Number(cfg.cooldown ?? 0.35));
+          const assetId = String(cfg.audioAssetId ?? '');
+          const volume = Number(cfg.volume ?? 1);
+          const pitch = Number(cfg.pitch ?? 1);
+          if (assetId) {
+            state.soundQueue.push({ kind: 'asset', assetId, channel: 'sfx', volume, pitch });
+          } else {
+            state.soundQueue.push({
+              kind: 'synth',
+              preset: (cfg.preset as 'hit' | 'coin' | 'jump' | 'powerup' | 'step' | 'win') ?? 'hit',
+              channel: 'sfx',
+              volume,
+              pitch,
+            });
+          }
+        }
+      }
+      break;
+    }
+
+    case 'audio.sound_trigger': {
+      const ev = String(cfg.event ?? 'onTouchPlayer');
+      if (ev === 'onDestroy') break;
+
+      const cdKey = `snd_trig_cd:${comp.id}`;
+      const cd = Math.max(0, (state.runtimeTimers.get(cdKey) ?? 0) - dt);
+      state.runtimeTimers.set(cdKey, cd);
+
+      let fire = false;
+      if (ev === 'onStart') {
+        const startedKey = `snd_trig_start:${comp.id}`;
+        if (!state.runtimeTimers.has(startedKey)) {
+          state.runtimeTimers.set(startedKey, 1);
+          fire = true;
+        }
+      } else if (ev === 'onClick') {
+        if (clickedIds?.has(obj.id) && cd <= 0) {
+          fire = true;
+        }
+      } else if (ev === 'onKeyPressed') {
+        const keyCode = String(cfg.key ?? 'KeyE');
+        if (hasKey(keyCode, input) && !wasKey(keyCode) && cd <= 0) {
+          fire = true;
+        }
+      } else if (ev === 'onInterval') {
+        const interval = Math.max(0.05, Number(cfg.cooldown ?? 2));
+        const accKey = `snd_trig_int:${comp.id}`;
+        const acc = (state.runtimeTimers.get(accKey) ?? 0) + dt;
+        if (acc >= interval) {
+          state.runtimeTimers.set(accKey, acc - interval);
+          fire = true;
+        } else {
+          state.runtimeTimers.set(accKey, acc);
+        }
+      } else if (ev === 'onTouchPlayer' && cd <= 0 && players.length > 0) {
+        const myCols = getWorldColliders(obj);
+        const touching = players.some((p) => {
+          const pc = getWorldColliders(p);
+          return myCols.some((mc) => pc.some((c) => mc.left < c.right && mc.right > c.left && mc.top < c.bottom && mc.bottom > c.top));
+        });
+        if (touching) fire = true;
+      }
+
+      if (fire) {
+        if (ev !== 'onInterval') {
+          state.runtimeTimers.set(cdKey, Math.max(0.05, Number(cfg.cooldown ?? 0.4)));
+        }
+        const assetId = String(cfg.audioAssetId ?? '');
+        const channel = (cfg.channel as 'sfx' | 'music' | 'ui') ?? 'sfx';
+        const volume = Math.max(0, Math.min(2, Number(cfg.volume ?? 1)));
+        const basePitch = Number(cfg.pitch ?? 1);
+        const randPitch = Number(cfg.randomPitch ?? 0);
+        const pitch = Math.max(
+          0.25,
+          Math.min(3, basePitch + (randPitch > 0 ? (Math.random() * 2 - 1) * randPitch : 0))
+        );
+        const loop = Boolean(cfg.loop);
+        if (assetId) {
+          state.soundQueue.push({
+            kind: channel === 'music' ? 'musicPlay' : 'asset',
+            assetId,
+            channel,
+            volume,
+            pitch,
+            loop,
+          });
+        } else {
           state.soundQueue.push({
             kind: 'synth',
-            preset: (cfg.preset as 'hit' | 'coin' | 'jump' | 'powerup' | 'step' | 'win') ?? 'hit',
-            channel: 'sfx',
+            preset: (cfg.preset as 'hit' | 'coin' | 'jump' | 'powerup' | 'step' | 'win') ?? 'powerup',
+            channel,
+            volume,
+            pitch,
           });
+        }
+      }
+      break;
+    }
+
+    case 'audio.music_zone': {
+      const assetId = String(cfg.audioAssetId ?? '');
+      if (!assetId) break;
+      const mode = String(cfg.triggerMode ?? 'onTouchPlayer');
+      const firedKey = `mzone_fired:${comp.id}`;
+      if (mode === 'onStart') {
+        if (!state.runtimeTimers.has(firedKey)) {
+          state.runtimeTimers.set(firedKey, 1);
+          state.soundQueue.push({
+            kind: 'musicPlay',
+            assetId,
+            channel: 'music',
+            volume: Math.max(0, Math.min(1.5, Number(cfg.volume ?? 0.8))),
+            loop: cfg.loop !== false,
+            keepIfSame: cfg.keepIfSame !== false,
+          });
+        }
+      } else if (players.length > 0) {
+        const myCols = getWorldColliders(obj);
+        const touching = players.some((p) => {
+          const pc = getWorldColliders(p);
+          return myCols.some((mc) => pc.some((c) => mc.left < c.right && mc.right > c.left && mc.top < c.bottom && mc.bottom > c.top));
+        });
+        if (touching && !state.runtimeTimers.get(firedKey)) {
+          state.runtimeTimers.set(firedKey, 1);
+          state.soundQueue.push({
+            kind: 'musicPlay',
+            assetId,
+            channel: 'music',
+            volume: Math.max(0, Math.min(1.5, Number(cfg.volume ?? 0.8))),
+            loop: cfg.loop !== false,
+            keepIfSame: cfg.keepIfSame !== false,
+          });
+        } else if (!touching && state.runtimeTimers.get(firedKey)) {
+          state.runtimeTimers.delete(firedKey);
         }
       }
       break;

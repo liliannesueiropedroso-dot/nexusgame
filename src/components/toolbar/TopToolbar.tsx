@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   Download,
   Hand,
+  HelpCircle,
   Maximize2,
   MousePointer2,
   Move,
@@ -35,6 +36,7 @@ interface TopToolbarProps {
   onOpenSettings: () => void;
   onExportZip: () => void;
   onFitToStage: () => void;
+  onOpenHelp?: () => void;
 }
 
 const TOOL_BUTTONS: Array<{
@@ -68,6 +70,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   onOpenSettings,
   onExportZip,
   onFitToStage,
+  onOpenHelp,
 }) => {
   return (
     <header className="flex h-11 w-full shrink-0 items-center justify-between border-b border-[#2e2e36] bg-[#1a1a1e] px-3 select-none">
@@ -229,6 +232,19 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
           <Download className="h-3.5 w-3.5" />
           <span className="hidden lg:inline">Exportar</span>
         </button>
+
+        {onOpenHelp && (
+          <button
+            type="button"
+            onClick={onOpenHelp}
+            title="Abrir guía de ayuda en español"
+            aria-label="Ayuda"
+            className="inline-flex items-center gap-1 rounded border border-blue-500/35 bg-blue-600/15 px-2.5 py-1 text-xs font-medium text-blue-300 hover:bg-blue-600/25 hover:text-white whitespace-nowrap shrink-0"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Ayuda</span>
+          </button>
+        )}
       </div>
     </header>
   );

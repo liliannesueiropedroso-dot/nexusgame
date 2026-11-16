@@ -5,6 +5,7 @@ import {
   Download,
   Edit3,
   FolderOpen,
+  HelpCircle,
   Plus,
   Sparkles,
   Trash2,
@@ -14,6 +15,7 @@ import {
 import type { NexusProjectSummary } from '../../project/models/project';
 import { formatRelativeDateEs } from '../../utils/format';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { HelpModal } from '../common/HelpModal';
 import { NewProjectModal, type NewProjectFormValues } from './NewProjectModal';
 
 interface ProjectManagerProps {
@@ -42,6 +44,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
   onRestoreSampleProject,
 }) => {
   const [newModalOpen, setNewModalOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<NexusProjectSummary | null>(null);
@@ -100,6 +103,14 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
               }
             }}
           />
+          <button
+            type="button"
+            onClick={() => setHelpOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded border border-blue-500/35 bg-blue-600/15 px-3 py-2 text-xs font-medium text-blue-300 hover:bg-blue-600/25 hover:text-white whitespace-nowrap shrink-0"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
+            Ayuda
+          </button>
           <button
             type="button"
             onClick={() => zipInputRef.current?.click()}
@@ -338,6 +349,8 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
         }}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 };

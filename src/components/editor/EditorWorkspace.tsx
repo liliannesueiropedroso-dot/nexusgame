@@ -47,6 +47,7 @@ import { useAutosave, type SaveStatus } from '../../storage/autosave/useAutosave
 import { nexusStorage } from '../../storage/indexeddb/nexusDb';
 import { createId } from '../../utils/id';
 import { AssistantPanel } from '../assistant/AssistantPanel';
+import { HelpModal } from '../common/HelpModal';
 import { BottomDock, type DockTab } from '../dock/BottomDock';
 import { ExportModal } from '../export/ExportModal';
 import { InspectorPanel } from '../inspector/InspectorPanel';
@@ -109,6 +110,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isCompilingHtml5, setIsCompilingHtml5] = useState(false);
 
   const project = transientProject ?? history.present;
@@ -845,6 +847,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         onOpenSettings={() => setIsSettingsOpen(true)}
         onExportZip={() => setIsExportOpen(true)}
         onFitToStage={() => setFitRequestTick((t) => t + 1)}
+        onOpenHelp={() => setIsHelpOpen(true)}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -967,6 +970,9 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             diagnostics={diagnostics}
             scenes={project.scenes}
             prefabs={project.prefabs}
+            activeScene={activeScene}
+            onUpdateScene={updateActiveSceneCommitted}
+            onImportFiles={(files) => void handleImportFiles(files)}
             onChangeMechanics={(mechanics: GameMechanic[]) =>
               updateActiveSceneCommitted((s) => ({ ...s, mechanics }))
             }
@@ -1116,6 +1122,8 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         onCompileHtml5={(options) => void handleCompileHtml5(options)}
         onExportEditableZip={() => void handleExportZip()}
       />
+
+      <HelpModal open={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
     </div>
   );
 };

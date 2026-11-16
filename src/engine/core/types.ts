@@ -196,6 +196,9 @@ export type ActionType =
   | 'audio.play'
   | 'audio.beep'
   | 'audio.setVolume'
+  | 'audio.stopAll'
+  | 'music.play'
+  | 'music.stop'
   | 'object.destroy'
   | 'object.show'
   | 'object.hide'
@@ -341,6 +344,10 @@ export interface UIButtonProperties {
   targetSceneId?: string;
   transition?: SceneTransitionType;
   eventName?: string;
+  /** Sonido opcional al hacer clic (archivo de audio o preset sintetizado) */
+  clickSoundAssetId?: string | null;
+  clickSoundPreset?: string;
+  clickSoundVolume?: number;
 }
 
 export interface UIPanelProperties {
@@ -514,6 +521,14 @@ export interface SceneCameraConfig {
   zoom?: number;
 }
 
+export interface SceneBackgroundMusicConfig {
+  assetId: string | null;
+  volume?: number; // 0..1.5
+  loop?: boolean;
+  autoPlay?: boolean;
+  keepPlayingIfSameTrack?: boolean;
+}
+
 export interface SceneData {
   id: string;
   name: string;
@@ -524,6 +539,7 @@ export interface SceneData {
   gridSize: number;
   snapToGrid: boolean;
   cameraConfig?: SceneCameraConfig;
+  backgroundMusic?: SceneBackgroundMusicConfig;
   objects: GameObjectData[];
   mechanics?: GameMechanic[];
 }

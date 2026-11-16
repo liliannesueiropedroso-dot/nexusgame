@@ -454,6 +454,67 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
     },
   },
   {
+    id: 'audio.sound_trigger_touch',
+    family: 'Audio',
+    name: 'Disparador de Sonido por Evento en Objeto',
+    description:
+      'Añade un disparador al objeto seleccionado para reproducir un efecto importado de tu PC (o sintetizado) al tocar al jugador, hacer clic o destruirse.',
+    keywords: ['sonido', 'audio', 'mp3', 'wav', 'pc', 'disparador', 'trigger', 'efecto', 'evento'],
+    compatibleWith: ['sprite', 'rectangle', 'circle', 'ui_button', 'any'],
+    requiresComponents: [],
+    events: ['collision.enter'],
+    actions: ['audio.play'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          components: upsertComponent(target, 'audio.sound_trigger', {
+            event: target.type === 'ui_button' ? 'onClick' : 'onTouchPlayer',
+            audioAssetId: '',
+            preset: 'powerup',
+            channel: target.type === 'ui_button' ? 'ui' : 'sfx',
+            volume: 1,
+            pitch: 1,
+            randomPitch: 0,
+            cooldown: 0.4,
+            loop: false,
+            key: 'KeyE',
+          }),
+        },
+        summary: `Disparador de sonido añadido a "${target.name}". Elige tu archivo en el Inspector.`,
+      };
+    },
+  },
+  {
+    id: 'audio.music_zone_region',
+    family: 'Audio',
+    name: 'Zona de Música Dinámica',
+    description:
+      'Cambia la música de fondo en bucle cuando el jugador entra en el área del objeto seleccionado.',
+    keywords: ['musica', 'fondo', 'bgm', 'zona', 'nivel', 'jefe', 'cueva', 'mp3', 'loop'],
+    compatibleWith: ['sprite', 'rectangle', 'circle', 'any'],
+    requiresComponents: [],
+    events: ['trigger.enter'],
+    actions: ['music.play'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          components: upsertComponent(target, 'audio.music_zone', {
+            audioAssetId: '',
+            triggerMode: 'onTouchPlayer',
+            volume: 0.8,
+            loop: true,
+            keepIfSame: true,
+          }),
+        },
+        summary: `Zona de música añadida a "${target.name}". Selecciona la pista en el Inspector.`,
+      };
+    },
+  },
+  {
     id: 'camera.impact_shake',
     family: 'Cámara',
     name: 'Sacudida de Cámara y Destello',
