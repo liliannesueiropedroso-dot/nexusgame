@@ -1,0 +1,49 @@
+:root {
+  --nx-bg-workspace: #141416;
+  --nx-bg-panel: #1b1b1f;
+  --nx-bg-surface: #232328;
+  --nx-bg-hover: #2c2c33;
+  --nx-bg-active: #34343d;
+  --nx-border: #303038;
+  --nx-border-strong: #40404b;
+  --nx-text-primary: #f4f4f6;
+  --nx-text-secondary: #a1a1aa;
+  --nx-text-muted: #71717a;
+  --nx-accent: #3b82f6;
+  --nx-accent-hover: #2563eb;
+  --nx-axis-x: #ef4444;
+  --nx-axis-y: #22c55e;
+  --nx-axis-rot: #38bdf8;
+  --nx-font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --nx-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Custom ultra-compact scrollbars for desktop IDE feel */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--nx-bg-panel);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #363640;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4b4b59;
+}
+
+/* Hide number input native spin buttons for clean IDE numeric boxes */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+}

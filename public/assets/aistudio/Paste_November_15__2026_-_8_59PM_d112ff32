@@ -1,0 +1,2284 @@
+# NEXUS GAME ENGINE
+# ESPECIFICACIÓN TÉCNICA INTEGRAL
+## Transformación del prototipo en un motor profesional de videojuegos 2D
+
+**Producto:** NEXUS GAME ENGINE  
+**Versión objetivo:** Arquitectura 2D completa  
+**Tipo:** Motor de videojuegos autónomo, local, modular y Open Source.  
+**Entorno:** Aplicación web local y futura aplicación de escritorio para Windows.  
+**Renderizador:** PixiJS 8.x.  
+**Lenguaje interno:** TypeScript.  
+**Objetivo de exportación:** HTML5 independiente.
+
+---
+
+# DIRECTIVA PRINCIPAL: NO CONSTRUIR OTRA DEMOSTRACIÓN
+
+Ya existe un prototipo funcional de NEXUS GAME ENGINE.
+
+El proyecto fue ejecutado, publicado en GitHub y desplegado correctamente. Se ha comprobado que permite abrir la aplicación, crear un proyecto, crear objetos, importar imágenes, configurar un comportamiento de jugador, ejecutar una escena y visualizar un videojuego sencillo.
+
+Sin embargo, las pruebas revelaron limitaciones fundamentales en la arquitectura de los sistemas.
+
+Ejemplos concretos:
+
+1. Al asignar una imagen a un sprite, la imagen no se ajustó correctamente y terminó parcialmente recortada.
+2. Al añadir el comportamiento de movimiento y salto a un personaje, el salto funcionó, pero el desplazamiento horizontal era excesivamente rápido y difícil de controlar.
+3. El sistema de comportamientos todavía es demasiado elemental y no ofrece suficiente capacidad de configuración.
+4. Faltan sistemas profesionales para crear escenas, niveles, menús, interfaces, transiciones, recursos, animaciones, físicas y relaciones entre objetos.
+5. Falta una arquitectura que permita construir mecánicas complejas combinando componentes sin depender de comportamientos rígidos predeterminados.
+
+La tarea NO consiste en modificar superficialmente los parámetros que provocan estos problemas.
+
+La tarea consiste en analizar sus causas técnicas, corregir las deficiencias arquitectónicas y convertir NEXUS en un motor 2D extensible.
+
+**INSTRUCCIÓN OBLIGATORIA: trabajar sobre el repositorio y el código fuente existente.**
+
+No eliminar el proyecto actual, no reemplazarlo por una plantilla nueva y no destruir las funcionalidades que ya trabajan.
+
+Primero inspeccionar la arquitectura existente, identificar las implementaciones defectuosas, documentar sus causas y establecer un plan de evolución.
+
+Posteriormente implementar los sistemas reales, módulo por módulo.
+
+No utilizar botones simulados, datos ficticios, animaciones decorativas ni implementaciones provisionales presentadas como sistemas terminados.
+
+---
+
+# 1. FILOSOFÍA Y CAPACIDAD DEL MOTOR
+
+NEXUS debe ser un motor 2D generalista.
+
+No debe estar diseñado exclusivamente para plataformas, RPG o juegos arcade.
+
+Su arquitectura debe permitir construir:
+
+- Plataformas.
+- RPG.
+- Action RPG.
+- Shooters.
+- Bullet hell.
+- Juegos de cartas.
+- Tower defense.
+- Estrategia.
+- Simulación.
+- Carreras.
+- Endless runners.
+- Juegos de supervivencia.
+- Puzzles.
+- Roguelikes.
+- Juegos de gestión.
+- Juegos idle.
+- Juegos de física.
+- Juegos de aventura.
+- Juegos de exploración.
+- Juegos por turnos.
+- Juegos de combate.
+- Juegos multiescena.
+
+La diferencia entre estos géneros debe estar principalmente en los componentes, sistemas y mecánicas que se configuran en cada proyecto, no en la necesidad de utilizar un motor diferente.
+
+NEXUS no debe imponer un catálogo cerrado de mecánicas que determine lo que puede crear el usuario.
+
+Debe ofrecer un sistema de programación visual modular, con funciones reutilizables, expresiones, variables, eventos, condiciones, acciones y estados.
+
+Las mecánicas comunes deben estar disponibles de forma inmediata.
+
+Las mecánicas personalizadas deben poder construirse combinando los sistemas fundamentales.
+
+Los desarrolladores avanzados podrán ampliar las capacidades mediante extensiones programadas, pero el usuario normal no deberá necesitar escribir código.
+
+La promesa de libertad se implementará mediante una arquitectura extensible, no mediante la afirmación ficticia de que un catálogo finito contiene todas las mecánicas posibles.
+
+# 2. ARQUITECTURA GENERAL DE INGENIERÍA
+
+Separar el producto en subsistemas independientes.
+
+## 2.1. Nexus Editor
+
+Responsable de:
+- Edición de escenas.
+- Gestión de objetos.
+- Gestión de recursos.
+- Configuración de propiedades.
+- Transformaciones.
+- Animaciones.
+- Mecánicas.
+- Físicas.
+- Audio.
+- Interfaz de usuario.
+- Administración de proyectos.
+
+## 2.2. Nexus Runtime
+
+Responsable de ejecutar los videojuegos.
+
+No debe depender de React ni de la interfaz del editor.
+
+Debe incluir:
+- Bucle principal.
+- Renderizador.
+- Escenas.
+- Objetos.
+- Componentes.
+- Sistemas.
+- Eventos.
+- Variables.
+- Físicas.
+- Colisiones.
+- Animaciones.
+- Audio.
+- Input.
+- Cámara.
+- Interfaz.
+- Partículas.
+
+Debe poder ejecutar un proyecto exportado sin que el editor esté presente.
+
+## 2.3. Nexus Mechanic Assistant
+
+Asistente determinista y local.
+
+Debe disponer de un registro de conocimientos sobre las capacidades del motor.
+
+Funciones:
+- Recomendación de componentes.
+- Autocompletado.
+- Comprobación de dependencias.
+- Diagnóstico.
+- Detección de incompatibilidades.
+- Configuración asistida.
+- Recomendaciones de mecánicas.
+- Explicación de errores.
+- Correcciones guiadas.
+
+No utilizar servicios de IA, API, servidores remotos ni conexiones obligatorias a Internet.
+
+## 2.4. Nexus Project System
+
+Administración de:
+- Proyectos.
+- Carpetas.
+- Recursos.
+- Escenas.
+- Prefabricados.
+- Configuraciones.
+- Dependencias.
+- Versiones.
+- Guardado.
+- Recuperación.
+
+## 2.5. Nexus Builder
+
+Compilación del juego.
+
+Debe generar un Runtime independiente, incluyendo solamente los módulos y recursos necesarios para ejecutar el proyecto.
+
+---
+
+# 3. MODELO DE PROYECTO, CARPETAS, CONTENEDORES Y ESCENAS
+
+Este sistema es fundamental y debe diferenciar claramente conceptos que no son equivalentes.
+
+Un proyecto de videojuegos contiene recursos, escenas, configuraciones y elementos reutilizables.
+
+Una escena contiene objetos organizados jerárquicamente.
+
+Un contenedor de recursos organiza archivos.
+
+Un contenedor visual puede agrupar elementos dentro de una escena.
+
+Una interfaz puede contener paneles, botones, imágenes y textos.
+
+No confundir estas estructuras.
+
+## 3.1. Explorador del proyecto
+
+Crear un panel de archivos similar al de un entorno profesional de desarrollo.
+
+Estructura orientativa:
+
+```text
+MI_JUEGO/
+│
+├── ProjectSettings/
+│   ├── project.json
+│   ├── display.json
+│   ├── physics.json
+│   └── input.json
+│
+├── Scenes/
+│   ├── MainMenu.scene
+│   ├── Level_01.scene
+│   ├── Level_02.scene
+│   ├── PauseMenu.scene
+│   └── GameOver.scene
+│
+├── Assets/
+│   ├── Characters/
+│   ├── Enemies/
+│   ├── Environments/
+│   ├── Objects/
+│   ├── Backgrounds/
+│   ├── UI/
+│   ├── Effects/
+│   ├── Audio/
+│   └── Fonts/
+│
+├── Animations/
+│   ├── Player/
+│   └── Enemies/
+│
+├── Prefabs/
+│   ├── Player.prefab
+│   ├── Enemy.prefab
+│   └── Coin.prefab
+│
+├── Mechanics/
+│   ├── Player/
+│   ├── Enemies/
+│   └── Gameplay/
+│
+├── UI/
+│   ├── HUD/
+│   ├── Menus/
+│   └── Windows/
+│
+└── Builds/
+```
+
+Esta estructura debe poder modificarse desde el editor.
+
+Permitir:
+- Crear carpetas.
+- Crear subcarpetas.
+- Importar archivos.
+- Mover recursos.
+- Renombrar.
+- Duplicar.
+- Eliminar.
+- Crear prefabricados.
+- Buscar.
+- Filtrar.
+- Mostrar información del recurso.
+- Arrastrar recursos a una escena.
+
+Cada recurso tendrá un identificador interno estable.
+
+Cambiar el nombre o mover un recurso no deberá romper las referencias a ese recurso.
+
+## 3.2. Sistema de escenas
+
+NO establecer cuatro escenas fijas y obligatorias para todos los proyectos.
+
+Un proyecto nuevo debe comenzar con una escena inicial real, configurable.
+
+El usuario podrá crear tantas escenas como necesite.
+
+También podrá elegir una plantilla de proyecto que genere varias escenas iniciales.
+
+Tipos de escenas:
+
+- Main Menu.
+- Nivel.
+- Interfaz.
+- HUD.
+- Pausa.
+- Game Over.
+- Inventario.
+- Tienda.
+- Diálogo.
+- Cinemática.
+- Selector de niveles.
+- Créditos.
+- Pantalla de carga.
+- Escena personalizada.
+
+Todos estos tipos deben utilizar la misma base de escena, con configuración especializada cuando corresponda.
+
+No crear escenas de ejemplo que sean simples paneles visuales sin contenido editable.
+
+## 3.3. Scene Manager
+
+Crear un administrador real de escenas.
+
+Responsabilidades:
+
+- Registrar escenas.
+- Definir escena inicial.
+- Cargar escenas.
+- Descargar escenas.
+- Precargar recursos.
+- Cambiar escenas.
+- Reiniciar escena.
+- Pausar escena.
+- Reanudar escena.
+- Mantener objetos persistentes.
+- Guardar estado.
+- Gestionar transiciones.
+
+Implementar varios modos:
+
+**Replace:** sustituir la escena actual.
+
+**Additive:** cargar una escena sin descargar la anterior.
+
+**Overlay:** mostrar una escena superpuesta, como un menú de pausa.
+
+**Push/Pop:** gestionar capas de escenas y retornar a la anterior.
+
+El usuario podrá configurar qué sucede con la escena anterior.
+
+Por ejemplo, abrir pausa debe poder detener la simulación del nivel mientras conserva su estado.
+
+## 3.4. Sistema de niveles y progresión
+
+No confundir nivel con escena.
+
+Un nivel normalmente será representado por una escena, pero el proyecto también necesita una estructura de progresión.
+
+Crear un administrador de niveles que permita:
+
+- Definir niveles.
+- Agrupar niveles en mundos.
+- Establecer orden.
+- Definir condiciones de desbloqueo.
+- Definir nivel siguiente.
+- Reiniciar nivel.
+- Registrar nivel completado.
+- Guardar progreso.
+- Establecer checkpoints.
+- Reiniciar desde checkpoint.
+- Definir niveles opcionales.
+- Gestionar niveles bloqueados.
+- Configurar cargas previas.
+
+Crear una interfaz visual de conexiones entre niveles mediante listas y selectores, sin exigir programación.
+
+Ejemplo:
+
+```text
+MAIN MENU
+    ↓ Iniciar partida
+LEVEL 01
+    ↓ Objetivo completado
+LEVEL 02
+    ↓ Objetivo completado
+LEVEL 03
+    ↓ Muerte del jugador
+GAME OVER
+```
+
+Las conexiones deberán ser configurables.
+
+El cambio de nivel puede depender de una condición, evento, botón, interacción o acción de una mecánica.
+
+## 3.5. Transiciones de escena
+
+Implementar:
+- Fundido negro.
+- Fundido blanco.
+- Deslizamiento.
+- Disolución.
+- Zoom.
+- Transición personalizada.
+
+Permitir controlar duración, velocidad, curva, sonido y momento de carga.
+
+Gestionar pantallas de carga y progreso cuando una escena contenga recursos pesados.
+
+---
+
+# 4. SISTEMA DE OBJETOS Y COMPONENTES
+
+Implementar una arquitectura basada en entidades, componentes y sistemas.
+
+Cada objeto tendrá:
+- UUID.
+- Nombre.
+- Tipo.
+- Transform.
+- Jerarquía.
+- Componentes.
+- Propiedades.
+- Referencias.
+- Estado de activación.
+
+Los componentes no deben contener directamente la interfaz.
+
+Los sistemas de ejecución deben procesar los componentes.
+
+Ejemplo:
+
+```text
+PLAYER
+│
+├── Transform2D
+├── SpriteRenderer
+├── AnimationController
+├── CharacterController2D
+├── PhysicsBody2D
+├── Collider2D
+├── HealthComponent
+├── InputComponent
+├── AudioEmitter
+└── MechanicComponent
+```
+
+Cada componente deberá definir:
+- Identificador.
+- Versión.
+- Propiedades.
+- Tipos de datos.
+- Valores iniciales.
+- Validaciones.
+- Requisitos.
+- Dependencias.
+- Eventos.
+- Acciones compatibles.
+- Métodos de ejecución.
+
+Crear un sistema de registro de componentes.
+
+El usuario podrá añadir componentes desde el inspector.
+
+Cuando un componente necesite otro, el asistente deberá detectarlo y proponer su instalación.
+
+No añadir dependencias silenciosamente.
+
+---
+
+# 5. SISTEMA PROFESIONAL DE SPRITES Y TEXTURAS
+
+Este módulo debe corregir de raíz el problema detectado en el prototipo.
+
+Al importar una imagen, el motor debe conservar correctamente sus dimensiones originales, proporciones, transparencia, resolución y región de textura.
+
+## 5.1. Importador
+
+Soportar:
+- PNG.
+- JPG.
+- JPEG.
+- WEBP.
+- SVG.
+- GIF estático o secuencias cuando corresponda.
+- Spritesheets.
+- Atlas.
+
+Al importar:
+1. Leer dimensiones reales.
+2. Detectar formato.
+3. Leer transparencia.
+4. Generar miniatura.
+5. Crear identificador.
+6. Guardar el recurso.
+7. Registrar metadatos.
+8. Permitir reutilizarlo.
+
+No reducir ni recortar destructivamente los originales.
+
+## 5.2. Corrección obligatoria del sprite recortado
+
+No asumir que todos los sprites tienen un tamaño cuadrado.
+
+No imponer un marco fijo que recorte automáticamente la imagen.
+
+Cuando se asigne una imagen a un sprite:
+
+- Utilizar inicialmente las dimensiones originales de la imagen.
+- Mantener la relación de aspecto.
+- No realizar recortes automáticos.
+- No alterar la proporción.
+- No cortar zonas transparentes.
+- No utilizar `Cover` como comportamiento predeterminado.
+- Ajustar las dimensiones visuales mediante transformación, no modificando la textura original.
+
+Implementar modos de ajuste:
+
+**Original:** dimensiones nativas.
+
+**Contain:** ajustar dentro de un espacio sin recortar ninguna parte y manteniendo proporciones.
+
+**Cover:** llenar un espacio permitiendo recorte, únicamente cuando el usuario lo seleccione.
+
+**Stretch:** deformar para ocupar las dimensiones indicadas, únicamente cuando el usuario lo seleccione.
+
+**Crop:** definir una región de recorte personalizada.
+
+**Tile:** repetición de textura.
+
+**Nine-Slice:** escalado de paneles y elementos de interfaz preservando sus esquinas.
+
+La selección de modo debe ser visible en el inspector.
+
+## 5.3. Modelo de dimensiones
+
+Separar claramente:
+
+- Tamaño original de la imagen.
+- Dimensiones de la textura.
+- Región de textura.
+- Región recortada.
+- Dimensiones lógicas del sprite.
+- Tamaño visual.
+- Escala.
+- Pivote.
+- Ancla.
+- Máscara de recorte.
+
+No sobrescribir el tamaño original al modificar el tamaño visual.
+
+La anchura y altura editadas manualmente deben conservar el comportamiento elegido por el usuario.
+
+Al cambiar la textura de un sprite existente, respetar la política de dimensiones configurada.
+
+Si existe una máscara, mostrarla y permitir modificarla.
+
+El motor debe distinguir un recorte intencional de un recorte accidental.
+
+## 5.4. Inspector avanzado de Sprite
+
+Propiedades:
+
+**Imagen**
+- Recurso asignado.
+- Dimensiones originales.
+- Región.
+- Atlas.
+- Recorte.
+
+**Transformación**
+- Posición.
+- Ancho.
+- Alto.
+- Escala.
+- Rotación.
+- Anchor.
+- Pivot.
+- Offset.
+
+**Renderizado**
+- Alpha.
+- Tint.
+- Blend mode.
+- Sorting layer.
+- Orden Z.
+- Máscara.
+- Filtros.
+
+**Textura**
+- Nearest.
+- Linear.
+- Mipmaps cuando corresponda.
+- Resolución.
+- Ajuste.
+- Repeat.
+
+**Visualización**
+- Preview.
+- Límites.
+- Centro.
+- Ejes.
+- Contorno.
+- Región visible.
+
+## 5.5. Pixel Art
+
+Crear un perfil especializado:
+
+- Escalado entero.
+- Nearest-neighbor.
+- Coordenadas adecuadas.
+- Resolución lógica.
+- Cámara pixel-perfect.
+- Control de interpolación.
+- Evitar vibraciones subpíxel.
+
+## 5.6. Atlases y spritesheets
+
+Editor de regiones con:
+- Detección de cuadrícula.
+- Configuración de celdas.
+- Márgenes.
+- Separaciones.
+- Recorte automático opcional.
+- Extracción manual.
+- Nombres por fotograma.
+- Previsualización.
+- Detección de regiones vacías.
+
+La herramienta debe almacenar los datos de cada región sin modificar los archivos fuente.
+
+---
+
+# 6. SISTEMA DE MOVIMIENTO PROFESIONAL
+
+Este módulo debe corregir el movimiento excesivamente rápido observado al probar el jugador.
+
+No resolverlo simplemente reduciendo la velocidad de un preset.
+
+Implementar una arquitectura de control de movimiento configurable.
+
+## 6.1. Principios de movimiento
+
+El movimiento debe:
+
+1. Ser independiente de los FPS.
+2. Utilizar unidades por segundo.
+3. Utilizar delta time de forma correcta.
+4. Normalizar direcciones diagonales cuando corresponda.
+5. Controlar la aceleración.
+6. Controlar la desaceleración.
+7. Limitar la velocidad máxima.
+8. Controlar la fricción.
+9. Evitar saltos de posición.
+10. Mantener consistencia durante cambios de frecuencia de pantalla.
+
+Nunca incrementar la posición del jugador una cantidad fija por fotograma sin considerar el tiempo transcurrido.
+
+No asignar velocidad repetidamente por cada evento `keydown`.
+
+Utilizar un sistema de estados de entrada `pressed`, `held`, `released`.
+
+Gestionar `keyup`, pérdida de foco y teclas mantenidas para evitar movimientos bloqueados.
+
+## 6.2. Motor de actualización
+
+Separar:
+
+- Bucle de renderizado.
+- Actualización de input.
+- Actualización de lógica.
+- Simulación física.
+- Sincronización de transformaciones.
+
+Utilizar un acumulador de tiempo y una simulación de paso fijo, inicialmente 1/60 segundos.
+
+Limitar el número de pasos de recuperación para evitar el efecto de espiral cuando se producen bloqueos.
+
+Interpolar la representación gráfica cuando sea necesario.
+
+El sistema debe seguir una estrategia temporal coherente aunque el navegador funcione a 30, 60, 120 o 144 FPS.
+
+## 6.3. Controlador de personaje
+
+Crear un componente `CharacterController2D` con parámetros independientes.
+
+Parámetros horizontales:
+
+- Max Speed.
+- Acceleration.
+- Deceleration.
+- Ground Friction.
+- Air Friction.
+- Air Acceleration.
+- Reverse Acceleration.
+- Smoothing.
+- Input Sensitivity.
+- Movement Response.
+
+Parámetros verticales:
+
+- Gravity.
+- Jump Velocity.
+- Fall Gravity.
+- Maximum Fall Speed.
+- Jump Hold Duration.
+- Variable Jump Height.
+- Coyote Time.
+- Jump Buffer.
+- Double Jump.
+- Air Control.
+
+Parámetros de colisión:
+
+- Ground Detection.
+- Ground Check Offset.
+- Ground Check Distance.
+- Wall Detection.
+- Ceiling Detection.
+- Collision Recovery.
+
+Todos estos parámetros serán editables.
+
+No obligar a utilizar todos simultáneamente.
+
+## 6.4. Modos de movimiento
+
+Crear controladores independientes:
+
+**Platformer 2D**
+- Movimiento horizontal.
+- Salto.
+- Caída.
+- Control aéreo.
+- Pendientes.
+- Plataformas.
+- Salto variable.
+
+**Top-Down**
+- Movimiento libre.
+- Cuatro y ocho direcciones.
+- Velocidad configurable.
+- Aceleración.
+- Fricción.
+- Límites.
+
+**Top-Down con física**
+- Fuerzas.
+- Impulsos.
+- Resistencia.
+- Masa.
+
+**Movimiento por destino**
+- Selección mediante clic.
+- Navegación.
+- Velocidad.
+- Llegada al destino.
+- Detención.
+
+**Movimiento por trayectoria**
+- Rutas.
+- Puntos.
+- Curvas.
+- Velocidad.
+- Repetición.
+- Dirección.
+
+**Movimiento personalizado**
+- Combinación de componentes.
+- Variables.
+- Eventos.
+- Acciones.
+- Parámetros configurables.
+
+Los modos serán plantillas iniciales, no límites del motor.
+
+## 6.5. Configuración por usuario
+
+Cuando se añade un controlador:
+
+Mostrar un panel de configuración con descripciones comprensibles.
+
+Por ejemplo:
+
+```text
+MOVIMIENTO HORIZONTAL
+
+Velocidad máxima:       220 px/s
+Aceleración:            900 px/s²
+Desaceleración:         1200 px/s²
+Control aéreo:          70 %
+Fricción:               Configurable
+
+SALTO
+
+Fuerza de salto:        Configurable
+Gravedad:               Configurable
+Altura variable:        Activada
+Salto doble:            Desactivado
+Coyote time:            0.10 s
+Jump buffer:            0.12 s
+```
+
+Los valores anteriores son ejemplos de presentación, no parámetros universales ni valores obligatorios.
+
+Incluir perfiles iniciales como:
+- Suave.
+- Preciso.
+- Arcade.
+- Realista.
+- Rápido.
+
+El usuario podrá modificar cualquier parámetro.
+
+---
+
+# 7. SISTEMA DE FÍSICAS Y COLISIONES
+
+Integrar Rapier 2D mediante un adaptador propio.
+
+El usuario no debe necesitar conocer la API de Rapier para crear colisiones.
+
+## 7.1. Cuerpos físicos
+
+- Static.
+- Dynamic.
+- Kinematic.
+- Character Controller.
+
+## 7.2. Formas
+
+- Box.
+- Circle.
+- Capsule.
+- Polygon.
+- Segment.
+- Sensor.
+- Composite.
+
+## 7.3. Propiedades
+
+- Mass.
+- Density.
+- Gravity Scale.
+- Friction.
+- Restitution.
+- Linear Velocity.
+- Angular Velocity.
+- Damping.
+- Rotation Constraints.
+- Collision Events.
+- CCD cuando corresponda.
+
+## 7.4. Colisionadores
+
+Crear un editor visual de colliders.
+
+Permitir:
+- Añadir.
+- Mover.
+- Escalar.
+- Rotar.
+- Ajustar.
+- Cambiar forma.
+- Definir varias formas por objeto.
+- Configurar sensores.
+- Visualizar límites.
+
+El usuario debe poder crear una zona de detección independiente del sprite visible.
+
+Ejemplo:
+
+Un personaje puede tener un collider físico rectangular y otro collider circular para detectar enemigos cercanos.
+
+## 7.5. Grupos de colisión
+
+Configurar capas como:
+
+- Player.
+- Enemy.
+- World.
+- Ground.
+- Projectile.
+- Collectible.
+- Sensor.
+- UIInteraction.
+
+Crear una matriz visual que permita indicar qué categorías pueden colisionar.
+
+## 7.6. Eventos de colisión
+
+Disponibles para el sistema de mecánicas:
+
+- On Collision Enter.
+- On Collision Stay.
+- On Collision Exit.
+- On Trigger Enter.
+- On Trigger Stay.
+- On Trigger Exit.
+
+Exponer información del contacto cuando sea necesaria.
+
+## 7.7. Diagnóstico visual
+
+Durante la ejecución, mostrar:
+
+- Collider real.
+- Cuerpo físico.
+- Velocidad.
+- Vectores.
+- Contactos.
+- Sensores.
+- Capas.
+- Detección de suelo.
+- Estado del personaje.
+
+La simulación física debe emplear un timestep fijo coherente.
+
+No deben existir dos sistemas diferentes intentando controlar simultáneamente la misma posición del personaje.
+
+---
+
+# 8. SISTEMA DE MECÁNICAS Y PROGRAMACIÓN VISUAL
+
+Este es uno de los sistemas más importantes del motor.
+
+No implementar un sistema limitado a una lista rígida de comportamientos.
+
+Crear un lenguaje visual de mecánicas basado en eventos, condiciones, acciones, funciones, estados y variables.
+
+## 8.1. Editor de reglas
+
+La unidad principal será una regla configurable.
+
+Estructura:
+
+```text
+EVENTO
+    ↓
+CONDICIONES
+    ↓
+ACCIONES
+    ↓
+RESULTADO
+```
+
+Ejemplo:
+
+```text
+CUANDO:
+El jugador recoge una moneda.
+
+CONDICIONES:
+La moneda está activa.
+El jugador no está muerto.
+
+ACCIONES:
+Sumar 10 puntos.
+Reproducir sonido.
+Emitir partículas.
+Actualizar HUD.
+Destruir objeto.
+```
+
+Todas las partes serán seleccionables y editables.
+
+## 8.2. Eventos disponibles
+
+Crear un registro ampliable de eventos.
+
+Ejemplos:
+
+**Juego**
+- Scene Ready.
+- Game Started.
+- Game Paused.
+- Game Resumed.
+- Game Over.
+- Level Completed.
+
+**Objeto**
+- Object Created.
+- Object Destroyed.
+- Object Activated.
+- Object Deactivated.
+
+**Input**
+- Key Pressed.
+- Key Held.
+- Key Released.
+- Action Started.
+- Action Completed.
+- Mouse Click.
+- Touch.
+
+**Física**
+- Collision Enter.
+- Collision Exit.
+- Trigger Enter.
+- Trigger Exit.
+- Grounded.
+- Landed.
+
+**Animación**
+- Animation Started.
+- Animation Finished.
+- Frame Reached.
+- State Changed.
+
+**Audio**
+- Audio Started.
+- Audio Finished.
+
+**Tiempo**
+- Timer Started.
+- Timer Finished.
+- Interval Elapsed.
+
+**Variables**
+- Value Changed.
+- Value Reached.
+- Condition Became True.
+
+**Objetos**
+- Health Reached Zero.
+- Item Collected.
+- Interaction Requested.
+
+Los nuevos componentes deben poder registrar sus propios eventos.
+
+## 8.3. Condiciones
+
+Implementar:
+
+- Igual.
+- Distinto.
+- Mayor.
+- Menor.
+- Mayor o igual.
+- Menor o igual.
+- Contiene.
+- Está activo.
+- Está visible.
+- Está en rango.
+- Tiene componente.
+- Existe objeto.
+- Variable verdadera.
+- Variable falsa.
+- Comparación entre variables.
+- Comparación matemática.
+- Condiciones agrupadas AND / OR / NOT.
+
+Soportar expresiones compuestas.
+
+## 8.4. Acciones
+
+Crear un registro de acciones con tipado estricto.
+
+Acciones generales:
+- Crear objeto.
+- Destruir objeto.
+- Activar.
+- Desactivar.
+- Cambiar escena.
+- Reiniciar nivel.
+- Pausar.
+- Reanudar.
+- Mostrar UI.
+- Ocultar UI.
+
+Transformaciones:
+- Mover.
+- Rotar.
+- Escalar.
+- Seguir objetivo.
+- Cambiar posición.
+- Aplicar desplazamiento.
+
+Variables:
+- Asignar.
+- Sumar.
+- Restar.
+- Multiplicar.
+- Dividir.
+- Reiniciar.
+- Comparar.
+- Incrementar.
+
+Personajes:
+- Aplicar daño.
+- Curar.
+- Matar.
+- Reaparecer.
+- Cambiar estado.
+- Activar habilidad.
+
+Audio:
+- Reproducir.
+- Detener.
+- Pausar.
+- Cambiar volumen.
+
+Animaciones:
+- Reproducir.
+- Detener.
+- Cambiar clip.
+- Cambiar velocidad.
+- Transicionar.
+
+Físicas:
+- Aplicar fuerza.
+- Impulso.
+- Modificar velocidad.
+- Cambiar gravedad.
+- Activar cuerpo.
+
+Interfaz:
+- Actualizar texto.
+- Cambiar barra.
+- Mostrar notificación.
+- Activar botón.
+
+Cada nueva capacidad del motor deberá poder registrar acciones adicionales automáticamente.
+
+## 8.5. Secuencias y funciones
+
+Permitir ejecutar varias acciones en orden.
+
+Crear:
+- Secuencias.
+- Acciones paralelas.
+- Esperas.
+- Temporizadores.
+- Repeticiones.
+- Condiciones anidadas.
+- Funciones reutilizables.
+- Parámetros.
+- Retornos.
+- Eventos personalizados.
+
+Incluir protección contra ciclos infinitos y límites de ejecución configurables.
+
+## 8.6. Máquinas de estados
+
+Crear un editor especializado de estados.
+
+Ejemplos:
+- Idle.
+- Walking.
+- Running.
+- Jumping.
+- Falling.
+- Attacking.
+- Hurt.
+- Dead.
+
+Definir condiciones de transición.
+
+El editor puede presentarlos en una lista jerárquica con transiciones; no obligar al usuario a trabajar mediante grafos de nodos.
+
+## 8.7. Prefabricados de mecánicas
+
+Permitir guardar cualquier conjunto de reglas como una mecánica reutilizable.
+
+Un usuario puede crear un sistema de puertas, inventario, comercio, diálogo, combate o recolección y reutilizarlo.
+
+Mantener parámetros editables en cada instancia.
+
+---
+
+# 9. SISTEMA DEL ASISTENTE PROGRAMADO LOCAL
+
+Construir un asistente experto que no sea un modelo generativo ni dependa de API.
+
+Debe ser un sistema de conocimiento formal integrado en el motor.
+
+## 9.1. Registro de conocimientos
+
+Cada componente, comportamiento, evento y acción tendrá metadatos:
+
+- ID.
+- Nombre.
+- Descripción.
+- Categoría.
+- Parámetros.
+- Requisitos.
+- Dependencias.
+- Compatibilidades.
+- Incompatibilidades.
+- Ejemplos.
+- Eventos.
+- Acciones disponibles.
+- Advertencias.
+- Documentación.
+
+## 9.2. Motor de recomendaciones
+
+Debe analizar el estado real del proyecto.
+
+Ejemplo:
+
+Al añadir movimiento a un personaje, comprobar:
+
+- Si existe Transform.
+- Si existe sistema de Input.
+- Si el controlador necesita física.
+- Si hay colisionador.
+- Si existen límites.
+- Si hay animaciones de movimiento.
+
+Si falta algo, recomendarlo.
+
+## 9.3. Dependencias
+
+Ejemplo:
+
+```text
+CARACTERÍSTICA SOLICITADA:
+Movimiento de plataforma.
+
+REQUISITOS:
+[✓] Transform2D
+[✓] SpriteRenderer
+[ ] CharacterController2D
+[ ] Input Mapping
+
+RECOMENDADO:
+[ ] AnimationController
+[ ] Ground Collider
+
+ACCIÓN:
+Configurar automáticamente los componentes seleccionados.
+```
+
+El usuario puede aceptar los elementos recomendados y el motor los instala mediante una operación reversible.
+
+## 9.4. Autocompletado contextual
+
+Cuando el usuario añade una regla, mostrar únicamente acciones compatibles.
+
+El sistema debe conocer:
+- El objeto seleccionado.
+- Sus componentes.
+- Los componentes de otros objetos referenciados.
+- Las variables disponibles.
+- La escena.
+- Las capacidades actuales.
+- Las dependencias.
+
+## 9.5. Diagnóstico
+
+Detectar:
+- Referencias inválidas.
+- Variables inexistentes.
+- Objetos eliminados.
+- Componentes incompletos.
+- Acciones sin parámetros.
+- Ciclos innecesarios.
+- Mecánicas contradictorias.
+- Transiciones imposibles.
+- Dependencias sin instalar.
+- Recursos que no existen.
+
+## 9.6. Asistencia explicativa
+
+No mostrar únicamente un error técnico.
+
+Ejemplo:
+
+"Este personaje no puede detectar el suelo porque todavía no tiene una configuración de colisión. Añade un collider o configura el sensor de suelo."
+
+Ofrecer:
+- Ver solución.
+- Aplicar corrección.
+- Ignorar.
+- Abrir documentación.
+
+## 9.7. Búsqueda en español
+
+Permitir buscar mediante términos habituales, sin obligar a conocer los nombres internos.
+
+Ejemplos:
+
+"Que siga al jugador."
+
+"Que desaparezca al tocarlo."
+
+"Que dispare cada dos segundos."
+
+"Que salte más alto cuando mantengo pulsado el botón."
+
+"Que cambie de nivel cuando llegue a la puerta."
+
+Resolver mediante un vocabulario local, sinónimos, intenciones reconocidas, plantillas y configuraciones estructuradas.
+
+No afirmar que comprende cualquier frase libre como una IA generativa.
+
+## 9.8. Independencia
+
+Este sistema debe poder funcionar sin:
+- Internet.
+- API.
+- Servicios de IA.
+- Servidores externos.
+- Suscripciones.
+- Cuentas.
+
+La integración MCP podrá existir como extensión opcional y separada.
+
+---
+
+# 10. SISTEMA DE ANIMACIONES
+
+Implementar un editor profesional de animación 2D.
+
+## 10.1. Animación por spritesheets
+
+Crear:
+- Clips.
+- Fotogramas.
+- Velocidad.
+- Duración por fotograma.
+- FPS.
+- Bucle.
+- Ping-pong.
+- Reversa.
+- Fotograma inicial.
+- Fotograma final.
+- Eventos por fotograma.
+
+## 10.2. Timeline
+
+Permitir:
+- Añadir fotogramas.
+- Eliminar.
+- Duplicar.
+- Reordenar.
+- Cambiar duración.
+- Reproducir.
+- Pausar.
+- Avanzar fotograma.
+- Previsualizar.
+
+## 10.3. Animación de propiedades
+
+Permitir animar:
+- Posición.
+- Escala.
+- Rotación.
+- Opacidad.
+- Color.
+- Parámetros.
+
+Incluir interpolaciones:
+- Linear.
+- Ease In.
+- Ease Out.
+- Ease In Out.
+- Curvas personalizadas.
+
+## 10.4. Controlador de animaciones
+
+Crear un Animation Controller que gestione:
+- Estados.
+- Transiciones.
+- Parámetros.
+- Prioridades.
+- Interrupciones.
+- Eventos.
+- Velocidad.
+- Reproducción.
+
+Las reglas de movimiento deberán poder activar automáticamente las animaciones adecuadas.
+
+---
+
+# 11. SISTEMA DE AUDIO
+
+Implementar un administrador global de audio.
+
+## Recursos
+- WAV.
+- MP3.
+- OGG.
+
+## Reproductores
+- Audio Source.
+- Audio Listener.
+- One Shot.
+- Loop.
+- Ambient.
+- Voice.
+
+## Propiedades
+- Volumen.
+- Pitch.
+- Pan.
+- Loop.
+- Delay.
+- Fade In.
+- Fade Out.
+- Tiempo inicial.
+- Tiempo final.
+- Prioridad.
+- Límite de voces simultáneas.
+
+## Mezclador
+
+Crear canales Master, Music, SFX, UI, Voice y Ambient.
+
+Cada canal podrá tener volumen independiente, mute, control de nivel y efectos compatibles.
+
+## Eventos
+
+Permitir:
+- Reproducir por evento.
+- Reproducir al comenzar escena.
+- Reproducir en una animación.
+- Reproducir al colisionar.
+- Cambiar música.
+- Detener música al cambiar de nivel.
+- Atenuar sonidos al pausar.
+
+Respetar las políticas de inicio de audio de los navegadores, activando el contexto mediante la primera interacción del usuario.
+
+---
+
+# 12. SISTEMA DE INTERFAZ Y MENÚS
+
+Debe permitir crear tanto interfaces de juego como pantallas completas.
+
+Tipos:
+- Main Menu.
+- Pause Menu.
+- HUD.
+- Game Over.
+- Settings.
+- Inventory.
+- Shop.
+- Dialog.
+- Loading Screen.
+- Level Selection.
+
+## Elementos
+
+- Panel.
+- Container.
+- Image.
+- Text.
+- Button.
+- Toggle.
+- Slider.
+- Progress Bar.
+- Health Bar.
+- Scroll View.
+- Grid.
+- Horizontal Layout.
+- Vertical Layout.
+- Input Field.
+- Custom UI Element.
+
+## Sistema de contenedores
+
+Los contenedores podrán contener elementos hijos.
+
+Permitir:
+- Alineación.
+- Distribución.
+- Margen.
+- Padding.
+- Espaciado.
+- Anclajes.
+- Ajuste de contenido.
+- Redimensionamiento.
+- Scroll.
+- Recorte.
+- Máscaras.
+
+## Resolución y adaptación
+
+Configurar:
+- Resolución de diseño.
+- Aspect ratio.
+- Escalado.
+- Anclaje.
+- Zonas seguras.
+- Adaptación a diferentes pantallas.
+- Orientación.
+- Resolución móvil.
+
+Los elementos de UI no deben depender de posiciones absolutas como único sistema.
+
+Implementar anchors y layouts responsivos.
+
+---
+
+# 13. SISTEMA DE CÁMARA 2D
+
+Crear un Camera Controller.
+
+Tipos:
+- Fija.
+- Seguimiento.
+- Movimiento libre.
+- Por objetivo.
+- Por límites.
+- Cinemática.
+
+Parámetros:
+- Posición.
+- Zoom.
+- Rotación.
+- Suavizado.
+- Límites.
+- Dead Zone.
+- Look Ahead.
+- Shake.
+- Offset.
+
+Soportar:
+- Parallax.
+- Múltiples capas.
+- Cámara por zonas.
+- Transiciones entre cámaras.
+- Cambio automático de objetivo.
+
+---
+
+# 14. SISTEMA DE MAPAS Y TILEMAPS
+
+Crear un editor de mapas 2D.
+
+Funciones:
+- Importar tilesets.
+- Definir celdas.
+- Configurar regiones.
+- Pintar.
+- Borrar.
+- Seleccionar.
+- Rellenar.
+- Duplicar.
+- Capas.
+- Colisiones.
+- Objetos de mapa.
+- Zonas.
+- Navegación.
+
+Permitir mapas grandes mediante chunks o particiones, cargando únicamente las regiones necesarias cuando corresponda.
+
+Crear una cuadrícula independiente de la cuadrícula del editor.
+
+---
+
+# 15. IA DE ENEMIGOS Y COMPORTAMIENTOS
+
+Crear sistemas de inteligencia de juego totalmente programados.
+
+No utilizar IA generativa.
+
+Incluir:
+
+## Máquina de estados
+- Patrulla.
+- Buscar.
+- Perseguir.
+- Atacar.
+- Huir.
+- Defender.
+- Esperar.
+- Regresar.
+
+## Árboles de comportamiento
+- Selector.
+- Secuencia.
+- Condición.
+- Acción.
+- Espera.
+- Repetición controlada.
+
+## Navegación
+- A*.
+- Cuadrículas.
+- Obstáculos.
+- Caminos.
+- Objetivos.
+- Seguimiento.
+
+El usuario podrá configurar rangos de detección, prioridades, velocidades, distancias y condiciones.
+
+---
+
+# 16. SISTEMA DE EFECTOS Y PARTÍCULAS
+
+Editor de partículas con:
+- Emisor.
+- Cantidad.
+- Frecuencia.
+- Velocidad.
+- Dirección.
+- Gravedad.
+- Tiempo de vida.
+- Tamaño.
+- Rotación.
+- Color.
+- Opacidad.
+- Texturas.
+- Variación aleatoria.
+
+Biblioteca inicial:
+- Explosión.
+- Fuego.
+- Humo.
+- Polvo.
+- Chispas.
+- Magia.
+- Lluvia.
+- Nieve.
+- Brillo.
+- Golpe.
+- Destello.
+
+Crear previsualización y editor de propiedades.
+
+---
+
+# 17. SISTEMA DE PREFABRICADOS
+
+Permitir guardar objetos y jerarquías completas.
+
+Un prefabricado conservará:
+- Componentes.
+- Propiedades.
+- Hijos.
+- Sprites.
+- Animaciones.
+- Mecánicas.
+- Referencias internas.
+
+Crear instancias reutilizables.
+
+Permitir modificaciones locales sin alterar necesariamente el original.
+
+Ofrecer actualización de instancias cuando cambie el prefabricado original, con control sobre los cambios sobrescritos.
+
+---
+
+# 18. VARIABLES, GUARDADO Y PROGRESO
+
+Crear un sistema de datos del juego.
+
+Tipos:
+- Integer.
+- Float.
+- Boolean.
+- String.
+- Vector.
+- Array.
+- Object Reference.
+
+Ámbitos:
+- Proyecto.
+- Partida.
+- Escena.
+- Objeto.
+- Temporal.
+
+Sistema de guardado:
+- Progreso.
+- Opciones.
+- Desbloqueos.
+- Inventario.
+- Puntuación.
+- Nivel actual.
+- Checkpoints.
+
+Permitir crear varios perfiles o slots cuando corresponda.
+
+En navegador, integrar almacenamiento local mediante una interfaz propia que pueda adaptarse al futuro entorno de escritorio.
+
+No confundir guardar el proyecto de edición con guardar el progreso del videojuego.
+
+---
+
+# 19. SISTEMA DE INPUT
+
+Crear un Input Manager centralizado.
+
+Acciones:
+- Move.
+- Jump.
+- Attack.
+- Interact.
+- Pause.
+- Menu.
+- Custom.
+
+Soportar:
+- Teclado.
+- Ratón.
+- Touch.
+- Gamepad.
+
+Cada acción podrá tener múltiples asignaciones.
+
+Permitir configurar teclas, botones, ejes, sensibilidad y dead zones.
+
+El estado de las entradas deberá ser independiente de los componentes de comportamiento para permitir reutilizar el mismo sistema en distintos personajes.
+
+---
+
+# 20. DEBUGGER Y ANALIZADOR DEL MOTOR
+
+Incluir herramientas de depuración.
+
+Durante la ejecución permitir:
+- Pausar.
+- Reanudar.
+- Avanzar un paso.
+- Ver FPS.
+- Ver tiempo de frame.
+- Ver tiempo de simulación.
+- Inspeccionar objetos.
+- Ver componentes.
+- Ver variables.
+- Ver velocidades.
+- Ver colisiones.
+- Ver mecánicas activas.
+- Ver eventos.
+- Identificar errores.
+
+Crear una consola con:
+- Información.
+- Advertencias.
+- Errores.
+- Diagnóstico.
+- Registro de eventos.
+
+El usuario debe poder seleccionar un objeto durante la ejecución y consultar su estado.
+
+---
+
+# 21. RENDIMIENTO Y OPTIMIZACIÓN
+
+Objetivo de diseño: juegos web fluidos, eficientes y compatibles con navegadores de escritorio y móviles.
+
+Implementar:
+
+- Renderizado GPU.
+- Atlas de texturas.
+- Culling.
+- Object pooling.
+- Cache de recursos.
+- Liberación de texturas.
+- Gestión de memoria.
+- Carga asíncrona.
+- Preload.
+- Carga por escenas.
+- Agrupación de sprites.
+- Gestión de capas.
+- Optimización de partículas.
+- Limitación de eventos innecesarios.
+
+No realizar trabajo costoso continuamente dentro del bucle de renderizado si puede resolverse mediante eventos o actualizaciones controladas.
+
+Separar el estado de edición del estado de ejecución.
+
+Mantener un presupuesto de rendimiento y ofrecer herramientas de perfilado.
+
+---
+
+# 22. SISTEMA DE SERIALIZACIÓN Y FORMATO DE PROYECTO
+
+Definir un formato propio versionado.
+
+Debe almacenar:
+- Proyecto.
+- Escenas.
+- Objetos.
+- Componentes.
+- Propiedades.
+- Referencias.
+- Recursos.
+- Animaciones.
+- Mecánicas.
+- Variables.
+- Configuración.
+
+Usar identificadores estables.
+
+Implementar:
+- Migraciones.
+- Validaciones.
+- Autoguardado.
+- Recuperación.
+- Backups.
+- Importación.
+- Exportación.
+
+No utilizar referencias temporales del navegador como identidad permanente de los recursos.
+
+---
+
+# 23. COMPILADOR Y EXPORTACIÓN HTML5
+
+El Runtime del juego debe estar separado de la aplicación de edición.
+
+Crear un proceso de build que:
+
+1. Valide el proyecto.
+2. Compruebe referencias.
+3. Detecte dependencias.
+4. Resuelva recursos.
+5. Seleccione módulos del Runtime.
+6. Compile mecánicas.
+7. Prepare escenas.
+8. Organice archivos.
+9. Optimice recursos.
+10. Genere el HTML.
+11. Compile el JavaScript.
+12. Genere el manifiesto.
+13. Empaquete.
+14. Pruebe la salida.
+
+Generar una carpeta:
+
+```text
+BUILD/
+    index.html
+    assets/
+    runtime/
+    data/
+    manifest.json
+```
+
+La salida debe funcionar sin el editor.
+
+No cargar dependencias desde CDN.
+
+Permitir exportación como ZIP.
+
+Mantener rutas relativas correctas para despliegues bajo subdirectorios, incluyendo GitHub Pages.
+
+No depender de que el juego se ejecute únicamente desde `localhost`.
+
+Crear un sistema de diagnóstico de exportación que identifique imágenes, sonidos y archivos que no pueden cargarse.
+
+Preparar adaptadores separados para SDK de plataformas, pero mantener el HTML5 estándar independiente.
+
+---
+
+# 24. INTERFAZ DEL EDITOR
+
+La interfaz debe tener identidad visual propia, profesional y coherente.
+
+Diseño oscuro.
+
+Paneles redimensionables.
+
+Ventana central de escena.
+
+Inspector contextual.
+
+Explorador del proyecto.
+
+Biblioteca de recursos.
+
+Barra de herramientas.
+
+Consola.
+
+Editor de mecánicas.
+
+Editor de animaciones.
+
+Editor de audio.
+
+Permitir guardar distribuciones personalizadas.
+
+La interfaz debe explicar las funciones con descripciones cortas y tooltips.
+
+No obligar al usuario a entender términos técnicos para utilizar las herramientas.
+
+Incluir nombres comprensibles y, donde sea útil, mostrar el término técnico entre paréntesis.
+
+Por ejemplo:
+
+"Fricción del suelo (Ground Friction)".
+
+---
+
+# 25. ARQUITECTURA MODULAR DEL CÓDIGO
+
+No concentrar el motor en App.tsx.
+
+Separar como mínimo:
+
+```text
+src/
+  apps/
+    editor/
+    preview/
+
+  engine/
+    core/
+    runtime/
+    scheduler/
+    renderer/
+    scene/
+    entity/
+    components/
+    systems/
+
+  mechanics/
+    registry/
+    events/
+    conditions/
+    actions/
+    expressions/
+    functions/
+    state-machines/
+    execution/
+
+  assistant/
+    knowledge-base/
+    dependency-resolver/
+    recommendations/
+    autocomplete/
+    diagnostics/
+    search/
+
+  sprites/
+    importer/
+    textures/
+    atlas/
+    inspector/
+    rendering/
+
+  animation/
+    clips/
+    timeline/
+    state-machine/
+    transitions/
+
+  physics/
+    rapier-adapter/
+    bodies/
+    colliders/
+    collision-layers/
+    debugging/
+
+  audio/
+    assets/
+    sources/
+    mixer/
+    buses/
+    spatial/
+
+  ui-system/
+    canvas/
+    containers/
+    layouts/
+    widgets/
+
+  input/
+    actions/
+    keyboard/
+    mouse/
+    touch/
+    gamepad/
+
+  scenes/
+    editor/
+    manager/
+    transitions/
+    loading/
+
+  levels/
+    progression/
+    checkpoints/
+    saving/
+
+  assets/
+    browser/
+    database/
+    importers/
+    thumbnails/
+
+  camera/
+  particles/
+  prefabs/
+  variables/
+  serialization/
+  storage/
+  builder/
+  diagnostics/
+  tests/
+```
+
+La estructura es una guía de responsabilidad. No crear carpetas vacías para aparentar modularidad.
+
+Cada módulo debe contener implementación, interfaces, pruebas y documentación cuando corresponda.
+
+Utilizar contratos tipados entre sistemas.
+
+---
+
+# 26. PRUEBAS DE ACEPTACIÓN OBLIGATORIAS
+
+No declarar un módulo terminado hasta realizar las pruebas correspondientes.
+
+## PRUEBA A: SPRITES
+
+1. Importar una imagen cuadrada.
+2. Importar una imagen panorámica.
+3. Importar una imagen vertical.
+4. Importar una imagen con transparencia.
+5. Asignar cada imagen a un sprite.
+6. Comprobar sus proporciones.
+7. Modificar tamaño.
+8. Cambiar entre Contain, Cover y Original.
+9. Guardar.
+10. Cerrar y volver a abrir.
+11. Comprobar que la imagen sigue completa y correcta.
+
+Resultado obligatorio: ninguna imagen puede recortarse accidentalmente.
+
+## PRUEBA B: MOVIMIENTO
+
+1. Crear jugador.
+2. Añadir controlador.
+3. Mover a la derecha.
+4. Mover a la izquierda.
+5. Cambiar dirección.
+6. Mantener pulsada la tecla.
+7. Soltar.
+8. Saltar.
+9. Probar control aéreo.
+10. Probar aceleración.
+11. Probar desaceleración.
+12. Probar diferentes velocidades.
+
+Repetir pruebas a distintas frecuencias de renderizado.
+
+Resultado obligatorio: la velocidad en unidades por segundo debe conservarse independientemente de los FPS y ser totalmente configurable.
+
+## PRUEBA C: COLISIONES
+
+1. Crear suelo.
+2. Crear jugador.
+3. Configurar collider.
+4. Configurar gravedad.
+5. Comprobar aterrizaje.
+6. Comprobar contacto lateral.
+7. Comprobar techo.
+8. Comprobar sensor.
+9. Comprobar salida y entrada.
+10. Inspeccionar debug visual.
+
+## PRUEBA D: ESCENAS
+
+1. Crear Main Menu.
+2. Crear Level 01.
+3. Crear Level 02.
+4. Crear Pause Menu.
+5. Configurar Main Menu como escena inicial.
+6. Iniciar Level 01 desde un botón.
+7. Abrir Pause Menu como overlay.
+8. Pausar simulación.
+9. Reanudar.
+10. Completar nivel y cargar Level 02.
+11. Reiniciar nivel.
+12. Comprobar persistencia de variables.
+
+Resultado obligatorio: todas las escenas deben ser archivos reales, editables y cargables.
+
+## PRUEBA E: MECÁNICAS
+
+Crear desde cero un sistema de recolección de monedas.
+
+Debe incluir:
+- Detector de colisión.
+- Condición.
+- Variable de puntuación.
+- Sonido.
+- Partículas.
+- Destrucción del objeto.
+- Actualización del HUD.
+
+Todo mediante la interfaz del motor, sin código manual.
+
+## PRUEBA F: ANIMACIÓN
+
+1. Importar spritesheet.
+2. Crear clip.
+3. Reproducir.
+4. Detener.
+5. Configurar velocidad.
+6. Crear estados.
+7. Vincular animación al movimiento.
+8. Comprobar transiciones.
+
+## PRUEBA G: AUDIO
+
+1. Importar archivos.
+2. Crear canales.
+3. Configurar volumen.
+4. Reproducir.
+5. Detener.
+6. Crear eventos.
+7. Comprobar mezcla y pausa.
+
+## PRUEBA H: PROYECTO Y REAPERTURA
+
+1. Crear proyecto.
+2. Importar recursos.
+3. Crear escenas.
+4. Configurar mecánicas.
+5. Guardar.
+6. Exportar.
+7. Cerrar.
+8. Abrir nuevamente.
+9. Recuperar todos los datos.
+
+No debe haber pérdidas de información.
+
+## PRUEBA I: EXPORTACIÓN
+
+1. Crear un proyecto completo.
+2. Exportar HTML5.
+3. Ejecutar la salida local.
+4. Comprobar recursos.
+5. Comprobar escenas.
+6. Comprobar sonidos.
+7. Comprobar controles.
+8. Desplegar.
+9. Ejecutar desde GitHub Pages.
+10. Revisar consola del navegador.
+
+Resultado obligatorio: el juego exportado debe funcionar independientemente del editor.
+
+---
+
+# 27. METODOLOGÍA DE IMPLEMENTACIÓN
+
+No implementar todos los módulos simultáneamente ni generar miles de líneas sin validación.
+
+Trabajar sobre el repositorio existente.
+
+Orden obligatorio:
+
+**Prioridad 0: auditoría y errores existentes**
+- Inspeccionar todo el proyecto.
+- Revisar arquitectura.
+- Identificar causas del recorte de imágenes.
+- Identificar causas de movimiento excesivo.
+- Revisar renderizador.
+- Revisar bucle.
+- Revisar sistema de escenas.
+- Identificar duplicación de lógica.
+- Preparar plan de refactorización.
+
+**Prioridad 1: núcleo**
+- Runtime.
+- Tiempo.
+- Scene Graph.
+- Objetos.
+- Componentes.
+- Transformaciones.
+
+**Prioridad 2: recursos**
+- Importador.
+- Sprites.
+- Texturas.
+- Dimensiones.
+- Atlas.
+
+**Prioridad 3: movimiento y físicas**
+- Input.
+- Controladores.
+- Colisiones.
+- Física.
+
+**Prioridad 4: mecánicas**
+- Eventos.
+- Condiciones.
+- Acciones.
+- Variables.
+- Funciones.
+- Estados.
+
+**Prioridad 5: escenas y niveles**
+- Scene Manager.
+- Transiciones.
+- Overlay.
+- Carga.
+- Progresión.
+
+**Prioridad 6: contenido**
+- Animación.
+- Audio.
+- UI.
+- Cámara.
+- Partículas.
+- Prefabs.
+- Tilemaps.
+
+**Prioridad 7: asistente**
+- Catálogo.
+- Dependencias.
+- Sugerencias.
+- Diagnósticos.
+- Autocompletado.
+
+**Prioridad 8: compilador**
+- Runtime independiente.
+- Optimización.
+- Exportación.
+- Validación.
+- Despliegue.
+
+Cada prioridad debe terminar con una versión funcional y pruebas.
+
+---
+
+# 28. REGLAS DE CALIDAD
+
+No modificar varias capas a ciegas.
+
+Antes de tocar un módulo:
+- Leer su implementación actual.
+- Identificar sus dependencias.
+- Identificar quién lo utiliza.
+- Definir contratos.
+- Crear pruebas.
+
+Después:
+- Implementar.
+- Ejecutar.
+- Validar.
+- Corregir.
+- Documentar.
+
+No crear funciones ficticias.
+
+No utilizar valores hardcodeados para ocultar problemas estructurales.
+
+No reducir funcionalidades que ya trabajan.
+
+No eliminar datos del usuario.
+
+No romper proyectos anteriores.
+
+No dejar errores silenciosos.
+
+No considerar completado un módulo por el simple hecho de que la interfaz se vea correcta.
+
+Mantener una lista de funciones:
+- Implementadas.
+- Verificadas.
+- Parcialmente implementadas.
+- Pendientes.
+- Con errores conocidos.
+
+---
+
+# 29. CRITERIO FINAL DE ÉXITO
+
+NEXUS será considerado un motor 2D funcional cuando permita construir un videojuego completo de principio a fin utilizando sus sistemas internos.
+
+Ejemplo de proyecto de validación:
+
+Crear un videojuego de plataformas con:
+
+- Menú principal.
+- Dos niveles.
+- Personaje animado.
+- Movimiento configurable.
+- Salto variable.
+- Física.
+- Colisiones.
+- Enemigos.
+- Salud.
+- Daño.
+- Monedas.
+- Sistema de puntuación.
+- Sonidos.
+- Partículas.
+- Cámara de seguimiento.
+- HUD.
+- Menú de pausa.
+- Game Over.
+- Cambio de nivel.
+- Sistema de guardado.
+- Exportación HTML5.
+
+Todo debe crearse mediante las herramientas visuales de NEXUS, sin depender de un agente IA ni escribir código manualmente.
+
+El juego exportado debe funcionar sin el editor y sin servicios externos.
+
+**OBJETIVO DEFINITIVO: NEXUS debe ser un motor 2D generalista, modular, profesional, optimizado y suficientemente flexible para construir juegos de diferentes géneros mediante una experiencia de creación sencilla, intuitiva y asistida por un sistema experto local.**
+
+No desarrollar el motor 3D durante esta etapa. Completar y estabilizar primero toda la arquitectura 2D.
+
+No entregar una promesa de funcionalidades futuras. Implementar y verificar sistemas reales.

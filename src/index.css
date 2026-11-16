@@ -1,0 +1,20 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+@import "./styles/tokens.css";
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    font-family: var(--nx-font-sans);
+    background-color: var(--nx-bg-workspace);
+    color: var(--nx-text-primary);
+  }
+
+  .font-mono,
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}

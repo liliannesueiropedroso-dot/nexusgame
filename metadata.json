@@ -1,0 +1,6 @@
+{
+  "name": "NEXUS GAME ENGINE",
+  "description": "Editor visual de videojuegos 2D local con renderizado acelerado por GPU mediante PixiJS, gestión de recursos e importación/exportación de proyectos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
