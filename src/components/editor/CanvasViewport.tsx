@@ -18,15 +18,25 @@ import type {
   StageResolution,
 } from '../../engine/core/types';
 import { fitCameraToViewport, zoomCameraAtPoint } from '../../engine/camera/camera2d';
+import { createDefaultColliderForObject } from '../../engine/physics/collision2d';
 import {
+  applyAutotile4Bit,
+  floodFillTilemap,
+  paintRectTilemap,
+} from '../../engine/tilemap/autotile2d';
+import {
+  computeColliderHandles,
   computeGizmoHandles,
+  hitTestColliderHandle,
   hitTestGizmoHandle,
   pickTopObjectAt,
+  type ColliderHandleType,
   type GizmoHandleType,
 } from '../../engine/renderer2d/hitTest';
 import { PixiStageRenderer } from '../../engine/renderer2d/PixiStageRenderer';
 import { roundTo } from '../../utils/format';
 import { StageRulers } from './StageRulers';
+import { UIWidgetOverlayLayer } from '../widgets/UIWidgetOverlayLayer';
 
 interface CanvasViewportProps {
   scene: SceneData;
@@ -89,6 +99,21 @@ type DragSession =
       erase: boolean;
       changed: boolean;
       lastCellKey: string | null;
+      brushMode: 'single' | 'rect' | 'bucket' | 'autotile';
+      startCol: number;
+      startRow: number;
+      curCol: number;
+      curRow: number;
+    }
+  | {
+      kind: 'collider';
+      handleType: ColliderHandleType;
+      targetId: string;
+      startStageX: number;
+      startStageY: number;
+      initialObjects: GameObjectData[];
+      initialObj: GameObjectData;
+      changed: boolean;
     };
 
 export const CanvasViewport: React.FC<CanvasViewportProps> = ({
@@ -113,6 +138,13 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   const dragRef = useRef<DragSession | null>(null);
   const spaceHeldRef = useRef(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
+  const [tileRectOverlay, setTileRectOverlay] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    erase: boolean;
+  } | null>(null);
   const [isDragAssetOver, setIsDragAssetOver] = useState(false);
   const [showDebugColliders, setShowDebugColliders] = useState(false);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
@@ -258,19 +290,13 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     onCameraChange(zoomCameraAtPoint(camera, camera.zoom * factor, pt.x, pt.y));
   };
 
-  const paintTileAt = (
+  const getTilemapCellCoords = (
     stageX: number,
     stageY: number,
-    targetId: string,
-    erase: boolean,
-    objects: GameObjectData[]
-  ): { nextObjects: GameObjectData[]; changed: boolean; cellKey: string | null } => {
-    const objectMap = buildObjectMap(objects);
-    const target = objectMap.get(targetId);
-    if (!target || target.type !== 'tilemap' || !target.tilemap || target.locked) {
-      return { nextObjects: objects, changed: false, cellKey: null };
-    }
-
+    target: GameObjectData,
+    objectMap: Map<string, GameObjectData>
+  ): { col: number; row: number; cellKey: string } | null => {
+    if (target.type !== 'tilemap' || !target.tilemap || target.locked) return null;
     const world = getWorldTransform(target, objectMap);
     const rad = -degToRad(world.rotation);
     const cos = Math.cos(rad);
@@ -290,16 +316,53 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
 
     const col = Math.floor((localX - ox) / Math.max(1, tm.tileWidth));
     const row = Math.floor((localY - oy) / Math.max(1, tm.tileHeight));
-    if (col < 0 || row < 0 || col >= tm.cols || row >= tm.rows) {
-      return { nextObjects: objects, changed: false, cellKey: null };
+    if (col < 0 || row < 0 || col >= tm.cols || row >= tm.rows) return null;
+    return { col, row, cellKey: `${col},${row}` };
+  };
+
+  const paintTileAt = (
+    stageX: number,
+    stageY: number,
+    targetId: string,
+    erase: boolean,
+    objects: GameObjectData[],
+    modeOverride?: 'single' | 'bucket' | 'autotile'
+  ): { nextObjects: GameObjectData[]; changed: boolean; cellKey: string | null; col: number; row: number } => {
+    const objectMap = buildObjectMap(objects);
+    const target = objectMap.get(targetId);
+    if (!target || target.type !== 'tilemap' || !target.tilemap || target.locked) {
+      return { nextObjects: objects, changed: false, cellKey: null, col: -1, row: -1 };
+    }
+    const coords = getTilemapCellCoords(stageX, stageY, target, objectMap);
+    if (!coords) {
+      return { nextObjects: objects, changed: false, cellKey: null, col: -1, row: -1 };
     }
 
-    const cellKey = `${col},${row}`;
-    const existing = tm.cells[cellKey];
+    const tm = target.tilemap;
+    const { col, row, cellKey } = coords;
+    const useAutotile = modeOverride === 'autotile' || Boolean(tm.autotileEnabled);
+    const effMode = modeOverride ?? (useAutotile ? 'autotile' : 'single');
 
+    if (effMode === 'bucket') {
+      const nextCells = floodFillTilemap(tm, col, row, erase, useAutotile);
+      const nextObjects = updateObjectById(objects, targetId, (prev) =>
+        prev.tilemap ? { ...prev, tilemap: { ...prev.tilemap, cells: nextCells } } : prev
+      );
+      return { nextObjects, changed: true, cellKey, col, row };
+    }
+
+    if (useAutotile) {
+      const nextCells = applyAutotile4Bit(tm, col, row, erase);
+      const nextObjects = updateObjectById(objects, targetId, (prev) =>
+        prev.tilemap ? { ...prev, tilemap: { ...prev.tilemap, cells: nextCells } } : prev
+      );
+      return { nextObjects, changed: true, cellKey, col, row };
+    }
+
+    const existing = tm.cells[cellKey];
     if (erase) {
       if (existing === undefined) {
-        return { nextObjects: objects, changed: false, cellKey };
+        return { nextObjects: objects, changed: false, cellKey, col, row };
       }
       const nextObjects = updateObjectById(objects, targetId, (prev) => {
         if (!prev.tilemap) return prev;
@@ -310,12 +373,12 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
           tilemap: { ...prev.tilemap, cells: nextCells },
         };
       });
-      return { nextObjects, changed: true, cellKey };
+      return { nextObjects, changed: true, cellKey, col, row };
     }
 
     const tileIdx = tm.selectedTileIndex ?? 0;
     if (existing === tileIdx) {
-      return { nextObjects: objects, changed: false, cellKey };
+      return { nextObjects: objects, changed: false, cellKey, col, row };
     }
     const nextObjects = updateObjectById(objects, targetId, (prev) => {
       if (!prev.tilemap) return prev;
@@ -327,7 +390,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         },
       };
     });
-    return { nextObjects, changed: true, cellKey };
+    return { nextObjects, changed: true, cellKey, col, row };
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -372,14 +435,32 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         }
       }
 
-      if (tilemapTarget && !tilemapTarget.locked) {
+      if (tilemapTarget && tilemapTarget.tilemap && !tilemapTarget.locked) {
         const erase = e.button === 2 || e.altKey;
+        const brushMode = tilemapTarget.tilemap.brushMode ?? (tilemapTarget.tilemap.autotileEnabled ? 'autotile' : 'single');
+        const coords = getTilemapCellCoords(stagePt.x, stagePt.y, tilemapTarget, objectMap);
+        if (brushMode === 'rect' && coords) {
+          dragRef.current = {
+            kind: 'tilepaint',
+            targetId: tilemapTarget.id,
+            erase,
+            changed: false,
+            lastCellKey: coords.cellKey,
+            brushMode: 'rect',
+            startCol: coords.col,
+            startRow: coords.row,
+            curCol: coords.col,
+            curRow: coords.row,
+          };
+          return;
+        }
         const result = paintTileAt(
           stagePt.x,
           stagePt.y,
           tilemapTarget.id,
           erase,
-          scene.objects
+          scene.objects,
+          brushMode === 'bucket' ? 'bucket' : brushMode === 'autotile' ? 'autotile' : 'single'
         );
         if (result.changed) {
           onPreviewObjectsChange(result.nextObjects);
@@ -390,6 +471,11 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
           erase,
           changed: result.changed,
           lastCellKey: result.cellKey,
+          brushMode,
+          startCol: result.col,
+          startRow: result.row,
+          curCol: result.col,
+          curRow: result.row,
         };
       }
       return;
@@ -397,7 +483,29 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
 
     if (e.button !== 0) return;
 
-    // 1. Verificar si se hizo clic en un handle de transformación de la selección actual
+    // 1. Verificar primero handles de zona de colisión si "Colisiones" está visible
+    if (selectedIds.length === 1 && showDebugColliders) {
+      const primary = objectMap.get(selectedIds[0]);
+      if (primary && primary.visible && !primary.locked && primary.type !== 'tilemap') {
+        const colHandles = computeColliderHandles(primary, objectMap);
+        const hitCol = hitTestColliderHandle(stagePt.x, stagePt.y, colHandles, camera.zoom);
+        if (hitCol) {
+          dragRef.current = {
+            kind: 'collider',
+            handleType: hitCol.type,
+            targetId: primary.id,
+            startStageX: stagePt.x,
+            startStageY: stagePt.y,
+            initialObjects: structuredClone(scene.objects),
+            initialObj: structuredClone(primary),
+            changed: false,
+          };
+          return;
+        }
+      }
+    }
+
+    // 1b. Verificar si se hizo clic en un handle de transformación de la selección actual
     if (selectedIds.length === 1) {
       const primary = objectMap.get(selectedIds[0]);
       if (primary && primary.visible && !primary.locked) {
@@ -513,12 +621,44 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     }
 
     if (drag.kind === 'tilepaint') {
+      if (drag.brushMode === 'bucket') return;
+      const curObjs = latestRef.current.scene.objects;
+      const objMap = buildObjectMap(curObjs);
+      const target = objMap.get(drag.targetId);
+      if (drag.brushMode === 'rect' && target?.tilemap) {
+        const coords = getTilemapCellCoords(stagePt.x, stagePt.y, target, objMap);
+        if (coords) {
+          drag.curCol = coords.col;
+          drag.curRow = coords.row;
+          const tm = target.tilemap;
+          const world = getWorldTransform(target, objMap);
+          const ox = -(tm.cols * tm.tileWidth) * target.transform.anchorX;
+          const oy = -(tm.rows * tm.tileHeight) * target.transform.anchorY;
+          const minC = Math.min(drag.startCol, coords.col);
+          const maxC = Math.max(drag.startCol, coords.col);
+          const minR = Math.min(drag.startRow, coords.row);
+          const maxR = Math.max(drag.startRow, coords.row);
+          const stageLeft = world.x + (ox + minC * tm.tileWidth) * world.scaleX;
+          const stageTop = world.y + (oy + minR * tm.tileHeight) * world.scaleY;
+          const stageW = (maxC - minC + 1) * tm.tileWidth * Math.abs(world.scaleX);
+          const stageH = (maxR - minR + 1) * tm.tileHeight * Math.abs(world.scaleY);
+          setTileRectOverlay({
+            left: stageLeft * camera.zoom + camera.x,
+            top: stageTop * camera.zoom + camera.y,
+            width: stageW * camera.zoom,
+            height: stageH * camera.zoom,
+            erase: drag.erase,
+          });
+        }
+        return;
+      }
       const result = paintTileAt(
         stagePt.x,
         stagePt.y,
         drag.targetId,
         drag.erase,
-        latestRef.current.scene.objects
+        curObjs,
+        drag.brushMode === 'autotile' ? 'autotile' : 'single'
       );
       if (result.cellKey && result.cellKey !== drag.lastCellKey) {
         drag.lastCellKey = result.cellKey;
@@ -644,6 +784,59 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
           : obj
       );
       onPreviewObjectsChange(updated);
+      return;
+    }
+
+    if (drag.kind === 'collider') {
+      const initialMap = buildObjectMap(drag.initialObjects);
+      const world = getWorldTransform(drag.initialObj, initialMap);
+      const sx = Math.abs(world.scaleX) < 0.05 ? 1 : world.scaleX;
+      const sy = Math.abs(world.scaleY) < 0.05 ? 1 : world.scaleY;
+      const ldx = (stagePt.x - drag.startStageX) / sx;
+      const ldy = (stagePt.y - drag.startStageY) / sy;
+
+      const baseCol =
+        drag.initialObj.colliders && drag.initialObj.colliders.length > 0
+          ? structuredClone(drag.initialObj.colliders[0])
+          : createDefaultColliderForObject(drag.initialObj, false);
+
+      if (drag.handleType === 'col-move') {
+        baseCol.offsetX = roundTo((baseCol.offsetX ?? 0) + ldx, 1);
+        baseCol.offsetY = roundTo((baseCol.offsetY ?? 0) + ldy, 1);
+      } else if (drag.handleType === 'col-r') {
+        baseCol.radius = Math.max(4, roundTo((baseCol.radius ?? 24) + ldx, 1));
+      } else {
+        const origW = Math.max(8, baseCol.width ?? drag.initialObj.transform.width);
+        const origH = Math.max(8, baseCol.height ?? drag.initialObj.transform.height);
+        const origOx = baseCol.offsetX ?? 0;
+        const origOy = baseCol.offsetY ?? 0;
+        if (drag.handleType === 'col-e') {
+          const nw = Math.max(8, roundTo(origW + ldx, 1));
+          baseCol.width = nw;
+          baseCol.offsetX = roundTo(origOx + (nw - origW) * 0.5, 1);
+        } else if (drag.handleType === 'col-w') {
+          const nw = Math.max(8, roundTo(origW - ldx, 1));
+          baseCol.width = nw;
+          baseCol.offsetX = roundTo(origOx - (nw - origW) * 0.5, 1);
+        } else if (drag.handleType === 'col-s') {
+          const nh = Math.max(8, roundTo(origH + ldy, 1));
+          baseCol.height = nh;
+          baseCol.offsetY = roundTo(origOy + (nh - origH) * 0.5, 1);
+        } else if (drag.handleType === 'col-n') {
+          const nh = Math.max(8, roundTo(origH - ldy, 1));
+          baseCol.height = nh;
+          baseCol.offsetY = roundTo(origOy - (nh - origH) * 0.5, 1);
+        }
+      }
+
+      drag.changed = true;
+      const restCols = drag.initialObj.colliders ? drag.initialObj.colliders.slice(1) : [];
+      const updated = drag.initialObjects.map((obj) =>
+        obj.id === drag.targetId
+          ? { ...obj, colliders: [baseCol, ...restCols] }
+          : obj
+      );
+      onPreviewObjectsChange(updated);
     }
   };
 
@@ -655,7 +848,28 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
 
     const drag = dragRef.current;
     dragRef.current = null;
+    setTileRectOverlay(null);
     if (!drag) return;
+
+    if (drag.kind === 'tilepaint' && drag.brushMode === 'rect' && drag.startCol >= 0) {
+      const target = latestRef.current.scene.objects.find((o) => o.id === drag.targetId);
+      if (target?.tilemap) {
+        const nextCells = paintRectTilemap(
+          target.tilemap,
+          drag.startCol,
+          drag.startRow,
+          drag.curCol,
+          drag.curRow,
+          drag.erase,
+          Boolean(target.tilemap.autotileEnabled)
+        );
+        const nextObjs = updateObjectById(latestRef.current.scene.objects, drag.targetId, (prev) =>
+          prev.tilemap ? { ...prev, tilemap: { ...prev.tilemap, cells: nextCells } } : prev
+        );
+        onCommitObjectsChange(nextObjs);
+      }
+      return;
+    }
 
     if (drag.kind !== 'pan' && drag.changed) {
       // Confirmar en el historial de deshacer/rehacer una sola vez al finalizar el arrastre
@@ -720,11 +934,58 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         viewportHeight={viewportSize.height}
       />
 
+      <UIWidgetOverlayLayer
+        mode="editor"
+        projectMode="2d"
+        objects={scene.objects}
+        stage={stage}
+        camera={camera}
+        viewportWidth={viewportSize.width}
+        viewportHeight={viewportSize.height}
+        selectedIds={selectedIds}
+        onSelectObject={(id, additive) => {
+          if (additive) {
+            onSelectObjects(
+              selectedIds.includes(id)
+                ? selectedIds.filter((s) => s !== id)
+                : [...selectedIds, id]
+            );
+          } else {
+            onSelectObjects([id]);
+          }
+        }}
+        onMoveWidget={(id, nextX, nextY, commit) => {
+          const updated = scene.objects.map((o) =>
+            o.id === id ? { ...o, transform: { ...o.transform, x: nextX, y: nextY } } : o
+          );
+          if (commit) onCommitObjectsChange(updated);
+          else onPreviewObjectsChange(updated);
+        }}
+      />
+
+      {tileRectOverlay && (
+        <div
+          className={`pointer-events-none absolute border-2 ${
+            tileRectOverlay.erase
+              ? 'border-red-400 bg-red-500/20'
+              : 'border-cyan-400 bg-cyan-500/20'
+          }`}
+          style={{
+            left: `${tileRectOverlay.left}px`,
+            top: `${tileRectOverlay.top}px`,
+            width: `${tileRectOverlay.width}px`,
+            height: `${tileRectOverlay.height}px`,
+          }}
+        />
+      )}
+
       {activeTool === 'tilebrush' && (
         <div className="pointer-events-none absolute top-7 left-1/2 -translate-x-1/2 rounded border border-blue-500/50 bg-[#18181d]/95 px-3 py-1 text-[11px] text-zinc-200 shadow-lg whitespace-nowrap">
           {selectedTilemap ? (
             <>
-              <span className="font-semibold text-blue-300">Pincel Tiles · {selectedTilemap.name}</span>
+              <span className="font-semibold text-blue-300">
+                Pincel Tiles ({selectedTilemap.tilemap?.brushMode ?? (selectedTilemap.tilemap?.autotileEnabled ? 'autotile' : 'single')}) · {selectedTilemap.name}
+              </span>
               <span className="mx-1.5 text-zinc-500">|</span>
               <span>Clic izq. pinta tile #{(selectedTilemap.tilemap?.selectedTileIndex ?? 0) + 1} · Clic der. o Alt+clic borra</span>
             </>

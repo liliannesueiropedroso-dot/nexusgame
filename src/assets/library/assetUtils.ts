@@ -11,6 +11,7 @@ export const SUPPORTED_AUDIO_EXTENSIONS: AssetFormat[] = [
   'flac',
   'webm',
 ];
+export const SUPPORTED_MODEL3D_EXTENSIONS: AssetFormat[] = ['glb', 'gltf', 'fbx'];
 
 export function detectImageFormat(filename: string, mimeType: string): AssetFormat | null {
   const ext = filename.split('.').pop()?.toLowerCase() ?? '';
@@ -31,6 +32,14 @@ export function detectAudioFormat(filename: string, mimeType: string): AssetForm
   if (ext === 'aac' || mimeType === 'audio/aac') return 'aac';
   if (ext === 'flac' || mimeType === 'audio/flac') return 'flac';
   if (ext === 'webm' || mimeType === 'audio/webm') return 'webm';
+  return null;
+}
+
+export function detectModel3dFormat(filename: string, mimeType: string): AssetFormat | null {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  if (ext === 'glb' || mimeType === 'model/gltf-binary') return 'glb';
+  if (ext === 'gltf' || mimeType === 'model/gltf+json') return 'gltf';
+  if (ext === 'fbx' || mimeType === 'application/x-fbx' || mimeType === 'model/fbx') return 'fbx';
   return null;
 }
 
@@ -55,6 +64,26 @@ export function findUnusedAssetIds(
       if (obj.type === 'sprite' && obj.sprite?.assetId) {
         referencedIds.add(obj.sprite.assetId);
       }
+      if (obj.sprite?.normalAssetId) {
+        referencedIds.add(obj.sprite.normalAssetId);
+      }
+      if (obj.particleEmitter?.textureAssetId) {
+        referencedIds.add(obj.particleEmitter.textureAssetId);
+      }
+      if (obj.mesh3d?.glbAssetId) {
+        referencedIds.add(obj.mesh3d.glbAssetId);
+      }
+      if (obj.mesh3d?.textureAssetId) {
+        referencedIds.add(obj.mesh3d.textureAssetId);
+      }
+      if (obj.mesh3d?.normalAssetId) {
+        referencedIds.add(obj.mesh3d.normalAssetId);
+      }
+      if (obj.animStateMachine?.states) {
+        for (const st of obj.animStateMachine.states) {
+          if (st.assetId) referencedIds.add(st.assetId);
+        }
+      }
       if (obj.type === 'tilemap' && obj.tilemap?.assetId) {
         referencedIds.add(obj.tilemap.assetId);
       }
@@ -73,9 +102,12 @@ export function findUnusedAssetIds(
     }
     for (const mech of scene.mechanics ?? []) {
       for (const act of mech.actions) {
-        const assetParam = act.parameters?.assetId ?? act.parameters?.asset;
-        if (typeof assetParam === 'string' && assetParam) {
-          referencedIds.add(assetParam);
+        const keys = ['assetId', 'asset', 'textureAssetId', 'soundAssetId'];
+        for (const key of keys) {
+          const val = act.parameters?.[key];
+          if (typeof val === 'string' && val) {
+            referencedIds.add(val);
+          }
         }
       }
     }

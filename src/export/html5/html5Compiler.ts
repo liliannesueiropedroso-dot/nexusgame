@@ -10,6 +10,7 @@ import {
   generatePlaygamaConfig,
   generatePortalSdkJs,
 } from './runtimeTemplate';
+import { generateNexus3DRuntimeJs } from './threeRuntimeTemplate';
 
 export interface CompiledHtml5Package {
   blob: Blob;
@@ -28,57 +29,89 @@ export async function loadBundledPixiScript(): Promise<string | null> {
   }
 }
 
+export async function loadBundledThreeScript(): Promise<string | null> {
+  if (typeof fetch === 'undefined') return null;
+  try {
+    const res = await fetch('/vendor/three.min.js');
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
 export async function compileProjectToHtml5Zip(
   project: NexusProject,
   assetBlobs: Map<string, Blob>,
   options: Html5CompileOptions,
-  pixiBundleText?: string | null
+  pixiBundleText?: string | null,
+  threeBundleText?: string | null
 ): Promise<CompiledHtml5Package> {
   const zip = new JSZip();
   const filesIncluded: string[] = [];
+  const projectMode = project.mode ?? '2d';
 
-  // 1. index.html con inyección real del SDK de la plataforma seleccionada
-  zip.file('index.html', generateIndexHtml(project.name, options));
+  // 1. index.html con inyección real del SDK de la plataforma seleccionada y motor 2D/3D
+  zip.file('index.html', generateIndexHtml(project.name, options, projectMode));
   filesIncluded.push('index.html');
 
   // 2. Estilos CSS
   zip.file('css/style.css', generateGameCss());
   filesIncluded.push('css/style.css');
 
-  // 3. Motor PixiJS v8 empaquetado localmente (sin dependencias rotas externas)
-  const pixiCode =
-    pixiBundleText !== undefined ? pixiBundleText : await loadBundledPixiScript();
-  if (!pixiCode) {
-    throw new Error(
-      'No se encontró el paquete local de PixiJS (/vendor/pixi.min.js) necesario para compilar el juego autónomo.'
-    );
-  }
-  zip.file('js/pixi.min.js', pixiCode);
-  filesIncluded.push('js/pixi.min.js');
-
-  // 4. Adaptador real de SDK del portal seleccionado + runtime de juego
+  // 3. Motor 2D (PixiJS) o Motor 3D (Three.js) empaquetado localmente sin CDN externo
   zip.file('js/portal-sdk.js', generatePortalSdkJs(options));
   filesIncluded.push('js/portal-sdk.js');
 
-  zip.file('js/nexus-runtime.js', generateNexusRuntimeJs(options));
-  filesIncluded.push('js/nexus-runtime.js');
+  if (projectMode === '3d') {
+    const threeCode =
+      threeBundleText !== undefined ? threeBundleText : await loadBundledThreeScript();
+    if (!threeCode) {
+      throw new Error(
+        'No se encontró el paquete local de Three.js (/vendor/three.min.js) necesario para compilar el juego 3D autónomo.'
+      );
+    }
+    zip.file('js/three.min.js', threeCode);
+    filesIncluded.push('js/three.min.js');
 
-  // 5. Archivo de configuración requerido por Playgama Bridge
+    zip.file('js/nexus-3d-runtime.js', generateNexus3DRuntimeJs(options));
+    filesIncluded.push('js/nexus-3d-runtime.js');
+  } else {
+    const pixiCode =
+      pixiBundleText !== undefined ? pixiBundleText : await loadBundledPixiScript();
+    if (!pixiCode) {
+      throw new Error(
+        'No se encontró el paquete local de PixiJS (/vendor/pixi.min.js) necesario para compilar el juego autónomo.'
+      );
+    }
+    zip.file('js/pixi.min.js', pixiCode);
+    filesIncluded.push('js/pixi.min.js');
+
+    zip.file('js/nexus-runtime.js', generateNexusRuntimeJs(options));
+    filesIncluded.push('js/nexus-runtime.js');
+  }
+
+  // 4. Archivo de configuración requerido por Playgama Bridge
   if (options.portal === 'playgama') {
     zip.file('playgama-bridge-config.json', generatePlaygamaConfig(project.name));
     filesIncluded.push('playgama-bridge-config.json');
   }
 
-  // 6. Datos compilados del juego y carpeta de recursos
+  // 5. Datos compilados del juego y carpeta de recursos
   const compiledGameData = {
     engine: 'NEXUS GAME ENGINE',
     formatVersion: '1.0.0',
+    mode: projectMode,
     portal: options.portal,
     name: project.name,
     settings: structuredClone(project.settings),
     initialSceneId: project.initialSceneId ?? project.activeSceneId,
     activeSceneId: project.activeSceneId,
     scenes: structuredClone(project.scenes),
+    scripts: project.scripts ? structuredClone(project.scripts) : [],
+    dialogues: project.dialogues ? structuredClone(project.dialogues) : [],
+    dataTables: project.dataTables ? structuredClone(project.dataTables) : [],
+    i18n: project.i18n ? structuredClone(project.i18n) : undefined,
     prefabs: project.prefabs ? structuredClone(project.prefabs) : [],
     folders: project.folders ? structuredClone(project.folders) : [],
     variables: project.variables ? structuredClone(project.variables) : [],

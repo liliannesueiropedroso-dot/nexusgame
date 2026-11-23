@@ -1,5 +1,7 @@
-import type { PrefabDefinition } from '../../project/models/project';
+import type { NexusScriptAsset, PrefabDefinition } from '../../project/models/project';
 import { createId } from '../../utils/id';
+import { stageDeltaToParentLocal } from '../core/math';
+import { buildGridNav2D, findPath2D, hasLineOfSight2D, type GridNav2D } from '../ai2d/gridPathfinding2d';
 import {
   resolvePlatformerConfig,
   resolveTopDownConfig,
@@ -15,12 +17,14 @@ import type {
   ConditionDefinition,
   GameMechanic,
   GameObjectData,
+  I18nLocale,
   ParticleBurstVisual,
   ProjectVariable,
   SceneData,
   SceneTransitionType,
   StageResolution,
 } from '../core/types';
+import { getTileCollisionKind } from '../tilemap/autotile2d';
 import {
   applyDamageToObject,
   applyObjectTweens,
@@ -32,6 +36,17 @@ import {
   type RuntimeParticle,
 } from './behaviorRuntime';
 import { compareValues, evaluateNumericExpression } from './expressionEvaluator';
+import {
+  compileNexusScript,
+  type CompiledScriptEntry,
+  type NexusObjectHandle,
+  type NexusScriptAPI,
+} from '../scripting/scriptRuntime';
+import { stepAnimationFSM } from './animFsmEvaluator';
+import { getBehaviorEntry } from '../components/behaviorRegistry';
+import { PersistenceStore } from '../wiring/persistenceStore';
+import { PortalBridge } from '../wiring/portalBridge';
+import { EngineWiringSystem } from '../wiring/wiringEngine';
 
 export const FIXED_DT = 1 / 60;
 
@@ -41,11 +56,14 @@ export interface InputState {
   up: boolean;
   down: boolean;
   jump: boolean;
+  axisX?: number;
+  axisY?: number;
   action1?: boolean;
   action2?: boolean;
   pointerX?: number;
   pointerY?: number;
   pressedKeys?: Set<string> | string[];
+  justPressedKeys?: Set<string> | string[];
   pointerDown?: boolean;
   pointerJustPressed?: boolean;
   pointerJustReleased?: boolean;
@@ -84,12 +102,16 @@ export interface PendingSoundEvent {
   loop?: boolean;
   keepIfSame?: boolean;
   setChannel?: 'master' | 'music' | 'sfx' | 'ui';
+  spatialX?: number;
+  spatialY?: number;
 }
 
 export interface PendingWaitAction {
   remainingSec: number;
   actions: ActionDefinition[];
   mechId: string;
+  ownerId?: string;
+  otherId?: string;
 }
 
 export interface PendingSceneCommand {
@@ -156,6 +178,26 @@ export interface SimulationState {
   cameraPos: { x: number; y: number };
   prefabMap: Map<string, PrefabDefinition>;
   stage: StageResolution;
+  compiledScripts?: Map<string, CompiledScriptEntry>;
+  scriptObjectData?: Map<string, Record<string, unknown>>;
+  startedScriptBindings?: Set<string>;
+  scriptActivePairs?: Set<string>;
+  loggedScriptErrors?: Set<string>;
+  scriptTweens?: Array<{
+    targetId: string;
+    elapsed: number;
+    duration: number;
+    from: Record<string, number>;
+    to: Record<string, number>;
+  }>;
+  pendingUiCommands?: Array<{ op: 'open' | 'close' | 'toggle'; target: string }>;
+  dynamicToasts?: Array<{ id: string; text: string; remaining: number }>;
+  dynamicWidgets?: Array<{ id: string; html: string; x: number; y: number; css?: string; visible: boolean }>;
+  wiringSys?: EngineWiringSystem;
+  cameraFollowOverrideId?: string | null;
+  pendingDialogueId?: string | null;
+  pendingLocale?: I18nLocale | null;
+  tileDamageZones?: Array<{ left: number; right: number; top: number; bottom: number; dps: number }>;
 }
 
 interface SolidBox {
@@ -165,6 +207,7 @@ interface SolidBox {
   bottom: number;
   layer: WorldCollider['layer'];
   mask?: WorldCollider['mask'];
+  oneWay?: boolean;
 }
 
 function getHealthComponent(obj: GameObjectData) {
@@ -211,7 +254,11 @@ function createBodyForObject(obj: GameObjectData): BodyPhysicsState {
   };
 }
 
-function collectSolidBoxes(objects: GameObjectData[]): SolidBox[] {
+function collectSolidBoxes(
+  objects: GameObjectData[],
+  objectMap: Map<string, GameObjectData>,
+  damageZones?: Array<{ left: number; right: number; top: number; bottom: number; dps: number }>
+): SolidBox[] {
   const boxes: SolidBox[] = [];
   for (const obj of objects) {
     if (!obj.visible) continue;
@@ -227,23 +274,36 @@ function collectSolidBoxes(objects: GameObjectData[]): SolidBox[] {
       const originY = obj.transform.y - tm.rows * tm.tileHeight * sy * obj.transform.anchorY;
       const tw = tm.tileWidth * sx;
       const th = tm.tileHeight * sy;
-      for (const key of Object.keys(tm.cells)) {
+      for (const [key, tileIdx] of Object.entries(tm.cells)) {
         const [cs, rs] = key.split(',');
         const col = Number(cs);
         const row = Number(rs);
         if (!Number.isFinite(col) || !Number.isFinite(row)) continue;
+        const tileMeta = getTileCollisionKind(tm, Number(tileIdx));
+        if (tileMeta.kind === 'none') continue;
         const left = originX + col * tw;
         const top = originY + row * th;
+        if (tileMeta.kind === 'damage') {
+          damageZones?.push({
+            left,
+            right: left + tw,
+            top,
+            bottom: top + th,
+            dps: tileMeta.damagePerSec,
+          });
+          continue;
+        }
         boxes.push({
           left,
           right: left + tw,
           top,
           bottom: top + th,
           layer: obj.layer ?? 'Ground',
+          oneWay: tileMeta.kind === 'one_way',
         });
       }
     } else {
-      const cols = getWorldColliders(obj);
+      const cols = getWorldColliders(obj, objectMap);
       for (const c of cols) {
         if (c.isSensor) continue;
         boxes.push({
@@ -260,8 +320,11 @@ function collectSolidBoxes(objects: GameObjectData[]): SolidBox[] {
   return boxes;
 }
 
-function getMoverSolidColliders(obj: GameObjectData): WorldCollider[] {
-  return getWorldColliders(obj).filter((c) => !c.isSensor);
+function getMoverSolidColliders(
+  obj: GameObjectData,
+  objectMap?: Map<string, GameObjectData>
+): WorldCollider[] {
+  return getWorldColliders(obj, objectMap).filter((c) => !c.isSensor);
 }
 
 function boxOverlaps(
@@ -271,25 +334,43 @@ function boxOverlaps(
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
+function applyStagePushout(
+  obj: GameObjectData,
+  dxStage: number,
+  dyStage: number,
+  objectMap: Map<string, GameObjectData>
+): void {
+  if (!obj.parentId) {
+    obj.transform.x += dxStage;
+    obj.transform.y += dyStage;
+    return;
+  }
+  const local = stageDeltaToParentLocal(dxStage, dyStage, obj.parentId, objectMap);
+  obj.transform.x += local.x;
+  obj.transform.y += local.y;
+}
+
 function resolveAxisHorizontal(
   obj: GameObjectData,
   body: BodyPhysicsState,
-  solids: SolidBox[]
+  solids: SolidBox[],
+  objectMap: Map<string, GameObjectData>
 ): boolean {
   let collided = false;
-  const cols = getMoverSolidColliders(obj);
+  const cols = getMoverSolidColliders(obj, objectMap);
   for (const col of cols) {
     for (const solid of solids) {
+      if (solid.oneWay) continue;
       if (!canLayersCollide(col.layer, solid.layer, col.mask, solid.mask)) continue;
       if (boxOverlaps(col, solid)) {
         collided = true;
         if (body.vx > 0) {
-          obj.transform.x -= col.right - solid.left;
+          applyStagePushout(obj, -(col.right - solid.left), 0, objectMap);
         } else if (body.vx < 0) {
-          obj.transform.x += solid.right - col.left;
+          applyStagePushout(obj, solid.right - col.left, 0, objectMap);
         }
         body.vx = 0;
-        resolveAxisHorizontalRecursive(obj, body, solids, 2);
+        resolveAxisHorizontalRecursive(obj, body, solids, objectMap, 2);
         return true;
       }
     }
@@ -301,18 +382,20 @@ function resolveAxisHorizontalRecursive(
   obj: GameObjectData,
   body: BodyPhysicsState,
   solids: SolidBox[],
+  objectMap: Map<string, GameObjectData>,
   depth: number
 ): void {
   if (depth <= 0) return;
-  const cols = getMoverSolidColliders(obj);
+  const cols = getMoverSolidColliders(obj, objectMap);
   for (const col of cols) {
     for (const solid of solids) {
+      if (solid.oneWay) continue;
       if (!canLayersCollide(col.layer, solid.layer, col.mask, solid.mask)) continue;
       if (boxOverlaps(col, solid)) {
         if (col.cx < (solid.left + solid.right) * 0.5) {
-          obj.transform.x -= col.right - solid.left;
+          applyStagePushout(obj, -(col.right - solid.left), 0, objectMap);
         } else {
-          obj.transform.x += solid.right - col.left;
+          applyStagePushout(obj, solid.right - col.left, 0, objectMap);
         }
         body.vx = 0;
         return;
@@ -321,23 +404,46 @@ function resolveAxisHorizontalRecursive(
   }
 }
 
-function resolveAxisVertical(obj: GameObjectData, body: BodyPhysicsState, solids: SolidBox[]): void {
+function resolveAxisVertical(
+  obj: GameObjectData,
+  body: BodyPhysicsState,
+  solids: SolidBox[],
+  objectMap: Map<string, GameObjectData>
+): void {
   body.grounded = false;
-  const cols = getMoverSolidColliders(obj);
-  for (const col of cols) {
-    for (const solid of solids) {
-      if (!canLayersCollide(col.layer, solid.layer, col.mask, solid.mask)) continue;
-      if (boxOverlaps(col, solid)) {
-        if (body.vy > 0) {
-          obj.transform.y -= col.bottom - solid.top;
-          body.vy = 0;
-          body.grounded = true;
-        } else if (body.vy < 0) {
-          obj.transform.y += solid.bottom - col.top;
-          body.vy = 0;
+  for (let pass = 0; pass < 2; pass++) {
+    let adjusted = false;
+    const cols = getMoverSolidColliders(obj, objectMap);
+    for (const col of cols) {
+      for (const solid of solids) {
+        if (!canLayersCollide(col.layer, solid.layer, col.mask, solid.mask)) continue;
+        if (boxOverlaps(col, solid)) {
+          if (solid.oneWay) {
+            const prevBottom = col.bottom - body.vy * FIXED_DT;
+            if (body.vy >= 0 && prevBottom <= solid.top + 8) {
+              applyStagePushout(obj, 0, -(col.bottom - solid.top), objectMap);
+              body.vy = 0;
+              body.grounded = true;
+              adjusted = true;
+              break;
+            }
+            continue;
+          }
+          if (body.vy >= 0) {
+            applyStagePushout(obj, 0, -(col.bottom - solid.top), objectMap);
+            body.vy = 0;
+            body.grounded = true;
+          } else {
+            applyStagePushout(obj, 0, solid.bottom - col.top, objectMap);
+            body.vy = 0;
+          }
+          adjusted = true;
+          break;
         }
       }
+      if (adjusted) break;
     }
+    if (!adjusted) break;
   }
 }
 
@@ -400,6 +506,7 @@ export function createSimulationState(
   projectVariables: ProjectVariable[] = [],
   options?: {
     prefabs?: PrefabDefinition[];
+    scripts?: NexusScriptAsset[];
     stage?: StageResolution;
     preservedVariables?: Map<string, number | boolean | string>;
     storageAdapter?: StorageAdapter;
@@ -436,7 +543,58 @@ export function createSimulationState(
     prefabMap.set(pf.id, structuredClone(pf));
   }
 
+  const compiledScripts = new Map<string, CompiledScriptEntry>();
+  const runtimeLogs: string[] = [];
+  for (const sc of options?.scripts ?? []) {
+    if (sc.kind === 'script') {
+      const compiled = compileNexusScript(sc);
+      compiledScripts.set(sc.id, compiled);
+      if (compiled.error) {
+        runtimeLogs.push(`Error compilando ${sc.name}: ${compiled.error}`);
+      }
+    }
+  }
+
   const leaderboard = options?.leaderboard ?? loadLeaderboard(options?.storageAdapter);
+
+  const storeAdapter = options?.storageAdapter;
+  const persistence = new PersistenceStore('local_player');
+  if (storeAdapter) {
+    try {
+      const rawSaved = storeAdapter.get('local_player');
+      if (rawSaved) {
+        const parsed = JSON.parse(rawSaved) as Partial<typeof persistence.state>;
+        if (parsed && typeof parsed === 'object') {
+          persistence.state = { ...persistence.state, ...parsed };
+        }
+      }
+    } catch {
+      // Ignore malformed custom adapter save
+    }
+  } else {
+    persistence.loadLocal();
+  }
+  const wiringSys = new EngineWiringSystem(persistence, new PortalBridge('auto'));
+  wiringSys.setSceneContext(scene.sceneContext ?? 'gameplay');
+  wiringSys.wiringLinks = [...(scene.wiringLinks ?? [])];
+  for (const obj of scene.objects) {
+    const ent = wiringSys.createEntity({
+      id: obj.id,
+      name: obj.name,
+      role: obj.role ?? (obj.tags?.includes('Player') || obj.tags?.includes('player') ? 'player' : 'generic'),
+      transform: { x: obj.transform.x, y: obj.transform.y, z: 0, rotY: obj.transform.rotation },
+    });
+    for (const c of obj.components) {
+      if (c.enabled) {
+        const entry = getBehaviorEntry(c.type);
+        const inst = wiringSys.addBehavior(obj.id, c.type, c.config, c.source ?? 'manual');
+        if (inst && (c.contexts || entry?.contexts)) {
+          inst.contexts = c.contexts ?? entry?.contexts ?? ['gameplay'];
+        }
+      }
+    }
+    ent.started = true;
+  }
 
   return {
     scene,
@@ -472,7 +630,7 @@ export function createSimulationState(
     tweenStates: new Map(),
     shakeTimeRemaining: 0,
     shakeIntensity: 0,
-    runtimeLogs: [],
+    runtimeLogs,
     clickedObjectIds: [],
     hoveredObjectId: null,
     emittedEvents: [],
@@ -486,6 +644,17 @@ export function createSimulationState(
     cameraPos: { x: 0, y: 0 },
     prefabMap,
     stage: options?.stage ?? { width: 1280, height: 720 },
+    compiledScripts,
+    scriptObjectData: new Map(),
+    startedScriptBindings: new Set(),
+    scriptActivePairs: new Set(),
+    loggedScriptErrors: new Set(),
+    scriptTweens: [],
+    pendingUiCommands: [],
+    dynamicToasts: [],
+    dynamicWidgets: [],
+    wiringSys,
+    cameraFollowOverrideId: null,
   };
 }
 
@@ -695,11 +864,35 @@ function spawnPrefabInstance(
   });
 }
 
+interface ActionTargetContext {
+  owner?: GameObjectData;
+  other?: GameObjectData;
+}
+
+function resolveActionTarget(
+  ref: unknown,
+  objectMap: Map<string, GameObjectData>,
+  ctx?: ActionTargetContext
+): GameObjectData | undefined {
+  if (!ref) return undefined;
+  const s = String(ref).trim();
+  if (!s) return undefined;
+  if (s === '$self' || s === 'self') return ctx?.owner;
+  if (s === '$other' || s === 'other') return ctx?.other;
+  const direct = objectMap.get(s);
+  if (direct) return direct;
+  for (const o of objectMap.values()) {
+    if (o.name === s) return o;
+  }
+  return undefined;
+}
+
 function executeActionList(
   actions: ActionDefinition[],
   mechId: string,
   state: SimulationState,
-  objectMap: Map<string, GameObjectData>
+  objectMap: Map<string, GameObjectData>,
+  ctx?: ActionTargetContext
 ): void {
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i];
@@ -713,6 +906,8 @@ function executeActionList(
           remainingSec: waitSec,
           actions: remaining,
           mechId,
+          ownerId: ctx?.owner?.id,
+          otherId: ctx?.other?.id,
         });
       }
       break;
@@ -761,6 +956,7 @@ function executeActionList(
           const pitch = basePitch + (randPitch > 0 ? (Math.random() * 2 - 1) * randPitch : 0);
           const channel = (p.channel as 'music' | 'sfx' | 'ui') ?? 'sfx';
           const loop = Boolean(p.loop);
+          const originObj = resolveActionTarget(p.target, objectMap, ctx) ?? ctx?.owner;
           state.soundQueue.push({
             kind: channel === 'music' ? 'musicPlay' : 'asset',
             assetId,
@@ -768,6 +964,8 @@ function executeActionList(
             volume: Math.max(0, Math.min(2, baseVol)),
             pitch: Math.max(0.25, Math.min(3, pitch)),
             loop,
+            spatialX: originObj ? originObj.transform.x : undefined,
+            spatialY: originObj ? originObj.transform.y : undefined,
           });
         }
         break;
@@ -828,7 +1026,7 @@ function executeActionList(
       }
       case 'object.destroy':
       case 'object.hide': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target && target.visible) {
           target.visible = false;
           for (const c of target.components) {
@@ -854,12 +1052,12 @@ function executeActionList(
         break;
       }
       case 'object.show': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target) target.visible = true;
         break;
       }
       case 'object.move': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target) {
           target.transform.x += Number(p.dx ?? 0);
           target.transform.y += Number(p.dy ?? 0);
@@ -867,7 +1065,7 @@ function executeActionList(
         break;
       }
       case 'object.teleport': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target) {
           if (p.toCheckpoint && state.checkpoint) {
             target.transform.x = state.checkpoint.x;
@@ -885,9 +1083,9 @@ function executeActionList(
         break;
       }
       case 'object.spawn': {
-        const tpl = p.target ? objectMap.get(String(p.target)) : undefined;
+        const tpl = resolveActionTarget(p.target, objectMap, ctx);
         if (tpl) {
-          const anchor = p.atObjectId ? objectMap.get(String(p.atObjectId)) : undefined;
+          const anchor = p.atObjectId ? resolveActionTarget(p.atObjectId, objectMap, ctx) : undefined;
           const sx = anchor ? anchor.transform.x + Number(p.offsetX ?? 0) : Number(p.x ?? tpl.transform.x);
           const sy = anchor ? anchor.transform.y + Number(p.offsetY ?? 0) : Number(p.y ?? tpl.transform.y);
           cloneTemplateObject(state, objectMap, tpl, sx, sy);
@@ -895,7 +1093,7 @@ function executeActionList(
         break;
       }
       case 'object.setProperty': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target) {
           const prop = String(p.property ?? 'opacity');
           const val = Number(p.value ?? 1);
@@ -911,8 +1109,8 @@ function executeActionList(
         break;
       }
       case 'object.rotateToward': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
-        const lookAt = p.lookAtTarget ? objectMap.get(String(p.lookAtTarget)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
+        const lookAt = resolveActionTarget(p.lookAtTarget, objectMap, ctx);
         if (target && lookAt) {
           const angle = Math.atan2(
             lookAt.transform.y - target.transform.y,
@@ -923,7 +1121,7 @@ function executeActionList(
         break;
       }
       case 'object.flash': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const color = String(p.color ?? '#ffffff');
         const dur = Math.max(0.05, Number(p.duration ?? 0.18));
         if (target) {
@@ -934,7 +1132,7 @@ function executeActionList(
         break;
       }
       case 'component.toggle': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const compType = String(p.componentType ?? '');
         if (target && compType) {
           for (const c of target.components) {
@@ -946,7 +1144,7 @@ function executeActionList(
         break;
       }
       case 'physics.impulse': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const body = target ? state.bodies.get(target.id) : undefined;
         if (body) {
           body.vx += Number(p.ix ?? 0);
@@ -955,7 +1153,7 @@ function executeActionList(
         break;
       }
       case 'physics.force': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const body = target ? state.bodies.get(target.id) : undefined;
         if (body) {
           body.ax += Number(p.fx ?? 0);
@@ -964,7 +1162,7 @@ function executeActionList(
         break;
       }
       case 'physics.setVelocity': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const body = target ? state.bodies.get(target.id) : undefined;
         if (body) {
           if (p.vx !== undefined && p.vx !== '') body.vx = Number(p.vx);
@@ -973,7 +1171,7 @@ function executeActionList(
         break;
       }
       case 'health.damage': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target) {
           applyDamageToObject(
             state,
@@ -985,7 +1183,7 @@ function executeActionList(
         break;
       }
       case 'health.heal': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const body = target ? state.bodies.get(target.id) : undefined;
         if (body) {
           const heal = Math.max(0, Number(p.amount ?? 20));
@@ -995,7 +1193,7 @@ function executeActionList(
         break;
       }
       case 'animation.play': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target?.sprite?.animation) {
           target.sprite.animation.enabled = true;
           target.sprite.animation.playing = true;
@@ -1004,7 +1202,7 @@ function executeActionList(
         break;
       }
       case 'tween.play': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const trackName = String(p.trackName ?? '').trim();
         if (target?.tweens) {
           for (const tr of target.tweens) {
@@ -1016,7 +1214,7 @@ function executeActionList(
         break;
       }
       case 'state.set': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target) {
           const nextState = String(p.state ?? 'idle');
           const prev = target.stateMachine ?? { currentState: nextState, states: [nextState] };
@@ -1073,7 +1271,7 @@ function executeActionList(
         break;
       }
       case 'checkpoint.save': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         if (target) {
           state.checkpoint = { x: target.transform.x, y: target.transform.y };
         }
@@ -1082,7 +1280,7 @@ function executeActionList(
       case 'prefab.spawn': {
         const pf = p.prefabId ? state.prefabMap.get(String(p.prefabId)) : undefined;
         if (pf) {
-          const anchor = p.atObjectId ? objectMap.get(String(p.atObjectId)) : undefined;
+          const anchor = p.atObjectId ? resolveActionTarget(p.atObjectId, objectMap, ctx) : undefined;
           const sx = anchor ? anchor.transform.x + Number(p.offsetX ?? 0) : Number(p.x ?? 640);
           const sy = anchor ? anchor.transform.y + Number(p.offsetY ?? 0) : Number(p.y ?? 360);
           const spawned = spawnPrefabInstance(pf, sx, sy, state);
@@ -1098,7 +1296,7 @@ function executeActionList(
         break;
       }
       case 'particles.burst': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const x = target ? target.transform.x : Number(p.x ?? 640);
         const y = target ? target.transform.y : Number(p.y ?? 360);
         state.particles.push({
@@ -1112,7 +1310,7 @@ function executeActionList(
         break;
       }
       case 'particles.emit': {
-        const target = p.target ? objectMap.get(String(p.target)) : undefined;
+        const target = resolveActionTarget(p.target, objectMap, ctx);
         const x = target ? target.transform.x : Number(p.x ?? 640);
         const y = target ? target.transform.y : Number(p.y ?? 360);
         const preset = (p.preset as 'explosion' | 'fire' | 'smoke' | 'sparks' | 'magic' | 'dust' | 'rain' | 'snow') ?? 'explosion';
@@ -1181,8 +1379,790 @@ function executeActionList(
         }
         break;
       }
+      case 'script.call': {
+        const methodName = String(p.methodName ?? '').trim();
+        const target = resolveActionTarget(p.target, objectMap, ctx);
+        const scriptId = p.scriptId ? String(p.scriptId) : '';
+        if (!methodName || !state.compiledScripts) break;
+        const callArgsFor = (fn: (...a: unknown[]) => unknown, h: NexusObjectHandle, apiObj: NexusScriptAPI): unknown[] => {
+          if (p.arg !== undefined && p.arg !== '') return [h, p.arg, apiObj];
+          if (fn.length >= 3) return [h, undefined, apiObj];
+          return [h, apiObj];
+        };
+        if (target) {
+          const handle = build2DObjectHandle(target, state, objectMap, {});
+          if (p.arg !== undefined && p.arg !== '') handle.call(methodName, p.arg);
+          else handle.call(methodName);
+        } else if (scriptId) {
+          let invoked = false;
+          for (const obj of state.scene.objects) {
+            const binding = (obj.scriptBindings ?? []).find(
+              (b) => b.enabled && b.scriptId === scriptId
+            );
+            if (!binding) continue;
+            const entry = state.compiledScripts.get(scriptId);
+            const fn = entry?.hooks[methodName];
+            if (typeof fn === 'function') {
+              invoked = true;
+              try {
+                const typedFn = fn as (...a: unknown[]) => unknown;
+                const h = build2DObjectHandle(
+                  obj,
+                  state,
+                  objectMap,
+                  { ...(entry?.hooks.params ?? {}), ...(binding.params ?? {}) }
+                );
+                typedFn(...callArgsFor(typedFn, h, build2DScriptApi(state, objectMap, 0)));
+              } catch (err) {
+                log2DScriptError(state, `${scriptId}:call:${methodName}`, entry?.name ?? scriptId, err);
+              }
+            }
+          }
+          if (!invoked) {
+            const entry = state.compiledScripts.get(scriptId);
+            const fn = entry?.hooks[methodName];
+            if (typeof fn === 'function') {
+              try {
+                const typedFn = fn as (...a: unknown[]) => unknown;
+                const sh = build2DSceneHandle(state, objectMap, { ...(entry?.hooks.params ?? {}) });
+                typedFn(...callArgsFor(typedFn, sh, build2DScriptApi(state, objectMap, 0)));
+              } catch (err) {
+                log2DScriptError(state, `${scriptId}:call:${methodName}`, entry?.name ?? scriptId, err);
+              }
+            }
+          }
+        }
+        break;
+      }
+      case 'ui.openInterface':
+      case 'ui.closeInterface':
+      case 'ui.toggleInterface': {
+        const targetRef = String(p.target ?? p.widgetId ?? '').trim();
+        const op =
+          action.type === 'ui.openInterface'
+            ? 'open'
+            : action.type === 'ui.closeInterface'
+              ? 'close'
+              : 'toggle';
+        const widget = state.scene.objects.find(
+          (o) => o.type === 'ui_widget' && (o.id === targetRef || o.name === targetRef)
+        );
+        if (widget) {
+          widget.visible = op === 'open' ? true : op === 'close' ? false : !widget.visible;
+        }
+        state.pendingUiCommands?.push({ op, target: targetRef });
+        break;
+      }
+      case 'camera.switch': {
+        const targetRef = String(p.cameraId ?? p.target ?? '').trim();
+        const followObj = state.scene.objects.find(
+          (o) => o.id === targetRef || o.name === targetRef
+        );
+        if (followObj && state.scene.cameraConfig) {
+          state.scene.cameraConfig.followObjectId = followObj.id;
+        }
+        break;
+      }
+      case 'vfx.emit': {
+        const target = resolveActionTarget(p.target, objectMap, ctx);
+        const x = target ? target.transform.x : Number(p.x ?? 640);
+        const y = target ? target.transform.y : Number(p.y ?? 360);
+        const defs = getParticlePresetDefaults('sparks');
+        emitParticlesFromConfig(
+          state,
+          x,
+          y,
+          target?.particleEmitter ?? {
+            enabled: true,
+            preset: 'sparks',
+            rate: 30,
+            maxParticles: 120,
+            speedMin: defs.speedMin ?? 80,
+            speedMax: defs.speedMax ?? 220,
+            angleDeg: defs.angleDeg ?? 0,
+            spreadDeg: defs.spreadDeg ?? 360,
+            gravity: defs.gravity ?? 120,
+            sizeStart: defs.sizeStart ?? 6,
+            sizeEnd: defs.sizeEnd ?? 1,
+            lifetime: defs.lifetime ?? 0.5,
+            colorStart: String(p.color ?? defs.colorStart ?? '#fde047'),
+            colorEnd: defs.colorEnd ?? '#dc2626',
+            blendAlpha: defs.blendAlpha ?? 1,
+          },
+          Math.max(4, Math.min(48, Number(p.count ?? 18)))
+        );
+        break;
+      }
+      case 'dialogue.start': {
+        const dId = String(p.dialogueId ?? p.target ?? '').trim();
+        if (dId) {
+          state.pendingDialogueId = dId;
+        }
+        break;
+      }
+      case 'i18n.setLocale': {
+        const loc = String(p.locale ?? 'es');
+        if (loc === 'es' || loc === 'en' || loc === 'pt') {
+          state.pendingLocale = loc;
+        }
+        break;
+      }
     }
   }
+}
+
+function log2DScriptError(
+  state: SimulationState,
+  errorKey: string,
+  scriptName: string,
+  err: unknown
+): void {
+  if (!state.loggedScriptErrors) state.loggedScriptErrors = new Set();
+  if (state.loggedScriptErrors.has(errorKey)) return;
+  state.loggedScriptErrors.add(errorKey);
+  const msg = `Script ${scriptName}: ${err instanceof Error ? err.message : String(err)}`;
+  state.runtimeLogs.push(msg);
+  if (state.runtimeLogs.length > 60) state.runtimeLogs.shift();
+}
+
+function build2DScriptApi(
+  state: SimulationState,
+  objectMap: Map<string, GameObjectData>,
+  dt: number,
+  input?: InputState
+): NexusScriptAPI {
+  const playSfxFn = (id: string, vol = 1) => {
+    const knownPresets = new Set(['coin', 'jump', 'hit', 'powerup', 'step', 'win']);
+    if (knownPresets.has(id)) {
+      state.soundQueue.push({
+        kind: 'synth',
+        preset: id as PendingSoundEvent['preset'],
+        channel: 'sfx',
+        volume: vol,
+      });
+    } else {
+      state.soundQueue.push({ kind: 'asset', assetId: id, channel: 'sfx', volume: vol });
+    }
+  };
+  return {
+    dt,
+    time: state.elapsed,
+    findByName: (name) => {
+      const f = state.scene.objects.find((o) => o.visible && o.name === name);
+      return f ? build2DObjectHandle(f, state, objectMap, {}, input) : null;
+    },
+    findById: (id) => {
+      const f = objectMap.get(id);
+      return f && f.visible ? build2DObjectHandle(f, state, objectMap, {}, input) : null;
+    },
+    findByTag: (tag) =>
+      state.scene.objects
+        .filter((o) => o.visible && o.tags?.includes(tag))
+        .map((o) => build2DObjectHandle(o, state, objectMap, {}, input)),
+    getAll: () =>
+      state.scene.objects
+        .filter((o) => o.visible)
+        .map((o) => build2DObjectHandle(o, state, objectMap, {}, input)),
+    spawnPrefab: (nameOrId, x = 640, y = 360) => {
+      const pf = Array.from(state.prefabMap.values()).find(
+        (p) => p.id === nameOrId || p.name === nameOrId
+      );
+      if (pf) {
+        const list = spawnPrefabInstance(pf, x, y, state);
+        for (const sp of list) objectMap.set(sp.id, sp);
+        return list[0] ? build2DObjectHandle(list[0], state, objectMap, {}, input) : null;
+      }
+      return null;
+    },
+    destroyById: (id) => {
+      const f = objectMap.get(id);
+      if (f) f.visible = false;
+    },
+    emitEvent: (evName) => {
+      if (evName) state.emittedEvents.push(evName);
+    },
+    log: (msg) => {
+      state.runtimeLogs.push(String(msg));
+      if (state.runtimeLogs.length > 60) state.runtimeLogs.shift();
+    },
+    vars: {
+      get: (name) => state.variables.get(name),
+      set: (name, value) => {
+        state.variables.set(name, value);
+        persistVariableIfNeeded(state, name, value);
+        if ((name === 'puntos' || name === 'score') && typeof value === 'number') state.score = value;
+      },
+      add: (name, delta) => {
+        const next = (Number(state.variables.get(name) ?? 0) || 0) + delta;
+        state.variables.set(name, next);
+        persistVariableIfNeeded(state, name, next);
+        if (name === 'puntos' || name === 'score') state.score = next;
+        return next;
+      },
+    },
+    audio: {
+      play: playSfxFn,
+      playSfx: playSfxFn,
+      playMusic: (id, vol = 0.8) => {
+        state.soundQueue.push({ kind: 'musicPlay', assetId: id, channel: 'music', volume: vol, loop: true });
+      },
+      stopMusic: () => state.soundQueue.push({ kind: 'musicStop', channel: 'music' }),
+      setBusVolume: (bus, vol) =>
+        state.soundQueue.push({ kind: 'setVolume', channel: 'sfx', setChannel: bus, volume: vol }),
+      setBusMuted: (bus, muted) =>
+        state.soundQueue.push({ kind: 'setVolume', channel: 'sfx', setChannel: bus, volume: muted ? 0 : 1 }),
+    },
+    particles: {
+      burst: (x, y, presetOrColor = '#fde047', countOrPreset = 16, maybeCount) => {
+        const count =
+          typeof countOrPreset === 'number'
+            ? countOrPreset
+            : typeof maybeCount === 'number'
+              ? maybeCount
+              : 16;
+        const rawStyle =
+          typeof presetOrColor === 'string'
+            ? presetOrColor
+            : typeof countOrPreset === 'string'
+              ? countOrPreset
+              : '#fde047';
+        const color = rawStyle.startsWith('#') ? rawStyle : '#fde047';
+        state.particles.push({
+          x,
+          y,
+          color,
+          count: Math.max(4, Math.min(40, Number(count) || 14)),
+          age: 0,
+          duration: 0.45,
+        });
+      },
+    },
+    vfx: {
+      emit: (opts) => {
+        const tgt =
+          typeof opts.target === 'string'
+            ? state.scene.objects.find((o) => o.id === opts.target || o.name === opts.target)
+            : opts.target?.id
+              ? objectMap.get(opts.target.id)
+              : undefined;
+        const x = opts.x ?? tgt?.transform.x ?? 640;
+        const y = opts.y ?? tgt?.transform.y ?? 360;
+        const presetId = (opts.preset ?? 'sparks') as 'fire' | 'smoke' | 'sparks' | 'magic' | 'explosion' | 'liquid' | 'waterfall' | 'ripple';
+        const defs = getParticlePresetDefaults(presetId);
+        emitParticlesFromConfig(
+          state,
+          x,
+          y,
+          {
+            enabled: true,
+            preset: presetId,
+            rate: defs.rate ?? 30,
+            maxParticles: defs.maxParticles ?? 140,
+            speedMin: defs.speedMin ?? 80,
+            speedMax: defs.speedMax ?? 220,
+            angleDeg: defs.angleDeg ?? -90,
+            spreadDeg: defs.spreadDeg ?? 360,
+            gravity: defs.gravity ?? 120,
+            sizeStart: defs.sizeStart ?? 6,
+            sizeEnd: defs.sizeEnd ?? 1,
+            lifetime: defs.lifetime ?? 0.6,
+            colorStart: opts.color ?? defs.colorStart ?? '#fde047',
+            colorEnd: defs.colorEnd ?? '#dc2626',
+            blendAlpha: defs.blendAlpha ?? 1,
+            particleShape: defs.particleShape,
+            emitterShape: defs.emitterShape,
+          },
+          Math.max(4, Math.min(60, Number(opts.count ?? 20)))
+        );
+      },
+      spawnBurst: (x, y, zOrPreset = 'sparks', presetOrColor, count = 20) => {
+        const rawStyle = typeof zOrPreset === 'string' ? zOrPreset : presetOrColor ?? 'sparks';
+        const isHex = rawStyle.startsWith('#');
+        const presetId = (!isHex ? rawStyle : 'sparks') as 'fire' | 'smoke' | 'sparks' | 'magic' | 'explosion' | 'liquid' | 'waterfall' | 'ripple';
+        const defs = getParticlePresetDefaults(presetId);
+        emitParticlesFromConfig(
+          state,
+          x,
+          y,
+          {
+            enabled: true,
+            preset: presetId,
+            rate: defs.rate ?? 30,
+            maxParticles: defs.maxParticles ?? 140,
+            speedMin: defs.speedMin ?? 80,
+            speedMax: defs.speedMax ?? 220,
+            angleDeg: defs.angleDeg ?? -90,
+            spreadDeg: defs.spreadDeg ?? 360,
+            gravity: defs.gravity ?? 120,
+            sizeStart: defs.sizeStart ?? 6,
+            sizeEnd: defs.sizeEnd ?? 1,
+            lifetime: defs.lifetime ?? 0.6,
+            colorStart: (isHex ? rawStyle : defs.colorStart) ?? '#fde047',
+            colorEnd: defs.colorEnd ?? '#dc2626',
+            blendAlpha: defs.blendAlpha ?? 1,
+            particleShape: defs.particleShape,
+          },
+          Math.max(4, Math.min(60, Number(count) || 20))
+        );
+      },
+    },
+    tween: (target, props, durationSec = 0.35) => {
+      const targetId = typeof target === 'string' ? target : target?.id;
+      const obj = targetId
+        ? state.scene.objects.find((o) => o.id === targetId || o.name === targetId)
+        : undefined;
+      if (!obj) return;
+      const from: Record<string, number> = {};
+      const to: Record<string, number> = {};
+      for (const [k, v] of Object.entries(props)) {
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+        to[k] = v;
+        if (k === 'x') from[k] = obj.transform.x;
+        else if (k === 'y') from[k] = obj.transform.y;
+        else if (k === 'rotation' || k === 'rz') from[k] = obj.transform.rotation;
+        else if (k === 'scaleX') from[k] = obj.transform.scaleX;
+        else if (k === 'scaleY') from[k] = obj.transform.scaleY;
+        else if (k === 'opacity') from[k] = obj.opacity;
+      }
+      if (!state.scriptTweens) state.scriptTweens = [];
+      state.scriptTweens.push({
+        targetId: obj.id,
+        elapsed: 0,
+        duration: Math.max(0.02, durationSec),
+        from,
+        to,
+      });
+    },
+    camera: {
+      shake: (intensity = 8, duration = 0.25) => {
+        state.shakeIntensity = Math.max(state.shakeIntensity, intensity);
+        state.shakeTimeRemaining = Math.max(state.shakeTimeRemaining, duration);
+      },
+      switchCamera: (targetNameOrId) => {
+        const followObj = state.scene.objects.find(
+          (o) => o.id === targetNameOrId || o.name === targetNameOrId
+        );
+        if (followObj && state.scene.cameraConfig) {
+          state.scene.cameraConfig.followObjectId = followObj.id;
+        }
+      },
+      getForward: () => ({ x: 1, y: 0, z: 0 }),
+      getRight: () => ({ x: 1, y: 0, z: 0 }),
+      setPosition: (x, y) => {
+        if (Number.isFinite(x)) state.cameraPos.x = x;
+        if (Number.isFinite(y)) state.cameraPos.y = y;
+      },
+      lookAt: (x, y) => {
+        if (Number.isFinite(x)) state.cameraPos.x = x - state.stage.width * 0.5;
+        if (Number.isFinite(y)) state.cameraPos.y = y - state.stage.height * 0.5;
+      },
+      blendTo: (opts) => {
+        if (opts.x !== undefined) state.cameraPos.x = opts.x;
+        if (opts.y !== undefined) state.cameraPos.y = opts.y;
+      },
+    },
+    scene: {
+      load: (sceneRef) => {
+        state.pendingSceneCommand = { kind: 'load', sceneId: sceneRef, transition: 'fadeBlack' };
+      },
+      restart: () => {
+        state.pendingSceneCommand = { kind: 'restart', transition: 'fadeBlack' };
+      },
+      nextLevel: () => {
+        state.pendingSceneCommand = { kind: 'nextLevel', transition: 'fadeBlack' };
+      },
+    },
+    ui: {
+      open: (target) => {
+        const w = state.scene.objects.find((o) => o.type === 'ui_widget' && (o.id === target || o.name === target));
+        if (w) w.visible = true;
+        state.pendingUiCommands?.push({ op: 'open', target });
+      },
+      close: (target) => {
+        const w = state.scene.objects.find((o) => o.type === 'ui_widget' && (o.id === target || o.name === target));
+        if (w) w.visible = false;
+        state.pendingUiCommands?.push({ op: 'close', target });
+      },
+      toggle: (target) => {
+        const w = state.scene.objects.find((o) => o.type === 'ui_widget' && (o.id === target || o.name === target));
+        if (w) w.visible = !w.visible;
+        state.pendingUiCommands?.push({ op: 'toggle', target });
+      },
+      showToast: (text, durationSec = 2.5) => {
+        if (!state.dynamicToasts) state.dynamicToasts = [];
+        const clean = String(text ?? '').trim();
+        if (!clean) return;
+        state.dynamicToasts.push({ id: createId('toast'), text: clean, remaining: Math.max(0.4, durationSec) });
+        if (state.dynamicToasts.length > 5) state.dynamicToasts.shift();
+      },
+      createWidget: (id, html, opts) => {
+        if (!state.dynamicWidgets) state.dynamicWidgets = [];
+        const idx = state.dynamicWidgets.findIndex((w) => w.id === id);
+        const entry = { id, html: String(html ?? ''), x: opts?.x ?? 24, y: opts?.y ?? 24, css: opts?.css, visible: true };
+        if (idx >= 0) state.dynamicWidgets[idx] = entry;
+        else state.dynamicWidgets.push(entry);
+      },
+      updateWidget: (id, patch) => {
+        const w = state.dynamicWidgets?.find((item) => item.id === id);
+        if (!w) return;
+        if (patch.html !== undefined) w.html = patch.html;
+        if (patch.text !== undefined) w.html = patch.text;
+        if (patch.visible !== undefined) w.visible = Boolean(patch.visible);
+      },
+      removeWidget: (id) => {
+        if (!state.dynamicWidgets) return;
+        const idx = state.dynamicWidgets.findIndex((item) => item.id === id);
+        if (idx >= 0) state.dynamicWidgets.splice(idx, 1);
+      },
+      clearWidgets: () => {
+        if (state.dynamicWidgets) state.dynamicWidgets.length = 0;
+      },
+    },
+    spawn: {
+      clone: (nameOrId, x = 640, y = 360) => {
+        const tpl = state.scene.objects.find((o) => o.id === nameOrId || o.name === nameOrId);
+        if (tpl) {
+          const sp = cloneTemplateObject(state, objectMap, tpl, x, y);
+          return build2DObjectHandle(sp, state, objectMap, {}, input);
+        }
+        return build2DScriptApi(state, objectMap, dt, input).spawnPrefab(nameOrId, x, y);
+      },
+      primitive: (shape, opts = {}) => {
+        const id = createId('prim2d');
+        const size = Math.max(16, Number(opts.sx ?? 1) * 48);
+        const hSize = Math.max(16, Number(opts.sy ?? 1) * 48);
+        const obj: GameObjectData = {
+          id,
+          name: opts.name || `Forma_${state.scene.objects.length + 1}`,
+          type: shape === 'sphere' ? 'circle' : 'rectangle',
+          parentId: null,
+          visible: true,
+          locked: false,
+          opacity: 1,
+          layer: 'World',
+          tags: ['spawned'],
+          transform: {
+            x: Number(opts.x ?? 640),
+            y: Number(opts.y ?? 360),
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            width: size,
+            height: hSize,
+            anchorX: 0.5,
+            anchorY: 0.5,
+          },
+          rectangle: shape !== 'sphere' ? { fillColor: opts.color || '#38bdf8', strokeColor: '#ffffff', strokeWidth: 0, cornerRadius: 4 } : undefined,
+          circle: shape === 'sphere' ? { fillColor: opts.color || '#38bdf8', strokeColor: '#ffffff', strokeWidth: 0, radius: size * 0.5 } : undefined,
+          components: opts.physics === false ? [] : [{ id: createId('cmp'), type: opts.dynamic ? 'rigidbody_box' : 'solid', enabled: true, config: {} }],
+        };
+        state.scene.objects.push(obj);
+        objectMap.set(id, obj);
+        state.bodies.set(id, createBodyForObject(obj));
+        return build2DObjectHandle(obj, state, objectMap, {}, input);
+      },
+    },
+    world: {
+      raycast: (ox, oy, _oz, dx, dy, _dz, maxDist = 800) => {
+        const dLen = Math.hypot(dx, dy) || 1;
+        const ndx = dx / dLen;
+        const ndy = dy / dLen;
+        const steps = 32;
+        for (let s = 1; s <= steps; s++) {
+          const dist = (maxDist * s) / steps;
+          const px = ox + ndx * dist;
+          const py = oy + ndy * dist;
+          for (const cand of state.scene.objects) {
+            if (!cand.visible) continue;
+            const cols = getWorldColliders(cand, objectMap);
+            if (cols.some((c) => px >= c.left && px <= c.right && py >= c.top && py <= c.bottom)) {
+              return { hit: true, objectId: cand.id, objectName: cand.name, distance: dist, x: px, y: py, z: 0 };
+            }
+          }
+        }
+        return { hit: false, distance: maxDist, x: ox + ndx * maxDist, y: oy + ndy * maxDist, z: 0 };
+      },
+      getTerrainHeight: () => 0,
+    },
+    lights: {
+      setSun: (opts) => {
+        if (!state.scene.lighting) return;
+        if (opts.intensity !== undefined) state.scene.lighting.ambientIntensity = opts.intensity;
+        if (opts.color !== undefined) state.scene.lighting.ambientColor = opts.color;
+      },
+      setLight: (nameOrId, opts) => {
+        const lObj = state.scene.objects.find((o) => o.id === nameOrId || o.name === nameOrId);
+        if (!lObj || !lObj.light2d) return;
+        if (opts.intensity !== undefined) lObj.light2d.intensity = opts.intensity;
+        if (opts.color !== undefined) lObj.light2d.color = opts.color;
+        if (opts.distance !== undefined) lObj.light2d.radius = opts.distance;
+        if (opts.visible !== undefined) lObj.visible = Boolean(opts.visible);
+      },
+    },
+    input: {
+      isHeld: (k) => (input ? isKeyPressed(k, input) : false),
+      justPressed: (k) => (input ? isKeyPressed(k, input) && !isKeyPressed(k, state.prevInput) : false),
+      getAxis: () => {
+        if (!input) return { x: 0, y: 0 };
+        const kx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+        const ky = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+        const ax = Math.abs(input.axisX ?? 0) > 0.05 ? Number(input.axisX) : kx;
+        const ay = Math.abs(input.axisY ?? 0) > 0.05 ? Number(input.axisY) : ky;
+        return { x: ax, y: ay };
+      },
+    },
+  };
+}
+
+function build2DSceneHandle(
+  state: SimulationState,
+  objectMap: Map<string, GameObjectData>,
+  params: Record<string, unknown>,
+  input?: InputState
+): NexusObjectHandle {
+  if (!state.scriptObjectData) state.scriptObjectData = new Map();
+  const key = `__scene__:${state.scene.id}`;
+  let data = state.scriptObjectData.get(key);
+  if (!data) {
+    data = {};
+    state.scriptObjectData.set(key, data);
+  }
+  return {
+    get id() { return state.scene.id; },
+    get name() { return state.scene.name; },
+    get type() { return 'scene'; },
+    get tags() { return ['scene']; },
+    x: 0,
+    y: 0,
+    z: 0,
+    rx: 0,
+    ry: 0,
+    rz: 0,
+    rotation: 0,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    scaleX: 1,
+    scaleY: 1,
+    scaleZ: 1,
+    opacity: 1,
+    visible: true,
+    isGrounded: false,
+    speed: 0,
+    data,
+    params,
+    hasTag: (tag) => tag === 'scene',
+    addTag: () => {},
+    removeTag: () => {},
+    moveTowards: () => {},
+    applyImpulse: () => {},
+    setVelocity: () => {},
+    playAnim: () => {},
+    setAnimState: () => {},
+    playState: () => {},
+    call(methodName, ...args) {
+      if (!state.compiledScripts) return undefined;
+      for (const sid of state.scene.scriptIds ?? []) {
+        const entry = state.compiledScripts.get(sid);
+        const fn = entry?.hooks[methodName];
+        if (typeof fn === 'function') {
+          return (fn as (...a: unknown[]) => unknown)(
+            build2DSceneHandle(state, objectMap, { ...(entry?.hooks.params ?? {}) }, input),
+            ...args,
+            build2DScriptApi(state, objectMap, 0, input)
+          );
+        }
+      }
+      return undefined;
+    },
+    destroy: () => {},
+  };
+}
+
+function build2DObjectHandle(
+  obj: GameObjectData,
+  state: SimulationState,
+  objectMap: Map<string, GameObjectData>,
+  params: Record<string, unknown>,
+  input?: InputState
+): NexusObjectHandle {
+  const body = state.bodies.get(obj.id);
+  if (!state.scriptObjectData) state.scriptObjectData = new Map();
+  let data = state.scriptObjectData.get(obj.id);
+  if (!data) {
+    data = {};
+    state.scriptObjectData.set(obj.id, data);
+  }
+  return {
+    get id() { return obj.id; },
+    get name() { return obj.name; },
+    get type() { return obj.type; },
+    get tags() { return obj.tags ?? []; },
+    get x() { return obj.transform.x; },
+    set x(v: number) { if (Number.isFinite(v)) obj.transform.x = v; },
+    get y() { return obj.transform.y; },
+    set y(v: number) { if (Number.isFinite(v)) obj.transform.y = v; },
+    get z() { return 0; },
+    set z(_v: number) {},
+    get rx() { return 0; },
+    set rx(_v: number) {},
+    get ry() { return 0; },
+    set ry(_v: number) {},
+    get rz() { return obj.transform.rotation; },
+    set rz(v: number) { if (Number.isFinite(v)) obj.transform.rotation = v; },
+    get rotation() { return obj.transform.rotation; },
+    set rotation(v: number) { if (Number.isFinite(v)) obj.transform.rotation = v; },
+    get vx() { return body?.vx ?? 0; },
+    set vx(v: number) {
+      if (body && Number.isFinite(v)) {
+        body.vx = v;
+        (body as BodyPhysicsState & { scriptVelocityDriven?: boolean }).scriptVelocityDriven = true;
+      }
+    },
+    get vy() { return body?.vy ?? 0; },
+    set vy(v: number) {
+      if (body && Number.isFinite(v)) {
+        body.vy = v;
+        (body as BodyPhysicsState & { scriptVelocityDriven?: boolean }).scriptVelocityDriven = true;
+      }
+    },
+    get vz() { return 0; },
+    set vz(_v: number) {},
+    get scaleX() { return obj.transform.scaleX; },
+    set scaleX(v: number) { if (Number.isFinite(v)) obj.transform.scaleX = v; },
+    get scaleY() { return obj.transform.scaleY; },
+    set scaleY(v: number) { if (Number.isFinite(v)) obj.transform.scaleY = v; },
+    get scaleZ() { return 1; },
+    set scaleZ(_v: number) {},
+    get opacity() { return obj.opacity; },
+    set opacity(v: number) { if (Number.isFinite(v)) obj.opacity = v; },
+    get visible() { return obj.visible; },
+    set visible(v: boolean) { obj.visible = Boolean(v); },
+    get isGrounded() { return Boolean(body?.grounded); },
+    get speed() { return body ? Math.hypot(body.vx, body.vy) : 0; },
+    data,
+    params,
+    hasTag(tag) {
+      return Array.isArray(obj.tags) && obj.tags.includes(tag);
+    },
+    addTag(tag) {
+      if (!Array.isArray(obj.tags)) obj.tags = [];
+      if (tag && !obj.tags.includes(tag)) obj.tags.push(tag);
+    },
+    removeTag(tag) {
+      if (Array.isArray(obj.tags)) obj.tags = obj.tags.filter((t) => t !== tag);
+    },
+    moveTowards(
+      targetOrX: { x: number; y: number; z?: number } | number,
+      speedOrY: number,
+      dtOrMaxStep: number,
+      maybeDt?: number
+    ) {
+      let tx = obj.transform.x;
+      let ty = obj.transform.y;
+      let maxStep = 0;
+      if (typeof targetOrX === 'object' && targetOrX !== null) {
+        tx = Number(targetOrX.x ?? obj.transform.x);
+        ty = Number(targetOrX.y ?? obj.transform.y);
+        maxStep = Number(speedOrY || 0) * Number(dtOrMaxStep || 0);
+      } else {
+        tx = Number(targetOrX);
+        ty = Number(speedOrY);
+        maxStep = maybeDt !== undefined ? Number(dtOrMaxStep || 0) * Number(maybeDt || 0) : Number(dtOrMaxStep || 0);
+      }
+      if (!Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(maxStep) || maxStep <= 0) return;
+      const dx = tx - obj.transform.x;
+      const dy = ty - obj.transform.y;
+      const d = Math.hypot(dx, dy);
+      if (d > 0.001) {
+        const s = Math.min(d, maxStep);
+        obj.transform.x += (dx / d) * s;
+        obj.transform.y += (dy / d) * s;
+      }
+    },
+    applyImpulse(ix, iy) {
+      if (body) {
+        body.vx += Number(ix || 0);
+        body.vy += Number(iy || 0);
+        (body as BodyPhysicsState & { scriptVelocityDriven?: boolean }).scriptVelocityDriven = true;
+      }
+    },
+    setVelocity(vx, vy) {
+      if (body) {
+        body.vx = Number(vx || 0);
+        body.vy = Number(vy || 0);
+        (body as BodyPhysicsState & { scriptVelocityDriven?: boolean }).scriptVelocityDriven = true;
+      }
+    },
+    playAnim(clipName) {
+      if (obj.sprite?.animation) {
+        obj.sprite.animation.activeClip = clipName;
+        obj.sprite.animation.playing = true;
+      }
+    },
+    setAnimState(stateName) {
+      const states = obj.animStateMachine?.states ?? [];
+      const matched = states.find((s) => s.name === stateName || s.id === stateName);
+      const resolvedName = matched?.name ?? stateName;
+      obj.stateMachine = {
+        currentState: resolvedName,
+        states: states.map((s) => s.name),
+      };
+      if (obj.sprite) {
+        if (!obj.sprite.animation) {
+          obj.sprite.animation = {
+            enabled: true,
+            cols: matched?.cols ?? 4,
+            rows: matched?.rows ?? 1,
+            frameCount: matched?.frameCount ?? 4,
+            fps: 8,
+            loop: true,
+            playing: true,
+          };
+        }
+        const anim = obj.sprite.animation;
+        anim.enabled = true;
+        anim.playing = true;
+        anim.activeClip = matched?.clipName ?? stateName;
+        if (matched) {
+          anim.fsmActiveState = {
+            stateName: matched.name,
+            assetId: matched.assetId ?? obj.sprite.assetId,
+            cols: matched.cols ?? anim.cols ?? 4,
+            rows: matched.rows ?? anim.rows ?? 1,
+            startFrame: matched.startFrame ?? 0,
+            frameCount: matched.frameCount ?? anim.frameCount ?? 4,
+            fps: Math.max(1, (anim.fps || 8) * Math.max(0.1, matched.timeScale || 1)),
+            loop: matched.loopMode !== 'LoopOnce',
+          };
+        }
+      }
+    },
+    playState(stateName) {
+      this.setAnimState(stateName);
+    },
+    call(methodName, ...args) {
+      if (!state.compiledScripts) return undefined;
+      for (const b of obj.scriptBindings ?? []) {
+        if (!b.enabled) continue;
+        const entry = state.compiledScripts.get(b.scriptId);
+        const fn = entry?.hooks[methodName];
+        if (typeof fn === 'function') {
+          const typedFn = fn as (...a: unknown[]) => unknown;
+          const h = build2DObjectHandle(obj, state, objectMap, { ...(entry?.hooks.params ?? {}), ...(b.params ?? {}) }, input);
+          const apiObj = build2DScriptApi(state, objectMap, 0, input);
+          if (args.length === 0 && typedFn.length >= 3) {
+            return typedFn(h, undefined, apiObj);
+          }
+          return typedFn(h, ...args, apiObj);
+        }
+      }
+      return undefined;
+    },
+    destroy() {
+      obj.visible = false;
+    },
+  };
 }
 
 export function stepSimulationFixed(
@@ -1220,6 +2200,12 @@ export function stepSimulation(
   const dt = Math.min(Math.max(dtRaw, 0), 0.05);
   state.elapsed += dt;
 
+  if (state.dynamicToasts && state.dynamicToasts.length > 0) {
+    for (let i = state.dynamicToasts.length - 1; i >= 0; i--) {
+      state.dynamicToasts[i].remaining -= dt;
+      if (state.dynamicToasts[i].remaining <= 0) state.dynamicToasts.splice(i, 1);
+    }
+  }
   if (state.shakeTimeRemaining > 0) {
     state.shakeTimeRemaining = Math.max(0, state.shakeTimeRemaining - dt);
   }
@@ -1241,7 +2227,9 @@ export function stepSimulation(
 
   const objects = state.scene.objects;
   const objectMap = new Map(objects.map((o) => [o.id, o]));
-  const solids = collectSolidBoxes(objects);
+  const damageZones: Array<{ left: number; right: number; top: number; bottom: number; dps: number }> = [];
+  const solids = collectSolidBoxes(objects, objectMap, damageZones);
+  state.tileDamageZones = damageZones;
 
   // Actualizar temporizadores de espera (Wait)
   if (state.pendingWaits.length > 0) {
@@ -1249,7 +2237,14 @@ export function stepSimulation(
     for (const w of state.pendingWaits) {
       w.remainingSec -= dt;
       if (w.remainingSec <= 0) {
-        executeActionList(w.actions, w.mechId, state, objectMap);
+        const waitCtx =
+          w.ownerId || w.otherId
+            ? {
+                owner: w.ownerId ? objectMap.get(w.ownerId) : undefined,
+                other: w.otherId ? objectMap.get(w.otherId) : undefined,
+              }
+            : undefined;
+        executeActionList(w.actions, w.mechId, state, objectMap, waitCtx);
       } else {
         stillWaiting.push(w);
       }
@@ -1329,6 +2324,20 @@ export function stepSimulation(
   const zeroHealthObjectIds = new Set<string>();
   const wasKeyFn = (code: string) => isKeyPressed(code, state.prevInput);
 
+  let gridNav2dCache: GridNav2D | null = null;
+  let solidObjectsCache: GameObjectData[] | null = null;
+  const ensureNav2d = () => {
+    if (!gridNav2dCache) {
+      gridNav2dCache = buildGridNav2D(state.scene, Math.max(1280, state.stage.width), Math.max(720, state.stage.height), 32);
+    }
+    if (!solidObjectsCache) {
+      solidObjectsCache = objects.filter(
+        (o) => o.visible && o.components.some((c) => c.enabled && c.type === 'solid')
+      );
+    }
+    return { nav: gridNav2dCache, solidObjs: solidObjectsCache };
+  };
+
   // 1. Tweens + Comportamientos autónomos + Proyectiles
   for (const obj of objects) {
     if (!obj.visible) continue;
@@ -1364,19 +2373,58 @@ export function stepSimulation(
           body.vy = dt > 0 ? (obj.transform.y - prevY) / dt : 0;
         }
       } else if (comp.type === 'chase_player' && players.length > 0) {
-        const speed = Number(comp.config.speed ?? 130);
+        const baseSpeed = Number(comp.config.speed ?? 130);
         const detectRadius = Number(comp.config.detectRadius ?? 420);
         const stopDistance = Number(comp.config.stopDistance ?? 36);
         const target = players[0];
+        const targetBody = state.bodies.get(target.id);
+        const fleeRatio = Number(comp.config.fleeHealthRatio ?? obj.aiAgent?.fleeHealthRatio ?? 0.25);
+        const insistRatio = Number(comp.config.insistDamageRatio ?? obj.aiAgent?.insistDamageRatio ?? 0.45);
+        const myHpRatio = body.maxHealth > 0 ? body.health / body.maxHealth : 1;
+        const targetHpRatio = targetBody && targetBody.maxHealth > 0 ? targetBody.health / targetBody.maxHealth : 1;
+        const isFleeing = myHpRatio <= fleeRatio;
+        const isInsisting = !isFleeing && targetHpRatio <= insistRatio;
+
         const dx = target.transform.x - obj.transform.x;
         const dy = target.transform.y - obj.transform.y;
         const dist = Math.hypot(dx, dy);
-        if (dist <= detectRadius && dist > stopDistance && dist > 0.001) {
-          obj.transform.x += (dx / dist) * speed * dt;
-          obj.transform.y += (dy / dist) * speed * dt;
-          body.vx = (dx / dist) * speed;
-          body.vy = (dy / dist) * speed;
-          if (obj.sprite) obj.sprite.flipX = dx < 0;
+
+        const visionFov = Number(comp.config.visionFovDeg ?? obj.aiAgent?.visionFovDeg ?? 140);
+        const facingX = obj.sprite?.flipX ? -1 : 1;
+        const cosHalfFov = Math.cos(((Math.min(360, visionFov) * 0.5) * Math.PI) / 180);
+        const dot = dist > 0.001 ? (dx / dist) * facingX : 1;
+        const inCone = visionFov >= 359 || dot >= cosHalfFov || dist <= 96;
+        const { nav, solidObjs } = ensureNav2d();
+        const requireLos = comp.config.requireLineOfSight === true;
+        const hasLos =
+          !requireLos ||
+          hasLineOfSight2D(
+            { x: obj.transform.x, y: obj.transform.y },
+            { x: target.transform.x, y: target.transform.y },
+            solidObjs
+          );
+
+        if ((isFleeing || (inCone && hasLos)) && dist <= detectRadius && (isFleeing || dist > stopDistance) && dist > 0.001) {
+          let goalX = isFleeing ? obj.transform.x - dx : target.transform.x;
+          let goalY = isFleeing ? obj.transform.y - dy : target.transform.y;
+          if (!isFleeing && !hasLineOfSight2D({ x: obj.transform.x, y: obj.transform.y }, { x: target.transform.x, y: target.transform.y }, solidObjs)) {
+            const path = findPath2D(nav, { x: obj.transform.x, y: obj.transform.y }, { x: target.transform.x, y: target.transform.y });
+            if (path.length > 0) {
+              goalX = path[0].x;
+              goalY = path[0].y;
+            }
+          }
+          const gx = goalX - obj.transform.x;
+          const gy = goalY - obj.transform.y;
+          const gLen = Math.hypot(gx, gy) || 1;
+          const spd = isFleeing ? baseSpeed * 1.12 : isInsisting ? baseSpeed * 1.25 : baseSpeed;
+          body.vx = (gx / gLen) * spd;
+          body.vy = (gy / gLen) * spd;
+          obj.transform.x += body.vx * dt;
+          resolveAxisHorizontal(obj, body, solids, objectMap);
+          obj.transform.y += body.vy * dt;
+          resolveAxisVertical(obj, body, solids, objectMap);
+          if (obj.sprite) obj.sprite.flipX = body.vx < 0;
         } else {
           body.vx = 0;
           body.vy = 0;
@@ -1385,7 +2433,7 @@ export function stepSimulation(
         obj.transform.x += body.vx * dt;
         obj.transform.y += body.vy * dt;
         if (comp.config.destroyOnSolid) {
-          const pCols = getWorldColliders(obj);
+          const pCols = getWorldColliders(obj, objectMap);
           if (
             solids.some((sb) =>
               pCols.some((pc) => pc.left < sb.right && pc.right > sb.left && pc.top < sb.bottom && pc.bottom > sb.top)
@@ -1398,7 +2446,7 @@ export function stepSimulation(
         if (obj.visible) {
           const ownerId = String(comp.config.ownerId ?? '');
           const dmg = Number(comp.config.damage ?? 25);
-          const pCols = getWorldColliders(obj);
+          const pCols = getWorldColliders(obj, objectMap);
           for (const target of objects) {
             if (!target.visible || target.id === obj.id || target.id === ownerId) continue;
             const isEnemyProj = obj.layer === 'Enemy';
@@ -1411,7 +2459,7 @@ export function stepSimulation(
                 (c.type === 'health' || c.type === 'combat.health_system' || c.type === 'arcade.destructible')
             );
             if (!canTakeDmg) continue;
-            const tCols = getWorldColliders(target);
+            const tCols = getWorldColliders(target, objectMap);
             if (
               pCols.some((pc) =>
                 tCols.some((tc) => pc.left < tc.right && pc.right > tc.left && pc.top < tc.bottom && pc.bottom > tc.top)
@@ -1441,22 +2489,35 @@ export function stepSimulation(
           }
         }
       } else {
-        stepExtendedObjectBehavior({
-          obj,
-          comp,
-          state,
-          objectMap,
-          players,
-          input,
-          hasKey: isKeyPressed,
-          wasKey: wasKeyFn,
-          clickedIds: clickedSet,
-          solids,
-          resolveHorizontal: (o) => resolveAxisHorizontal(o, state.bodies.get(o.id)!, solids),
-          resolveVertical: (o) => resolveAxisVertical(o, state.bodies.get(o.id)!, solids),
-          dt,
-          stage: state.stage,
-        });
+        const sceneCtx = state.scene.sceneContext ?? 'gameplay';
+        const regEntry = getBehaviorEntry(comp.type);
+        const allowedCtxs = comp.contexts ?? regEntry?.contexts;
+        const isMenuOnlyScene = sceneCtx === 'menu' || sceneCtx === 'pause';
+        const contextAllows =
+          !allowedCtxs || allowedCtxs.length === 0
+            ? !isMenuOnlyScene || comp.type.startsWith('ui.') || comp.type.startsWith('audio.') || comp.type.startsWith('portal.') || comp.type.startsWith('persistence.')
+            : allowedCtxs.includes(sceneCtx) ||
+              (sceneCtx === 'gameplay' && allowedCtxs.includes('open_world')) ||
+              (sceneCtx === 'open_world' && allowedCtxs.includes('gameplay'));
+
+        if (contextAllows) {
+          stepExtendedObjectBehavior({
+            obj,
+            comp,
+            state,
+            objectMap,
+            players,
+            input,
+            hasKey: isKeyPressed,
+            wasKey: wasKeyFn,
+            clickedIds: clickedSet,
+            solids,
+            resolveHorizontal: (o) => resolveAxisHorizontal(o, state.bodies.get(o.id)!, solids, objectMap),
+            resolveVertical: (o) => resolveAxisVertical(o, state.bodies.get(o.id)!, solids, objectMap),
+            dt,
+            stage: state.stage,
+          });
+        }
       }
     }
 
@@ -1482,9 +2543,15 @@ export function stepSimulation(
         body.vx *= damp;
       }
       obj.transform.x += body.vx * dt;
-      resolveAxisHorizontal(obj, body, solids);
+      resolveAxisHorizontal(obj, body, solids, objectMap);
       obj.transform.y += body.vy * dt;
-      resolveAxisVertical(obj, body, solids);
+      resolveAxisVertical(obj, body, solids, objectMap);
+    } else if (
+      !isControlledPlayer &&
+      (body as BodyPhysicsState & { scriptVelocityDriven?: boolean }).scriptVelocityDriven
+    ) {
+      obj.transform.x += body.vx * dt;
+      obj.transform.y += body.vy * dt;
     }
   }
 
@@ -1511,9 +2578,11 @@ export function stepSimulation(
       const gravity = Number(cfg.gravity ?? 1320);
       const maxJumps = Math.max(1, Number(cfg.maxJumps ?? 2));
       const coyoteMax = Number(cfg.coyoteTime ?? 0.12);
-      const moveInput =
+      const keyMove =
         (isKeyPressed('ArrowRight', input) || isKeyPressed('KeyD', input) || input.right ? 1 : 0) -
         (isKeyPressed('ArrowLeft', input) || isKeyPressed('KeyA', input) || input.left ? 1 : 0);
+      const moveInput =
+        keyMove !== 0 ? keyMove : Math.abs(input.axisX ?? 0) > 0.05 ? Number(input.axisX) : 0;
 
       const dashKey = String(cfg.dashKey ?? 'ShiftLeft');
       const dashActKey = `ppro_dash:${obj.id}`;
@@ -1567,7 +2636,7 @@ export function stepSimulation(
       if (moveInput > 0 && obj.sprite) obj.sprite.flipX = false;
 
       obj.transform.x += body.vx * dt;
-      const hitWall = resolveAxisHorizontal(obj, body, solids);
+      const hitWall = resolveAxisHorizontal(obj, body, solids, objectMap);
 
       // Wall-slide & Wall-jump
       const wallSliding = Boolean(
@@ -1606,10 +2675,12 @@ export function stepSimulation(
       }
 
       obj.transform.y += body.vy * dt;
-      resolveAxisVertical(obj, body, solids);
+      resolveAxisVertical(obj, body, solids, objectMap);
     } else if (plat) {
       const params = resolvePlatformerConfig(plat.config);
-      const moveInput = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+      const keyMove = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+      const moveInput =
+        keyMove !== 0 ? keyMove : Math.abs(input.axisX ?? 0) > 0.05 ? Number(input.axisX) : 0;
 
       if (body.grounded) {
         body.coyoteTimer = params.coyoteTime;
@@ -1659,7 +2730,7 @@ export function stepSimulation(
       body.ay = 0;
 
       obj.transform.x += body.vx * dt;
-      const hitWall = resolveAxisHorizontal(obj, body, solids);
+      const hitWall = resolveAxisHorizontal(obj, body, solids, objectMap);
 
       // Complemento opcional movement.wall_slide
       const wallSlideComp = obj.components.find((c) => c.enabled && c.type === 'movement.wall_slide');
@@ -1672,15 +2743,17 @@ export function stepSimulation(
       }
 
       obj.transform.y += body.vy * dt;
-      resolveAxisVertical(obj, body, solids);
+      resolveAxisVertical(obj, body, solids, objectMap);
     } else if (topdown) {
       const params = resolveTopDownConfig(topdown.config);
-      let mx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-      let my = (input.down ? 1 : 0) - (input.up ? 1 : 0);
-      if (mx !== 0 && my !== 0) {
-        const inv = 1 / Math.SQRT2;
-        mx *= inv;
-        my *= inv;
+      const keyMx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+      const keyMy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+      let mx = keyMx !== 0 ? keyMx : Math.abs(input.axisX ?? 0) > 0.05 ? Number(input.axisX) : 0;
+      let my = keyMy !== 0 ? keyMy : Math.abs(input.axisY ?? 0) > 0.05 ? Number(input.axisY) : 0;
+      const mag = Math.hypot(mx, my);
+      if (mag > 1) {
+        mx /= mag;
+        my /= mag;
       }
       const rateX = mx !== 0 ? params.acceleration : params.deceleration;
       const rateY = my !== 0 ? params.acceleration : params.deceleration;
@@ -1693,20 +2766,128 @@ export function stepSimulation(
       if (mx > 0 && obj.sprite) obj.sprite.flipX = false;
 
       obj.transform.x += body.vx * dt;
-      resolveAxisHorizontal(obj, body, solids);
+      resolveAxisHorizontal(obj, body, solids, objectMap);
 
       obj.transform.y += body.vy * dt;
-      resolveAxisVertical(obj, body, solids);
+      resolveAxisVertical(obj, body, solids, objectMap);
     }
   }
 
-  // 3. Vincular animaciones automáticamente al movimiento
+  // 3. Evaluar Máquina de Estados de Animación 2D y/o vincular reproducción al movimiento
   for (const obj of objects) {
-    if (!obj.visible || obj.type !== 'sprite' || !obj.sprite?.animation?.enabled) continue;
-    const anim = obj.sprite.animation;
-    if (!anim.linkToMovement) continue;
+    if (!obj.visible || obj.type !== 'sprite' || !obj.sprite) continue;
     const body = state.bodies.get(obj.id);
     if (!body) continue;
+
+    const fsm = obj.animStateMachine;
+    if (fsm && fsm.states.length > 0) {
+      const curState =
+        obj.sprite.animation?.fsmActiveState?.stateName ??
+        obj.stateMachine?.currentState ??
+        '';
+      const animTimerKey = `fsm_t:${obj.id}`;
+      const animElapsed = state.runtimeTimers.get(animTimerKey) ?? 0;
+      const curNode = fsm.states.find((s) => s.name === curState || s.id === curState);
+      const baseFps = obj.sprite.animation?.fps || 8;
+      const curFps = Math.max(1, baseFps * Math.max(0.1, curNode?.timeScale ?? 1));
+      const curFrames = Math.max(1, curNode?.frameCount ?? obj.sprite.animation?.frameCount ?? 4);
+      const clipDuration = curFrames / curFps;
+      const animProgress = curNode ? Math.min(1, animElapsed / Math.max(0.05, clipDuration)) : 0;
+      const animFinished = Boolean(
+        curNode && curNode.loopMode === 'LoopOnce' && animElapsed >= clipDuration
+      );
+
+      const justPressed2d = new Set<string>();
+      if (input.justPressedKeys) {
+        for (const k of input.justPressedKeys) justPressed2d.add(k);
+      }
+      if (input.pressedKeys) {
+        const prevSet2d =
+          state.prevInput.pressedKeys instanceof Set
+            ? state.prevInput.pressedKeys
+            : new Set(state.prevInput.pressedKeys ?? []);
+        for (const k of input.pressedKeys) {
+          if (!prevSet2d.has(k)) justPressed2d.add(k);
+        }
+      }
+
+      const res = stepAnimationFSM(fsm, curState, {
+        speed: Math.hypot(body.vx, body.vy),
+        vy: -body.vy,
+        isGrounded: body.grounded,
+        animFinished,
+        animProgress,
+        heldKeys: input.pressedKeys,
+        justPressedKeys: justPressed2d,
+        variables: state.variables,
+      });
+      if (res) {
+        if (res.changed || !obj.sprite.animation?.fsmActiveState) {
+          state.runtimeTimers.set(animTimerKey, 0);
+          if (!obj.sprite.animation) {
+            obj.sprite.animation = {
+              enabled: true,
+              cols: res.node.cols ?? 4,
+              rows: res.node.rows ?? 1,
+              frameCount: res.node.frameCount ?? 4,
+              fps: 8,
+              loop: true,
+              playing: true,
+            };
+          }
+          const anim = obj.sprite.animation;
+          anim.enabled = true;
+          anim.playing = true;
+          anim.activeClip = res.clipName;
+          anim.fsmActiveState = {
+            stateName: res.stateName,
+            assetId: res.node.assetId ?? obj.sprite.assetId,
+            cols: res.node.cols ?? anim.cols,
+            rows: res.node.rows ?? anim.rows,
+            startFrame: res.node.startFrame ?? 0,
+            frameCount: res.node.frameCount ?? anim.frameCount,
+            fps: Math.max(1, (anim.fps || 8) * Math.max(0.1, res.timeScale)),
+            loop: res.loopMode !== 'LoopOnce',
+          };
+          obj.stateMachine = {
+            currentState: res.stateName,
+            states: fsm.states.map((s) => s.name),
+          };
+        } else {
+          const nextEl = animElapsed + dt;
+          state.runtimeTimers.set(animTimerKey, nextEl);
+          // Disparar Animation Frame Events 2D
+          const evList = [
+            ...(res.node.frameEvents ?? []),
+            ...(obj.sprite.frameEvents ?? []),
+          ];
+          if (evList.length > 0) {
+            const prevFrame = Math.floor(animElapsed * curFps) % curFrames;
+            const curFrame = Math.floor(nextEl * curFps) % curFrames;
+            if (curFrame !== prevFrame || animElapsed === 0) {
+              for (const fe of evList) {
+                if (fe.frameIndex === curFrame) {
+                  if (fe.eventName) state.emittedEvents.push(fe.eventName);
+                  if (fe.soundAssetId) {
+                    state.soundQueue.push({
+                      kind: 'asset',
+                      assetId: fe.soundAssetId,
+                      channel: 'sfx',
+                      spatialX: obj.transform.x,
+                      spatialY: obj.transform.y,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+        continue;
+      }
+    }
+
+    const anim = obj.sprite.animation;
+    if (!anim?.enabled || !anim.linkToMovement) continue;
 
     const hasPlatformer = obj.components.some(
       (c) => c.enabled && (c.type === 'player_platformer' || c.type === 'movement.platformer_pro')
@@ -1743,13 +2924,13 @@ export function stepSimulation(
     }
   }
   if (players.length > 0) {
-    const playerCols = players.map((p) => ({ obj: p, cols: getWorldColliders(p) }));
+    const playerCols = players.map((p) => ({ obj: p, cols: getWorldColliders(p, objectMap) }));
     for (const obj of objects) {
       if (!obj.visible) continue;
       const cp = obj.components.find((c) => c.enabled && c.type === 'checkpoint');
       const goal = obj.components.find((c) => c.enabled && c.type === 'goal_portal');
       if (!cp && !goal) continue;
-      const objCols = getWorldColliders(obj);
+      const objCols = getWorldColliders(obj, objectMap);
       const hit = playerCols.some(({ cols }) =>
         cols.some((pc) =>
           objCols.some(
@@ -1782,6 +2963,16 @@ export function stepSimulation(
         }
       }
     }
+    if (damageZones.length > 0) {
+      for (const { obj: p, cols } of playerCols) {
+        const dzHit = damageZones.find((dz) =>
+          cols.some((pc) => pc.left < dz.right && pc.right > dz.left && pc.top < dz.bottom && pc.bottom > dz.top)
+        );
+        if (dzHit) {
+          applyDamageToObject(state, p, Math.max(1, dzHit.dps * 0.25), 0.35);
+        }
+      }
+    }
   }
 
   // 5. Evaluar reglas estructuradas (GameMechanic[])
@@ -1811,6 +3002,7 @@ export function stepSimulation(
   for (const mech of mechanics) {
     let triggered = false;
     const ev = mech.trigger.event;
+    const collisionPairs: ActionTargetContext[] = [];
 
     if (ev === 'scene.start' && !state.sceneStarted) {
       triggered = true;
@@ -1886,10 +3078,10 @@ export function stepSimulation(
 
       if (targetObjs.length > 0 && sources.length > 0) {
         for (const targetObj of targetObjs) {
-          const targetCols = getWorldColliders(targetObj);
+          const targetCols = getWorldColliders(targetObj, objectMap);
           for (const src of sources) {
             if (src.id === targetObj.id) continue;
-            const srcCols = getWorldColliders(src);
+            const srcCols = getWorldColliders(src, objectMap);
             const overlapsNow = srcCols.some((sc) =>
               targetCols.some(
                 (tc) =>
@@ -1909,11 +3101,14 @@ export function stepSimulation(
               nextSet.add(pairKey);
               if ((ev === 'collision.enter' || ev === 'trigger.enter') && !prevSet.has(pairKey)) {
                 triggered = true;
+                collisionPairs.push({ owner: src, other: targetObj });
               } else if (ev === 'collision.stay') {
                 triggered = true;
+                collisionPairs.push({ owner: src, other: targetObj });
               }
             } else if ((ev === 'collision.exit' || ev === 'trigger.exit') && prevSet.has(pairKey)) {
               triggered = true;
+              collisionPairs.push({ owner: src, other: targetObj });
             }
           }
         }
@@ -1921,7 +3116,232 @@ export function stepSimulation(
     }
 
     if (triggered && evaluateConditions(mech, state, objectMap, input)) {
-      executeActionList(mech.actions, mech.id, state, objectMap);
+      if (collisionPairs.length > 0) {
+        for (const pair of collisionPairs) {
+          executeActionList(mech.actions, mech.id, state, objectMap, pair);
+        }
+      } else {
+        executeActionList(mech.actions, mech.id, state, objectMap);
+      }
+    }
+  }
+
+  // 5b. Ejecutar Scripts JS de Escena y Objetos + parpadeo de luces 2D
+  for (const obj of objects) {
+    if (!obj.visible || obj.type !== 'light_2d' || !obj.light2d) continue;
+    const flick = obj.components.find((c) => c.enabled && c.type === 'lighting.flicker');
+    if (flick) {
+      const spd = Number(flick.config.speed ?? 8);
+      const amt = Number(flick.config.amount ?? 0.25);
+      const base = (obj.light2d as unknown as { __baseIntensity?: number }).__baseIntensity ?? obj.light2d.intensity;
+      (obj.light2d as unknown as { __baseIntensity?: number }).__baseIntensity = base;
+      obj.light2d.intensity = Math.max(0.1, base * (1 + Math.sin(state.elapsed * spd) * amt));
+    }
+  }
+
+  // Actualizar tweens creados por scripts (nexus.tween)
+  if (state.scriptTweens && state.scriptTweens.length > 0) {
+    const activeTweens = [];
+    for (const tw of state.scriptTweens) {
+      tw.elapsed += dt;
+      const t = Math.min(1, tw.elapsed / Math.max(0.01, tw.duration));
+      const ease = 1 - Math.pow(1 - t, 2);
+      const target = objectMap.get(tw.targetId);
+      if (target) {
+        for (const [k, toVal] of Object.entries(tw.to)) {
+          const fromVal = tw.from[k] ?? toVal;
+          const v = fromVal + (toVal - fromVal) * ease;
+          if (k === 'x') target.transform.x = v;
+          else if (k === 'y') target.transform.y = v;
+          else if (k === 'rotation' || k === 'rz') target.transform.rotation = v;
+          else if (k === 'scaleX') target.transform.scaleX = v;
+          else if (k === 'scaleY') target.transform.scaleY = v;
+          else if (k === 'opacity') target.opacity = Math.max(0, Math.min(1, v));
+        }
+      }
+      if (t < 1) activeTweens.push(tw);
+    }
+    state.scriptTweens = activeTweens;
+  }
+
+  if (state.compiledScripts && state.compiledScripts.size > 0) {
+    const api = build2DScriptApi(state, objectMap, dt, input);
+    if (!state.startedScriptBindings) state.startedScriptBindings = new Set();
+    if (!state.scriptActivePairs) state.scriptActivePairs = new Set();
+
+    // 5b-1. onStart para scripts de escena (funciona incluso en escenas vacías)
+    for (const sid of state.scene.scriptIds ?? []) {
+      const e = state.compiledScripts.get(sid);
+      if (!e || e.error) continue;
+      const startKey = `scene:${state.scene.id}:${sid}`;
+      if (!state.startedScriptBindings.has(startKey)) {
+        state.startedScriptBindings.add(startKey);
+        if (typeof e.hooks.onStart === 'function') {
+          try {
+            e.hooks.onStart(build2DSceneHandle(state, objectMap, { ...(e.hooks.params ?? {}) }, input), api);
+          } catch (err) {
+            log2DScriptError(state, `${startKey}:onStart`, e.name, err);
+          }
+        }
+      }
+    }
+
+    // 5b-2. onStart para cada binding en objetos (incluidos prefabs recién generados)
+    for (const obj of [...objects]) {
+      if (!obj.visible) continue;
+      for (const b of obj.scriptBindings ?? []) {
+        if (!b.enabled) continue;
+        const e = state.compiledScripts.get(b.scriptId);
+        if (!e || e.error) continue;
+        const startKey = `obj:${obj.id}:${b.id}`;
+        if (!state.startedScriptBindings.has(startKey)) {
+          state.startedScriptBindings.add(startKey);
+          if (typeof e.hooks.onStart === 'function') {
+            try {
+              e.hooks.onStart(
+                build2DObjectHandle(obj, state, objectMap, { ...(e.hooks.params ?? {}), ...(b.params ?? {}) }, input),
+                api
+              );
+            } catch (err) {
+              log2DScriptError(state, `${startKey}:onStart`, e.name, err);
+            }
+          }
+        }
+      }
+    }
+
+    // 5b-3. Colisiones 2D onCollisionEnter simétricas para objetos con scriptBindings
+    const nextScriptPairs = new Set<string>();
+    const scriptColliderObjects = objects.filter(
+      (o) => o.visible && o.type !== 'ui_widget'
+    );
+    const hasCollisionHooks = scriptColliderObjects.some((o) =>
+      (o.scriptBindings ?? []).some((b) => {
+        if (!b.enabled) return false;
+        const e = state.compiledScripts?.get(b.scriptId);
+        return typeof e?.hooks.onCollisionEnter === 'function';
+      })
+    );
+    if (hasCollisionHooks) {
+      const boxCache = new Map<string, WorldCollider[]>();
+      const getBoxes = (o: GameObjectData) => {
+        let cols = boxCache.get(o.id);
+        if (!cols) {
+          cols = getWorldColliders(o, objectMap);
+          boxCache.set(o.id, cols);
+        }
+        return cols;
+      };
+      for (let i = 0; i < scriptColliderObjects.length; i++) {
+        const a = scriptColliderObjects[i];
+        const aHas = (a.scriptBindings ?? []).some(
+          (b) => b.enabled && typeof state.compiledScripts?.get(b.scriptId)?.hooks.onCollisionEnter === 'function'
+        );
+        const aCols = getBoxes(a);
+        if (aCols.length === 0) continue;
+        for (let j = i + 1; j < scriptColliderObjects.length; j++) {
+          const bObj = scriptColliderObjects[j];
+          const bHas = (bObj.scriptBindings ?? []).some(
+            (b) => b.enabled && typeof state.compiledScripts?.get(b.scriptId)?.hooks.onCollisionEnter === 'function'
+          );
+          if (!aHas && !bHas) continue;
+          const bCols = getBoxes(bObj);
+          if (bCols.length === 0) continue;
+          const overlaps = aCols.some((ac) =>
+            bCols.some(
+              (bc) =>
+                canLayersCollide(ac.layer, bc.layer, ac.mask, bc.mask) &&
+                ac.left < bc.right &&
+                ac.right > bc.left &&
+                ac.top < bc.bottom &&
+                ac.bottom > bc.top
+            )
+          );
+          if (!overlaps) continue;
+          const pairKey = a.id < bObj.id ? `${a.id}|${bObj.id}` : `${bObj.id}|${a.id}`;
+          nextScriptPairs.add(pairKey);
+          if (!state.scriptActivePairs.has(pairKey)) {
+            for (const bind of a.scriptBindings ?? []) {
+              if (!bind.enabled) continue;
+              const ent = state.compiledScripts.get(bind.scriptId);
+              if (typeof ent?.hooks.onCollisionEnter === 'function') {
+                try {
+                  ent.hooks.onCollisionEnter(
+                    build2DObjectHandle(a, state, objectMap, { ...(ent.hooks.params ?? {}), ...(bind.params ?? {}) }, input),
+                    build2DObjectHandle(bObj, state, objectMap, {}, input),
+                    api
+                  );
+                } catch (err) {
+                  log2DScriptError(state, `${a.id}:${bind.scriptId}:onCollisionEnter`, ent.name, err);
+                }
+              }
+            }
+            for (const bind of bObj.scriptBindings ?? []) {
+              if (!bind.enabled) continue;
+              const ent = state.compiledScripts.get(bind.scriptId);
+              if (typeof ent?.hooks.onCollisionEnter === 'function') {
+                try {
+                  ent.hooks.onCollisionEnter(
+                    build2DObjectHandle(bObj, state, objectMap, { ...(ent.hooks.params ?? {}), ...(bind.params ?? {}) }, input),
+                    build2DObjectHandle(a, state, objectMap, {}, input),
+                    api
+                  );
+                } catch (err) {
+                  log2DScriptError(state, `${bObj.id}:${bind.scriptId}:onCollisionEnter`, ent.name, err);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    state.scriptActivePairs = nextScriptPairs;
+
+    // 5b-4. onUpdate de escena
+    for (const sid of state.scene.scriptIds ?? []) {
+      const e = state.compiledScripts.get(sid);
+      if (e && !e.error && typeof e.hooks.onUpdate === 'function') {
+        try {
+          e.hooks.onUpdate(
+            build2DSceneHandle(state, objectMap, { ...(e.hooks.params ?? {}) }, input),
+            dt,
+            api
+          );
+        } catch (err) {
+          log2DScriptError(state, `scene:${sid}:onUpdate`, e.name, err);
+        }
+      }
+    }
+
+    // 5b-5. onUpdate y onClick por objeto
+    for (const obj of [...objects]) {
+      if (!obj.visible) continue;
+      for (const b of obj.scriptBindings ?? []) {
+        if (!b.enabled) continue;
+        const e = state.compiledScripts.get(b.scriptId);
+        if (!e || e.error) continue;
+        if (typeof e.hooks.onUpdate === 'function') {
+          try {
+            e.hooks.onUpdate(
+              build2DObjectHandle(obj, state, objectMap, { ...(e.hooks.params ?? {}), ...(b.params ?? {}) }, input),
+              dt,
+              api
+            );
+          } catch (err) {
+            log2DScriptError(state, `${obj.id}:${b.scriptId}:onUpdate`, e.name, err);
+          }
+        }
+        if (clickedSet.has(obj.id) && typeof e.hooks.onClick === 'function') {
+          try {
+            e.hooks.onClick(
+              build2DObjectHandle(obj, state, objectMap, { ...(e.hooks.params ?? {}), ...(b.params ?? {}) }, input),
+              api
+            );
+          } catch (err) {
+            log2DScriptError(state, `${obj.id}:${b.scriptId}:onClick`, e.name, err);
+          }
+        }
+      }
     }
   }
 
@@ -1938,7 +3358,7 @@ export function stepSimulation(
 
   // 6. Coleccionables simples y magnetizados
   if (players.length > 0) {
-    const playerCols = players.map((p) => getWorldColliders(p));
+    const playerCols = players.map((p) => getWorldColliders(p, objectMap));
     for (const obj of objects) {
       if (!obj.visible || collisionHandledIds.has(obj.id)) continue;
       const col = obj.components.find(
@@ -1947,7 +3367,7 @@ export function stepSimulation(
           (c.type === 'collectible' || c.type === 'arcade.collectible_magnet_target')
       );
       if (!col) continue;
-      const objCols = getWorldColliders(obj);
+      const objCols = getWorldColliders(obj, objectMap);
       const touched = playerCols.some((pCols) =>
         pCols.some((pc) =>
           objCols.some(
@@ -1988,11 +3408,13 @@ export function stepSimulation(
   // 7. Partículas continuas de emisores
   stepEmitterParticles(state, dt);
 
-  // 8. Cámara de seguimiento suave (Camera2D o componente juice.camera_follow)
+  // 8. Cámara de seguimiento suave (Camera2D o componente juice.camera_follow / override por cable)
   const camCfg = state.scene.cameraConfig;
-  const followObj = camCfg?.followObjectId
-    ? objectMap.get(camCfg.followObjectId)
-    : objects.find((o) => o.visible && o.components.some((c) => c.enabled && c.type === 'juice.camera_follow'));
+  const followObj =
+    (state.cameraFollowOverrideId ? objectMap.get(state.cameraFollowOverrideId) : null) ??
+    (camCfg?.followObjectId
+      ? objectMap.get(camCfg.followObjectId)
+      : objects.find((o) => o.visible && o.components.some((c) => c.enabled && c.type === 'juice.camera_follow')));
 
   if (followObj) {
     const followComp = followObj.components.find(

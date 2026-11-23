@@ -8,23 +8,29 @@ import {
 } from '../../assistant/diagnostics/diagnosticAnalyzer';
 import {
   duplicateObjectsByIds,
+  groupObjectsInFolder,
   moveSiblingOrder,
   removeObjectsByIds,
   reparentObject,
+  ungroupFolder,
   updateObjectById,
 } from '../../engine/core/sceneGraph';
 import type {
   AudioBusSettings,
   CameraState,
+  DataTableDef,
+  DialogueGraph,
   EditorTool,
   GameMechanic,
   GameObjectData,
   GameObjectType,
+  I18nConfig,
   ProjectVariable,
   SceneData,
   SceneKind,
 } from '../../engine/core/types';
 import { createGameObject } from '../../engine/objects/factory';
+import { extractScriptParamsSchema } from '../../engine/scripting/scriptRuntime';
 import { compileProjectToHtml5Zip } from '../../export/html5/html5Compiler';
 import type { Html5CompileOptions } from '../../export/html5/portalSdks';
 import { exportProjectToZip, triggerBlobDownload } from '../../export/zipExporter';
@@ -39,7 +45,9 @@ import {
 } from '../../history/historyManager';
 import type {
   NexusProject,
+  NexusScriptAsset,
   PrefabDefinition,
+  ProjectAssetMeta,
   ProjectFolder,
   ProjectSettings,
 } from '../../project/models/project';
@@ -53,6 +61,7 @@ import { ExportModal } from '../export/ExportModal';
 import { InspectorPanel } from '../inspector/InspectorPanel';
 import { LeftSidebar } from '../panels/LeftSidebar';
 import { PreviewModal } from '../preview/PreviewModal';
+import { ThreeStageViewport } from '../three3d/ThreeStageViewport';
 import { ProjectSettingsModal } from '../toolbar/ProjectSettingsModal';
 import { TopToolbar } from '../toolbar/TopToolbar';
 import { BottomStatusBar } from './BottomStatusBar';
@@ -69,14 +78,22 @@ interface EditorWorkspaceProps {
 type RightTab = 'inspector' | 'assistant';
 
 function isEditableTarget(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  if (!el) return false;
-  return (
-    el.tagName === 'INPUT' ||
-    el.tagName === 'TEXTAREA' ||
-    el.tagName === 'SELECT' ||
-    el.isContentEditable
-  );
+  const active =
+    typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+  const candidates = [target as HTMLElement | null, active];
+  for (const el of candidates) {
+    if (!el || typeof el.tagName !== 'string') continue;
+    if (
+      el.tagName === 'INPUT' ||
+      el.tagName === 'TEXTAREA' ||
+      el.tagName === 'SELECT' ||
+      el.isContentEditable ||
+      Boolean(el.closest?.('input, textarea, select, [contenteditable="true"], [role="dialog"]'))
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
@@ -249,6 +266,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     (type: GameObjectType) => {
       const { activeScene: scene, project: proj } = actionsRef.current;
       const firstImg = proj.assets.find((a) => (a.kind ?? 'image') === 'image');
+      const firstGlb = proj.assets.find((a) => a.kind === 'model3d');
       const defaultAssetId = type === 'sprite' && firstImg ? firstImg.id : null;
       const assetMeta = defaultAssetId ? firstImg : undefined;
 
@@ -259,6 +277,10 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         height: assetMeta?.height,
         assetId: defaultAssetId,
       });
+
+      if (type === 'mesh_3d' && created.mesh3d && firstGlb && !created.mesh3d.glbAssetId) {
+        // Solo asigna GLB si no se eligió una forma modular explícita; el creador estándar crea una caja lista.
+      }
 
       updateActiveSceneCommitted((s) => ({
         ...s,
@@ -377,12 +399,12 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
 
   // Gestión de recursos (importar imágenes/audio, añadir sprite, eliminar, limpiar)
   const handleImportFiles = useCallback(
-    async (files: File[]) => {
+    async (files: File[]): Promise<ProjectAssetMeta[]> => {
       const { imported, errors } = await importImageFiles(files);
       if (errors.length > 0) {
         onNotify('error', errors.join('\n'));
       }
-      if (imported.length === 0) return;
+      if (imported.length === 0) return [];
 
       const currentProj = actionsRef.current.history.present;
       try {
@@ -416,8 +438,37 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
           'success',
           `${imported.length} ${imported.length === 1 ? 'recurso importado' : 'recursos importados'} correctamente.`
         );
+        return imported.map((i) => i.meta);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Error al guardar recursos';
+        onNotify('error', msg);
+        return [];
+      }
+    },
+    [commitProjectChange, onNotify]
+  );
+
+  const handleCreateGeneratedAsset = useCallback(
+    async (meta: ProjectAssetMeta, blob: Blob) => {
+      const currentProj = actionsRef.current.history.present;
+      try {
+        await nexusStorage.saveAssetBlob(currentProj.id, meta.id, blob, meta.mimeType);
+        setAssetBlobs((prev) => {
+          const next = new Map(prev);
+          next.set(meta.id, blob);
+          return next;
+        });
+        const nextProject: NexusProject = {
+          ...currentProj,
+          assets: [...currentProj.assets, meta],
+        };
+        commitProjectChange(nextProject);
+        await nexusStorage.saveProject(nextProject);
+        setIsDirty(false);
+        setSaveStatus('saved');
+        onNotify('success', `Audio "${meta.filename}" generado y guardado en Recursos.`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Error al guardar el archivo generado';
         onNotify('error', msg);
       }
     },
@@ -432,6 +483,38 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         currentProj.scenes[0];
       const asset = currentProj.assets.find((a) => a.id === assetId);
       if (!asset || asset.kind === 'audio') return;
+
+      if (asset.kind === 'model3d') {
+        const modelObj = createGameObject('mesh_3d', scene.objects, {
+          name: asset.name,
+        });
+        modelObj.mesh3d = {
+          shape: 'glb',
+          color: '#ffffff',
+          metalness: 0.1,
+          roughness: 0.7,
+          castShadow: true,
+          receiveShadow: true,
+          glbAssetId: asset.id,
+        };
+        modelObj.transform3d = {
+          x: 0,
+          y: 0.5,
+          z: 0,
+          rx: 0,
+          ry: 0,
+          rz: 0,
+          sx: 1,
+          sy: 1,
+          sz: 1,
+        };
+        updateActiveSceneCommitted((s) => ({
+          ...s,
+          objects: [...s.objects, modelObj],
+        }));
+        setSelectedIds([modelObj.id]);
+        return;
+      }
 
       const sprite = createGameObject('sprite', scene.objects, {
         name: asset.name,
@@ -449,6 +532,121 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
       setSelectedIds([sprite.id]);
     },
     [updateActiveSceneCommitted]
+  );
+
+  const handleAssignAssetToSelected = useCallback(
+    (assetId: string) => {
+      const currentProj = actionsRef.current.history.present;
+      const asset = currentProj.assets.find((a) => a.id === assetId);
+      if (!asset || selectedIds.length !== 1) return;
+      const targetId = selectedIds[0];
+
+      updateActiveSceneCommitted((s) => ({
+        ...s,
+        objects: updateObjectById(s.objects, targetId, (prev) => {
+          if (asset.kind === 'model3d') {
+            if (prev.type === 'mesh_3d') {
+              return {
+                ...prev,
+                mesh3d: {
+                  ...(prev.mesh3d ?? {
+                    shape: 'glb',
+                    color: '#ffffff',
+                    metalness: 0.15,
+                    roughness: 0.65,
+                    castShadow: true,
+                    receiveShadow: true,
+                  }),
+                  shape: 'glb',
+                  glbAssetId: asset.id,
+                  clipNames: undefined,
+                },
+              };
+            }
+            if (prev.type === 'container' || prev.type === 'sprite') {
+              const had2dPlayer = prev.components.some(
+                (c) => c.enabled && (c.type === 'player_platformer' || c.type === 'player_topdown')
+              );
+              const has3dPlayer = prev.components.some((c) => c.type === 'player_3d');
+              const nextComponents =
+                had2dPlayer && !has3dPlayer
+                  ? [
+                      ...prev.components,
+                      {
+                        id: createId('cmp'),
+                        type: 'player_3d',
+                        enabled: true,
+                        config: { speed: 6.5, jumpForce: 8.5, jumpSoundAssetId: '' },
+                      },
+                    ]
+                  : prev.components;
+              const isMovable =
+                nextComponents.some(
+                  (c) =>
+                    c.enabled &&
+                    (c.type === 'player_3d' ||
+                      c.type === 'chase_player' ||
+                      c.type === 'ai.enemy_chaser')
+                ) || Boolean(prev.aiAgent?.enabled);
+              return {
+                ...prev,
+                type: 'mesh_3d',
+                transform3d: prev.transform3d ?? {
+                  x: 0,
+                  y: 0.5,
+                  z: 0,
+                  rx: 0,
+                  ry: 0,
+                  rz: 0,
+                  sx: 1,
+                  sy: 1,
+                  sz: 1,
+                },
+                mesh3d: {
+                  shape: 'glb',
+                  color: '#ffffff',
+                  metalness: 0.15,
+                  roughness: 0.65,
+                  castShadow: true,
+                  receiveShadow: true,
+                  glbAssetId: asset.id,
+                },
+                physics3d: prev.physics3d ?? {
+                  enabled: true,
+                  bodyType: isMovable && !prev.parentId ? 'dynamic' : 'static',
+                  shape: has3dPlayer || had2dPlayer ? 'capsule' : 'box',
+                  mass: 1,
+                  gravityScale: 1,
+                  restitution: 0.1,
+                  friction: 0.6,
+                },
+                components: nextComponents,
+              };
+            }
+          }
+          if ((asset.kind ?? 'image') === 'image') {
+            if (prev.type === 'sprite' && prev.sprite) {
+              return {
+                ...prev,
+                sprite: { ...prev.sprite, assetId: asset.id },
+              };
+            }
+            if (prev.type === 'mesh_3d' && prev.mesh3d) {
+              return {
+                ...prev,
+                mesh3d: { ...prev.mesh3d, textureAssetId: asset.id },
+              };
+            }
+          }
+          return prev;
+        }),
+      }));
+      onNotify(
+        'success',
+        `Recurso "${asset.name}" asignado manteniendo posición, jerarquía y mecánicas.`
+      );
+    },
+    [selectedIds, updateActiveSceneCommitted, onNotify]
   );
 
   const handleDeleteAsset = useCallback(
@@ -699,6 +897,21 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     [commitProjectChange, onNotify]
   );
 
+  const handleRenameScene = useCallback(
+    (sceneId: string, nextName: string) => {
+      const trimmed = nextName.trim();
+      if (!trimmed) return;
+      const current = actionsRef.current.history.present;
+      const target = current.scenes.find((s) => s.id === sceneId);
+      if (!target || target.name === trimmed) return;
+      commitProjectChange({
+        ...current,
+        scenes: current.scenes.map((s) => (s.id === sceneId ? { ...s, name: trimmed } : s)),
+      });
+    },
+    [commitProjectChange]
+  );
+
   // Carpetas virtuales y Prefabs reutilizables
   const handleCreateFolder = useCallback(
     (name: string) => {
@@ -852,6 +1065,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <LeftSidebar
+          projectMode={project.mode ?? '2d'}
           objects={activeScene.objects}
           selectedIds={selectedIds}
           assets={project.assets}
@@ -896,12 +1110,31 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
           onReparent={(id, newParentId) =>
             updateActiveSceneCommitted((s) => ({
               ...s,
-              objects: reparentObject(s.objects, id, newParentId),
+              objects: reparentObject(s.objects, id, newParentId, {
+                preserveWorldTransform: true,
+                allowAnyParent: true,
+              }),
+            }))
+          }
+          onGroupSelected={(ids) => {
+            let newFolderId: string | null = null;
+            updateActiveSceneCommitted((s) => {
+              const res = groupObjectsInFolder(s.objects, ids, 'Carpeta');
+              newFolderId = res.folderId;
+              return { ...s, objects: res.objects };
+            });
+            if (newFolderId) setSelectedIds([newFolderId]);
+          }}
+          onUngroupFolder={(folderId) =>
+            updateActiveSceneCommitted((s) => ({
+              ...s,
+              objects: ungroupFolder(s.objects, folderId),
             }))
           }
           onCreatePrefabFromObject={handleCreatePrefabFromObject}
           onImportFiles={(files) => void handleImportFiles(files)}
           onAddSpriteFromAsset={(assetId) => handleAddSpriteAt(assetId)}
+          onAssignAssetToSelected={handleAssignAssetToSelected}
           onDeleteAsset={(assetId) => void handleDeleteAsset(assetId)}
           onPurgeUnusedAssets={(ids) => void handlePurgeUnusedAssets(ids)}
           onCreateFolder={handleCreateFolder}
@@ -918,41 +1151,72 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             initialSceneId={project.initialSceneId}
             onSelectScene={handleSelectScene}
             onCreateScene={handleCreateScene}
+            onRenameScene={handleRenameScene}
             onDuplicateScene={handleDuplicateScene}
             onDeleteScene={handleDeleteScene}
             onSetInitialScene={handleSetInitialScene}
           />
           <div className="flex min-h-0 flex-1 overflow-hidden">
-            <CanvasViewport
-              scene={activeScene}
-              stage={stage}
-              backgroundColor={activeScene.backgroundColor || project.settings.backgroundColor}
-              selectedIds={selectedIds}
-              activeTool={activeTool}
-              camera={camera}
-              assetBlobs={assetBlobs}
-              fitRequestTick={fitRequestTick}
-              onCameraChange={setCamera}
-              onSelectObjects={setSelectedIds}
-              onPreviewObjectsChange={(nextObjects: GameObjectData[]) => {
-                const base = history.present;
-                setTransientProject({
-                  ...base,
-                  scenes: base.scenes.map((s) =>
-                    s.id === base.activeSceneId ? { ...s, objects: nextObjects } : s
-                  ),
-                });
-              }}
-              onCommitObjectsChange={(finalObjects: GameObjectData[]) => {
-                updateActiveSceneCommitted((s) => ({
-                  ...s,
-                  objects: finalObjects,
-                }));
-              }}
-              onUpdateScene={updateActiveSceneCommitted}
-              onDropAssetAt={(assetId, sx, sy) => handleAddSpriteAt(assetId, sx, sy)}
-              onPointerCoordsChange={setPointerCoords}
-            />
+            {(project.mode ?? '2d') === '3d' ? (
+              <ThreeStageViewport
+                scene={activeScene}
+                stage={stage}
+                selectedIds={selectedIds}
+                activeTool={activeTool}
+                assetBlobs={assetBlobs}
+                fitRequestTick={fitRequestTick}
+                onSelectTool={setActiveTool}
+                onSelectObjects={setSelectedIds}
+                onPreviewObjectsChange={(nextObjects: GameObjectData[]) => {
+                  const base = history.present;
+                  setTransientProject({
+                    ...base,
+                    scenes: base.scenes.map((s) =>
+                      s.id === base.activeSceneId ? { ...s, objects: nextObjects } : s
+                    ),
+                  });
+                }}
+                onCommitObjectsChange={(finalObjects: GameObjectData[]) => {
+                  updateActiveSceneCommitted((s) => ({
+                    ...s,
+                    objects: finalObjects,
+                  }));
+                }}
+                onUpdateScene={updateActiveSceneCommitted}
+                onNotify={onNotify}
+              />
+            ) : (
+              <CanvasViewport
+                scene={activeScene}
+                stage={stage}
+                backgroundColor={activeScene.backgroundColor || project.settings.backgroundColor}
+                selectedIds={selectedIds}
+                activeTool={activeTool}
+                camera={camera}
+                assetBlobs={assetBlobs}
+                fitRequestTick={fitRequestTick}
+                onCameraChange={setCamera}
+                onSelectObjects={setSelectedIds}
+                onPreviewObjectsChange={(nextObjects: GameObjectData[]) => {
+                  const base = history.present;
+                  setTransientProject({
+                    ...base,
+                    scenes: base.scenes.map((s) =>
+                      s.id === base.activeSceneId ? { ...s, objects: nextObjects } : s
+                    ),
+                  });
+                }}
+                onCommitObjectsChange={(finalObjects: GameObjectData[]) => {
+                  updateActiveSceneCommitted((s) => ({
+                    ...s,
+                    objects: finalObjects,
+                  }));
+                }}
+                onUpdateScene={updateActiveSceneCommitted}
+                onDropAssetAt={(assetId, sx, sy) => handleAddSpriteAt(assetId, sx, sy)}
+                onPointerCoordsChange={setPointerCoords}
+              />
+            )}
           </div>
 
           <BottomDock
@@ -963,6 +1227,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             mechanics={activeScene.mechanics ?? []}
             objects={activeScene.objects}
             selectedObjectId={selectedObjects[0]?.id ?? null}
+            selectedObject={selectedObjects[0] ?? null}
             variables={project.variables ?? []}
             audioBuses={project.audioBuses}
             assets={project.assets}
@@ -970,9 +1235,14 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             diagnostics={diagnostics}
             scenes={project.scenes}
             prefabs={project.prefabs}
+            scripts={project.scripts ?? []}
+            dialogues={project.dialogues ?? []}
+            dataTables={project.dataTables ?? []}
+            i18n={project.i18n ?? { defaultLocale: 'es', autoDetectBrowser: true, entries: {} }}
             activeScene={activeScene}
             onUpdateScene={updateActiveSceneCommitted}
             onImportFiles={(files) => void handleImportFiles(files)}
+            onCreateAsset={(meta, blob) => handleCreateGeneratedAsset(meta, blob)}
             onChangeMechanics={(mechanics: GameMechanic[]) =>
               updateActiveSceneCommitted((s) => ({ ...s, mechanics }))
             }
@@ -982,6 +1252,109 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             onChangeAudioBuses={(audioBuses: AudioBusSettings) =>
               commitProjectChange({ ...history.present, audioBuses })
             }
+            onChangeScripts={(scripts: NexusScriptAsset[]) =>
+              commitProjectChange({ ...history.present, scripts })
+            }
+            onChangeDialogues={(dialogues: DialogueGraph[]) =>
+              commitProjectChange({ ...history.present, dialogues })
+            }
+            onChangeDataTables={(dataTables: DataTableDef[]) =>
+              commitProjectChange({ ...history.present, dataTables })
+            }
+            onChangeI18n={(i18n: I18nConfig) =>
+              commitProjectChange({ ...history.present, i18n })
+            }
+            onAttachScriptToScene={(scriptId: string) => {
+              updateActiveSceneCommitted((s) => {
+                const prev = s.scriptIds ?? [];
+                if (prev.includes(scriptId)) return s;
+                return { ...s, scriptIds: [...prev, scriptId] };
+              });
+              onNotify('success', 'Script JS vinculado a la escena actual.');
+            }}
+            onDetachScriptFromScene={(scriptId: string) => {
+              updateActiveSceneCommitted((s) => ({
+                ...s,
+                scriptIds: (s.scriptIds ?? []).filter((id) => id !== scriptId),
+              }));
+              onNotify('info', 'Script JS desvinculado de la escena actual.');
+            }}
+            onAttachScriptToObject={(objectId: string, scriptId: string) => {
+              const targetObj = activeScene.objects.find((o) => o.id === objectId);
+              const scriptAsset = (project.scripts ?? []).find((sc) => sc.id === scriptId);
+              const schema = scriptAsset ? extractScriptParamsSchema(scriptAsset) : [];
+              const defaultParams: Record<string, unknown> = {};
+              for (const field of schema) defaultParams[field.key] = field.defaultValue;
+              updateActiveSceneCommitted((s) => ({
+                ...s,
+                objects: updateObjectById(s.objects, objectId, (prev) => {
+                  const existing = prev.scriptBindings ?? [];
+                  if (existing.some((b) => b.scriptId === scriptId)) {
+                    return {
+                      ...prev,
+                      scriptBindings: existing.map((b) =>
+                        b.scriptId === scriptId
+                          ? { ...b, enabled: true, params: { ...defaultParams, ...(b.params ?? {}) } }
+                          : b
+                      ),
+                    };
+                  }
+                  return {
+                    ...prev,
+                    scriptBindings: [
+                      ...existing,
+                      { id: createId('sb'), scriptId, enabled: true, params: defaultParams },
+                    ],
+                  };
+                }),
+              }));
+              onNotify('success', `Script JS adjuntado a "${targetObj?.name ?? 'objeto'}".`);
+            }}
+            onDetachScriptFromObject={(objectId: string, scriptId: string) => {
+              const targetObj = activeScene.objects.find((o) => o.id === objectId);
+              updateActiveSceneCommitted((s) => ({
+                ...s,
+                objects: updateObjectById(s.objects, objectId, (prev) => ({
+                  ...prev,
+                  scriptBindings: (prev.scriptBindings ?? []).filter(
+                    (b) => b.scriptId !== scriptId
+                  ),
+                })),
+              }));
+              onNotify('info', `Script JS quitado de "${targetObj?.name ?? 'objeto'}".`);
+            }}
+            onInsertInterfaceIntoScene={(script: NexusScriptAsset) => {
+              const existingWidgets = activeScene.objects.filter(
+                (o) => o.type === 'ui_widget'
+              ).length;
+              const defaultX =
+                existingWidgets === 0 ? 240 : Math.min(stage.width - 210, 960 - ((existingWidgets - 1) % 3) * 44);
+              const defaultY =
+                existingWidgets === 0 ? 150 : 190 + ((existingWidgets - 1) % 3) * 44;
+              const widget = createGameObject('ui_widget', activeScene.objects, {
+                name: script.name.replace(/\.(html|js|ui)$/i, '') || 'InterfazUI',
+                x: defaultX,
+                y: defaultY,
+                width: 360,
+                height: 210,
+              });
+              widget.uiWidget = {
+                scriptId: script.id,
+                html: script.code,
+                css: script.css ?? '',
+                js: script.js ?? '',
+                interactive: true,
+                visibleAtStart: true,
+                fixedToScreen: true,
+                zIndex: 25 + existingWidgets,
+              };
+              updateActiveSceneCommitted((s) => ({
+                ...s,
+                objects: [...s.objects, widget],
+              }));
+              setSelectedIds([widget.id]);
+              onNotify('success', `Interfaz "${widget.name}" insertada en la escena como elemento seleccionable.`);
+            }}
             onUpdateObject={(id, updater) =>
               updateActiveSceneCommitted((s) => ({
                 ...s,
@@ -1036,6 +1409,9 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
                 scenes={project.scenes}
                 selectedObjects={selectedObjects}
                 assets={project.assets}
+                assetBlobs={assetBlobs}
+                scripts={project.scripts ?? []}
+                projectMode={project.mode ?? '2d'}
                 onUpdateObject={(id, updater) =>
                   updateActiveSceneCommitted((s) => ({
                     ...s,
@@ -1044,6 +1420,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
                 }
                 onUpdateScene={updateActiveSceneCommitted}
                 onActivateTileBrush={() => setActiveTool('tilebrush')}
+                onImportFiles={handleImportFiles}
               />
             ) : (
               <AssistantPanel
@@ -1103,21 +1480,30 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
       <PreviewModal
         open={isPreviewOpen}
         projectName={project.name}
+        projectMode={project.mode ?? '2d'}
         scene={activeScene}
         scenes={project.scenes}
         initialSceneId={project.initialSceneId ?? activeScene.id}
         prefabs={project.prefabs}
+        scripts={project.scripts ?? []}
+        dialogues={project.dialogues ?? []}
+        dataTables={project.dataTables ?? []}
+        i18n={project.i18n}
         stage={stage}
         assetBlobs={assetBlobs}
         variables={project.variables}
         audioBuses={project.audioBuses}
+        touchControls={project.settings.touchControls}
         onStop={() => setIsPreviewOpen(false)}
       />
 
       <ExportModal
         open={isExportOpen}
         projectName={project.name}
+        project={project}
+        assetBlobs={assetBlobs}
         compiling={isCompilingHtml5}
+        defaultTouchControls={project.settings.touchControls?.enabledByDefault ?? true}
         onClose={() => setIsExportOpen(false)}
         onCompileHtml5={(options) => void handleCompileHtml5(options)}
         onExportEditableZip={() => void handleExportZip()}

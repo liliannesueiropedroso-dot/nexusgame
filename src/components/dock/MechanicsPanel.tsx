@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { ArrowDown, ArrowUp, Plus, Power, Trash2, Zap } from 'lucide-react';
+import { ArrowDown, ArrowUp, Link2, Plus, Power, Trash2, Zap } from 'lucide-react';
 import { SYNTH_PRESETS } from '../../engine/audio/audioEngine';
-import { BEHAVIOR_DEFINITIONS } from '../../engine/components/behaviorTypes';
+import { getBehaviorEntry } from '../../engine/components/behaviorRegistry';
+import { BEHAVIOR_DEFINITIONS, getBehaviorLabel } from '../../engine/components/behaviorTypes';
 import {
   COLLISION_LAYERS,
   type ActionDefinition,
   type ActionType,
+  type ArchetypeId,
   type CollisionLayer,
   type ConditionCombinator,
   type ConditionDefinition,
@@ -15,10 +17,17 @@ import {
   type MechanicTriggerEvent,
   type ProjectVariable,
   type SceneData,
+  type WiringLink,
 } from '../../engine/core/types';
-import type { PrefabDefinition, ProjectAssetMeta } from '../../project/models/project';
+import { ARCHETYPE_RECIPES, applyArchetypeToScene } from '../../engine/wiring/archetypes';
+import type {
+  NexusScriptAsset,
+  PrefabDefinition,
+  ProjectAssetMeta,
+} from '../../project/models/project';
 import { createId } from '../../utils/id';
 import { KeyCaptureField } from '../common/KeyCaptureField';
+import { NumericInput } from '../common/NumericInput';
 
 interface MechanicsPanelProps {
   mechanics: GameMechanic[];
@@ -26,8 +35,14 @@ interface MechanicsPanelProps {
   variables: ProjectVariable[];
   assets: ProjectAssetMeta[];
   scenes?: SceneData[];
+  activeScene?: SceneData;
+  selectedObjectId?: string | null;
   prefabs?: PrefabDefinition[];
+  scripts?: NexusScriptAsset[];
   onChangeMechanics: (next: GameMechanic[]) => void;
+  onUpdateScene?: (updater: (scene: SceneData) => SceneData) => void;
+  onUpdateObject?: (id: string, updater: (obj: GameObjectData) => GameObjectData) => void;
+  onSelectObjectById?: (id: string) => void;
 }
 
 const TRIGGER_LABELS: Record<MechanicTriggerEvent, string> = {
@@ -98,6 +113,18 @@ const ACTION_LABELS: Record<ActionType, string> = {
   'storage.load': 'Cargar variable persistente',
   'leaderboard.submit': 'Enviar puntuación al Ranking',
   'event.emit': 'Emitir evento personalizado',
+  'script.call': 'Ejecutar función de Script JS (script.call)',
+  'ui.openInterface': 'Abrir Interfaz HTML/CSS/JS',
+  'ui.closeInterface': 'Cerrar Interfaz HTML/CSS/JS',
+  'ui.toggleInterface': 'Alternar Interfaz HTML/CSS/JS',
+  'camera.switch': 'Cambiar Cámara Inteligente 3D',
+  'anim3d.setState': 'Cambiar estado Animación 3D',
+  'vfx.emit': 'Emitir ráfaga VFX 3D/GPU',
+  'ai.chase': 'IA 3D: Perseguir objetivo',
+  'ai.moveTo': 'IA 3D: Mover a coordenada',
+  'ai.stop': 'IA 3D: Detener agente',
+  'dialogue.start': 'Iniciar diálogo ramificado (dialogue.start)',
+  'i18n.setLocale': 'Cambiar idioma activo (i18n.setLocale)',
   wait: 'Esperar N segundos (Wait)',
 };
 
@@ -126,10 +153,37 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
   variables,
   assets,
   scenes = [],
+  activeScene,
+  selectedObjectId,
   prefabs = [],
+  scripts = [],
   onChangeMechanics,
+  onUpdateScene,
+  onUpdateObject,
+  onSelectObjectById,
 }) => {
   const [selectedId, setSelectedId] = useState<string | null>(mechanics[0]?.id ?? null);
+  const [viewMode, setViewMode] = useState<'rules' | 'wiring'>('rules');
+  const [wireSrcObjId, setWireSrcObjId] = useState<string>('');
+  const [wireSrcBeh, setWireSrcBeh] = useState<string>('');
+  const [wireSignal, setWireSignal] = useState<string>('onCollected');
+  const [wireTgtObjId, setWireTgtObjId] = useState<string>('');
+  const [wireTgtBeh, setWireTgtBeh] = useState<string>('');
+  const [wireAction, setWireAction] = useState<string>('receiveItem');
+  const [archId, setArchId] = useState<ArchetypeId>('collectible');
+
+  const stopEditableKeyLeak = (e: React.KeyboardEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable
+    ) {
+      e.stopPropagation();
+    }
+  };
 
   const audioAssets = assets.filter((a) => a.kind === 'audio');
   const activeMechanic =
@@ -378,18 +432,15 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
           <label className="block text-[10px] text-zinc-400 mb-0.5">
             Intervalo (segundos)
           </label>
-          <input
-            type="number"
+          <NumericInput
+            ariaLabel="Intervalo en segundos"
             min={0.1}
             step={0.1}
             value={Number(mech.trigger.intervalSec ?? 1)}
-            onChange={(e) =>
+            onChange={(intervalSec) =>
               updateMechanic(mech.id, (m) => ({
                 ...m,
-                trigger: {
-                  ...m.trigger,
-                  intervalSec: Math.max(0.1, Number(e.target.value) || 1),
-                },
+                trigger: { ...m.trigger, intervalSec },
               }))
             }
             className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 font-mono text-xs text-zinc-100"
@@ -439,21 +490,335 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
     return null;
   };
 
-  return (
-    <div className="flex h-full min-h-0">
-      {/* Columna izquierda: lista de reglas */}
-      <div className="flex w-64 shrink-0 flex-col border-r border-[#2b2b33] bg-[#16161a]">
-        <div className="flex items-center justify-between border-b border-[#2b2b33] px-2.5 py-2">
-          <span className="text-[11px] font-semibold text-zinc-300">
-            Reglas ({mechanics.length})
+  const sceneWiringLinks = activeScene?.wiringLinks ?? [];
+
+  if (viewMode === 'wiring') {
+    const srcObj = objects.find((o) => o.id === (wireSrcObjId || selectedObjectId || objects[0]?.id)) ?? objects[0];
+    const tgtObj = objects.find((o) => o.id === (wireTgtObjId || objects[1]?.id || objects[0]?.id)) ?? objects[0];
+    const srcComp =
+      srcObj?.components.find((c) => c.type === wireSrcBeh) ?? srcObj?.components[0];
+    const tgtComp =
+      tgtObj?.components.find((c) => c.type === wireTgtBeh) ?? tgtObj?.components[0];
+    const srcEntry = srcComp ? getBehaviorEntry(srcComp.type) : undefined;
+    const tgtEntry = tgtComp ? getBehaviorEntry(tgtComp.type) : undefined;
+    const availableSignals = srcComp?.outputs ?? srcEntry?.outputs ?? ['onTriggered'];
+    const availableActions = tgtComp?.inputs ?? tgtEntry?.inputs ?? ['activate'];
+
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-[#141418]" onKeyDown={stopEditableKeyLeak}>
+        <div className="flex items-center justify-between border-b border-[#2b2b33] bg-[#16161a] px-3 py-1.5">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('rules')}
+              className="rounded px-2 py-1 text-[11px] font-medium text-zinc-400 hover:bg-[#23232b] hover:text-zinc-200"
+            >
+              Reglas ({mechanics.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('wiring')}
+              className="inline-flex items-center gap-1 rounded bg-indigo-600/25 border border-indigo-500/40 px-2 py-1 text-[11px] font-semibold text-indigo-200"
+            >
+              <Link2 className="h-3 w-3" />
+              <span>Objetos, Arquetipos y Cables ({sceneWiringLinks.length})</span>
+            </button>
+          </div>
+          <span className="text-[10px] text-zinc-500">
+            Contexto: {activeScene?.sceneContext ?? 'gameplay'}
           </span>
+        </div>
+
+        <div className="grid flex-1 min-h-0 grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[#2b2b33]">
+          {/* Objetos con comportamientos y origen */}
+          <div className="overflow-y-auto p-2.5 space-y-2">
+            <div className="text-[11px] font-semibold text-zinc-300">
+              Objetos activos y comportamientos ({objects.length})
+            </div>
+            {objects.map((o) => {
+              const isSel = o.id === selectedObjectId;
+              return (
+                <div
+                  key={o.id}
+                  className={`rounded border p-2 space-y-1.5 ${
+                    isSel ? 'border-indigo-500/60 bg-indigo-950/20' : 'border-[#272730] bg-[#18181d]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onSelectObjectById?.(o.id)}
+                      className="text-left text-xs font-semibold text-zinc-100 hover:text-indigo-300 truncate"
+                    >
+                      {o.name}
+                    </button>
+                    <div className="flex items-center gap-1">
+                      <span className="rounded bg-[#22222c] px-1.5 py-0.5 font-mono text-[9.5px] text-indigo-300">
+                        {o.archetype ? `${o.archetype}` : o.role ?? 'generic'}
+                      </span>
+                      {onUpdateScene && (
+                        <>
+                          <select
+                            aria-label={`Arquetipo rápido para ${o.name}`}
+                            value={archId}
+                            onChange={(e) => setArchId(e.target.value as ArchetypeId)}
+                            className="rounded border border-[#32323c] bg-[#121216] px-1 py-0.5 text-[10px] text-zinc-200"
+                          >
+                            {ARCHETYPE_RECIPES.map((r) => (
+                              <option key={r.id} value={r.id}>
+                                {r.id}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateScene((s) => {
+                                const res = applyArchetypeToScene(s, o.id, archId, '2d');
+                                return { ...s, objects: res.objects, wiringLinks: res.wiringLinks };
+                              })
+                            }
+                            className="rounded bg-indigo-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-500"
+                          >
+                            Aplicar
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {o.components.length === 0 ? (
+                    <p className="text-[10px] text-zinc-500">Sin comportamientos.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {o.components.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() =>
+                            onUpdateObject?.(o.id, (prev) => ({
+                              ...prev,
+                              components: prev.components.map((comp) =>
+                                comp.id === c.id ? { ...comp, enabled: !comp.enabled } : comp
+                              ),
+                            }))
+                          }
+                          title={`Origen: ${c.source ?? 'manual'} · Contextos: ${(c.contexts ?? getBehaviorEntry(c.type)?.contexts ?? ['gameplay']).join(', ')}`}
+                          className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
+                            c.enabled
+                              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                              : 'border-zinc-700 bg-zinc-900 text-zinc-500 line-through'
+                          }`}
+                        >
+                          <span>{getBehaviorLabel(c.type)}</span>
+                          <span className="font-mono text-[9px] text-zinc-400">
+                            [{c.source ?? 'manual'}]
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Creador y lista de Cables (WiringLinks) */}
+          <div className="overflow-y-auto p-2.5 space-y-2.5">
+            <div className="text-[11px] font-semibold text-zinc-300">
+              Cables de señales en tiempo real (WiringLinks)
+            </div>
+            {onUpdateScene && srcObj && tgtObj && (
+              <div className="rounded border border-indigo-500/30 bg-[#171722] p-2 space-y-1.5">
+                <div className="grid grid-cols-3 gap-1">
+                  <select
+                    aria-label="Objeto origen"
+                    value={srcObj.id}
+                    onChange={(e) => {
+                      setWireSrcObjId(e.target.value);
+                      setWireSrcBeh('');
+                    }}
+                    className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[10px] text-zinc-100"
+                  >
+                    {objects.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        De: {o.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Comportamiento origen"
+                    value={srcComp?.type ?? ''}
+                    onChange={(e) => setWireSrcBeh(e.target.value)}
+                    className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[10px] text-zinc-100"
+                  >
+                    {srcObj.components.map((c) => (
+                      <option key={c.id} value={c.type}>
+                        {c.type}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Señal origen"
+                    value={availableSignals.includes(wireSignal) ? wireSignal : availableSignals[0]}
+                    onChange={(e) => setWireSignal(e.target.value)}
+                    className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[10px] font-mono text-indigo-300"
+                  >
+                    {availableSignals.map((sig) => (
+                      <option key={sig} value={sig}>
+                        {sig}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1">
+                  <select
+                    aria-label="Objeto destino"
+                    value={tgtObj.id}
+                    onChange={(e) => {
+                      setWireTgtObjId(e.target.value);
+                      setWireTgtBeh('');
+                    }}
+                    className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[10px] text-zinc-100"
+                  >
+                    {objects.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        A: {o.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Comportamiento destino"
+                    value={tgtComp?.type ?? ''}
+                    onChange={(e) => setWireTgtBeh(e.target.value)}
+                    className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[10px] text-zinc-100"
+                  >
+                    {tgtObj.components.map((c) => (
+                      <option key={c.id} value={c.type}>
+                        {c.type}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Acción destino"
+                    value={availableActions.includes(wireAction) ? wireAction : availableActions[0]}
+                    onChange={(e) => setWireAction(e.target.value)}
+                    className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[10px] font-mono text-emerald-300"
+                  >
+                    {availableActions.map((actName) => (
+                      <option key={actName} value={actName}>
+                        {actName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!srcComp || !tgtComp}
+                  onClick={() => {
+                    if (!srcComp || !tgtComp) return;
+                    const resolvedSig = availableSignals.includes(wireSignal)
+                      ? wireSignal
+                      : availableSignals[0];
+                    const resolvedAct = availableActions.includes(wireAction)
+                      ? wireAction
+                      : availableActions[0];
+                    const newLink: WiringLink = {
+                      id: createId('wire'),
+                      sourceObjectId: srcObj.id,
+                      sourceBehavior: srcComp.type,
+                      signal: resolvedSig,
+                      targetObjectId: tgtObj.id,
+                      targetBehavior: tgtComp.type,
+                      action: resolvedAct,
+                      auto: false,
+                    };
+                    onUpdateScene((s) => ({
+                      ...s,
+                      wiringLinks: [...(s.wiringLinks ?? []), newLink],
+                    }));
+                  }}
+                  className="w-full rounded bg-indigo-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-indigo-500 disabled:opacity-40"
+                >
+                  + Conectar Cable
+                </button>
+              </div>
+            )}
+
+            <div className="space-y-1">
+              {sceneWiringLinks.length === 0 ? (
+                <p className="text-[10px] text-zinc-500">
+                  No hay cables activos. Aplica un Arquetipo en el Inspector o crea un cable manual arriba.
+                </p>
+              ) : (
+                sceneWiringLinks.map((lnk) => {
+                  const sObj = objects.find((o) => o.id === lnk.sourceObjectId);
+                  const tObj = objects.find((o) => o.id === lnk.targetObjectId);
+                  return (
+                    <div
+                      key={lnk.id}
+                      className="flex items-center justify-between gap-2 rounded border border-[#2b2b36] bg-[#18181f] px-2 py-1 text-[10px]"
+                    >
+                      <span className="truncate font-mono text-zinc-200">
+                        <span className="text-indigo-300">{sObj?.name ?? lnk.sourceObjectId}</span>.
+                        {lnk.sourceBehavior}.{lnk.signal} ➔{' '}
+                        <span className="text-emerald-300">{tObj?.name ?? lnk.targetObjectId}</span>.
+                        {lnk.targetBehavior}.{lnk.action}
+                        {lnk.auto ? ' (auto)' : ''}
+                      </span>
+                      {onUpdateScene && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateScene((s) => ({
+                              ...s,
+                              wiringLinks: (s.wiringLinks ?? []).filter((w) => w.id !== lnk.id),
+                            }))
+                          }
+                          aria-label="Eliminar cable"
+                          className="rounded p-0.5 text-zinc-500 hover:text-red-400"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0" onKeyDown={stopEditableKeyLeak}>
+      {/* Columna izquierda: lista de reglas */}
+      <div className="flex w-72 shrink-0 flex-col border-r border-[#2b2b33] bg-[#16161a]">
+        <div className="flex items-center justify-between gap-1 border-b border-[#2b2b33] px-2 py-1.5">
+          <div className="flex items-center gap-1">
+            <span className="rounded bg-blue-600/20 px-1.5 py-0.5 text-[10.5px] font-semibold text-blue-300">
+              Reglas ({mechanics.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => setViewMode('wiring')}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-indigo-300 hover:bg-indigo-500/15"
+              title="Ver Objetos, Arquetipos y Cables en vivo"
+            >
+              <Link2 className="h-3 w-3" />
+              <span>Cables ({sceneWiringLinks.length})</span>
+            </button>
+          </div>
           <button
             type="button"
             onClick={handleCreateRule}
             className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-500 whitespace-nowrap"
           >
             <Plus className="h-3 w-3" />
-            <span>Nueva regla</span>
+            <span>Nueva</span>
           </button>
         </div>
 
@@ -537,13 +902,13 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
               />
               <label className="flex items-center gap-1.5 text-xs text-zinc-300">
                 <span>Prioridad</span>
-                <input
-                  type="number"
+                <NumericInput
+                  ariaLabel="Prioridad de regla"
                   value={activeMechanic.priority}
-                  onChange={(e) =>
+                  onChange={(priority) =>
                     updateMechanic(activeMechanic.id, (m) => ({
                       ...m,
-                      priority: Number(e.target.value) || 0,
+                      priority,
                     }))
                   }
                   className="w-16 rounded border border-[#32323c] bg-[#141416] px-2 py-1 font-mono text-xs text-zinc-100"
@@ -839,16 +1204,15 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               <option value="<">&lt;</option>
                               <option value="<=">&lt;=</option>
                             </select>
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Valor de comparación"
+                              step={0.1}
                               value={Number(cond.value ?? 0)}
-                              onChange={(e) =>
+                              onChange={(value) =>
                                 updateMechanic(activeMechanic.id, (m) => ({
                                   ...m,
                                   conditions: m.conditions.map((c) =>
-                                    c.id === cond.id
-                                      ? { ...c, value: Number(e.target.value) || 0 }
-                                      : c
+                                    c.id === cond.id ? { ...c, value } : c
                                   ),
                                 }))
                               }
@@ -1101,14 +1465,14 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                                 </option>
                               ))}
                             </select>
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Distancia"
                               value={Number(cond.value ?? 120)}
-                              onChange={(e) =>
+                              onChange={(value) =>
                                 updateMechanic(activeMechanic.id, (m) => ({
                                   ...m,
                                   conditions: m.conditions.map((c) =>
-                                    c.id === cond.id ? { ...c, value: Number(e.target.value) } : c
+                                    c.id === cond.id ? { ...c, value } : c
                                   ),
                                 }))
                               }
@@ -1120,21 +1484,16 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                         {cond.type === 'random.chance' && (
                           <div className="flex items-center gap-1.5">
                             <span className="text-[10px] text-zinc-400">Probabilidad (%):</span>
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Probabilidad porcentual"
                               min={0}
                               max={100}
                               value={Number(cond.value ?? 50)}
-                              onChange={(e) =>
+                              onChange={(value) =>
                                 updateMechanic(activeMechanic.id, (m) => ({
                                   ...m,
                                   conditions: m.conditions.map((c) =>
-                                    c.id === cond.id
-                                      ? {
-                                          ...c,
-                                          value: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
-                                        }
-                                      : c
+                                    c.id === cond.id ? { ...c, value } : c
                                   ),
                                 }))
                               }
@@ -1290,37 +1649,37 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               ))}
                             </select>
                             <div className="grid grid-cols-3 gap-1">
-                              <input
-                                type="number"
+                              <NumericInput
+                                ariaLabel="Volumen"
                                 step={0.1}
-                                min={0.1}
+                                min={0}
                                 max={2}
-                                title="Volumen (0.1 - 2)"
+                                title="Volumen (0 - 2)"
                                 placeholder="Vol 1"
                                 value={Number(act.parameters.volume ?? 1)}
-                                onChange={(e) => patchParams({ volume: Number(e.target.value) || 1 })}
+                                onChange={(volume) => patchParams({ volume })}
                                 className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
                               />
-                              <input
-                                type="number"
+                              <NumericInput
+                                ariaLabel="Pitch"
                                 step={0.1}
                                 min={0.3}
                                 max={3}
                                 title="Tono / Pitch (0.5 - 2)"
                                 placeholder="Pitch 1"
                                 value={Number(act.parameters.pitch ?? 1)}
-                                onChange={(e) => patchParams({ pitch: Number(e.target.value) || 1 })}
+                                onChange={(pitch) => patchParams({ pitch })}
                                 className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
                               />
-                              <input
-                                type="number"
+                              <NumericInput
+                                ariaLabel="Variación aleatoria de tono"
                                 step={0.05}
                                 min={0}
                                 max={1}
                                 title="Variación aleatoria de tono"
                                 placeholder="Var tono"
                                 value={Number(act.parameters.randomPitch ?? 0)}
-                                onChange={(e) => patchParams({ randomPitch: Number(e.target.value) || 0 })}
+                                onChange={(randomPitch) => patchParams({ randomPitch })}
                                 className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
                               />
                             </div>
@@ -1353,26 +1712,26 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                                 <option value="music">Música</option>
                                 <option value="ui">UI</option>
                               </select>
-                              <input
-                                type="number"
+                              <NumericInput
+                                ariaLabel="Volumen"
                                 step={0.1}
                                 min={0}
                                 max={1.5}
                                 title="Volumen"
                                 placeholder="Volumen"
                                 value={Number(act.parameters.volume ?? 1)}
-                                onChange={(e) => patchParams({ volume: Number(e.target.value) || 1 })}
+                                onChange={(volume) => patchParams({ volume })}
                                 className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
                               />
-                              <input
-                                type="number"
+                              <NumericInput
+                                ariaLabel="Pitch"
                                 step={0.1}
                                 min={0.3}
                                 max={2.5}
                                 title="Tono / Pitch"
                                 placeholder="Pitch"
                                 value={Number(act.parameters.pitch ?? 1)}
-                                onChange={(e) => patchParams({ pitch: Number(e.target.value) || 1 })}
+                                onChange={(pitch) => patchParams({ pitch })}
                                 className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
                               />
                             </div>
@@ -1404,16 +1763,14 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               ))}
                             </select>
                             <div className="flex items-center gap-2 text-[10px] text-zinc-300">
-                              <input
-                                type="number"
+                              <NumericInput
+                                ariaLabel="Volumen música"
                                 step={0.05}
                                 min={0}
                                 max={1.5}
                                 title="Volumen música"
                                 value={Number(act.parameters.volume ?? 0.85)}
-                                onChange={(e) =>
-                                  patchParams({ volume: Math.max(0, Math.min(1.5, Number(e.target.value) || 0.85)) })
-                                }
+                                onChange={(volume) => patchParams({ volume })}
                                 className="w-16 rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[10px] text-zinc-100"
                               />
                               <label className="flex items-center gap-1 cursor-pointer">
@@ -1450,17 +1807,13 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               <option value="sfx">Efectos (SFX)</option>
                               <option value="ui">Interfaz (UI)</option>
                             </select>
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Volumen canal"
                               min={0}
                               max={1}
                               step={0.05}
                               value={Number(act.parameters.volume ?? 0.8)}
-                              onChange={(e) =>
-                                patchParams({
-                                  volume: Math.max(0, Math.min(1, Number(e.target.value) || 0)),
-                                })
-                              }
+                              onChange={(volume) => patchParams({ volume })}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                             />
                           </div>
@@ -1563,15 +1916,13 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               <option value="rain">Lluvia</option>
                               <option value="snow">Nieve</option>
                             </select>
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Cantidad de partículas"
                               min={1}
                               max={80}
                               title="Cantidad"
                               value={Number(act.parameters.count ?? 20)}
-                              onChange={(e) =>
-                                patchParams({ count: Math.max(1, Number(e.target.value) || 20) })
-                              }
+                              onChange={(count) => patchParams({ count })}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                             />
                           </div>
@@ -1695,15 +2046,13 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               onChange={(e) => patchParams({ color: e.target.value })}
                               className="h-6 w-full cursor-pointer rounded border border-[#32323c] bg-[#141416] p-0.5"
                             />
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Duración destello"
                               min={0.05}
                               max={2}
                               step={0.05}
                               value={Number(act.parameters.duration ?? 0.15)}
-                              onChange={(e) =>
-                                patchParams({ duration: Number(e.target.value) || 0.15 })
-                              }
+                              onChange={(duration) => patchParams({ duration })}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                             />
                           </div>
@@ -1786,49 +2135,71 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                           act.type === 'physics.impulse' ||
                           act.type === 'physics.force' ||
                           act.type === 'physics.setVelocity') && (
-                          <div className="grid grid-cols-3 gap-1">
+                          <div className={act.type === 'physics.impulse' ? 'grid grid-cols-4 gap-1' : 'grid grid-cols-3 gap-1'}>
                             <select
+                              aria-label="Objeto destino de física o movimiento"
                               value={String(act.parameters.target ?? '')}
                               onChange={(e) => patchParams({ target: e.target.value })}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
                             >
                               <option value="">Objeto...</option>
+                              <option value="$self">$self (Emisor)</option>
+                              <option value="$other">$other (Colisión)</option>
                               {objects.map((o) => (
                                 <option key={o.id} value={o.id}>
                                   {o.name}
                                 </option>
                               ))}
                             </select>
-                            <input
-                              type="number"
-                              placeholder="X / vx"
+                            <NumericInput
+                              ariaLabel="Valor X o velocidad X"
+                              placeholder={act.type === 'physics.impulse' ? 'ix' : 'X / vx'}
                               value={Number(
-                                act.parameters.dx ?? act.parameters.x ?? act.parameters.vx ?? act.parameters.fx ?? 0
+                                act.parameters.dx ??
+                                  act.parameters.x ??
+                                  act.parameters.ix ??
+                                  act.parameters.vx ??
+                                  act.parameters.fx ??
+                                  0
                               )}
-                              onChange={(e) => {
-                                const v = Number(e.target.value);
+                              onChange={(v) => {
                                 if (act.type === 'object.move') patchParams({ dx: v });
                                 else if (act.type === 'object.teleport') patchParams({ x: v });
                                 else if (act.type === 'physics.force') patchParams({ fx: v });
+                                else if (act.type === 'physics.impulse') patchParams({ ix: v });
                                 else patchParams({ vx: v });
                               }}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                             />
-                            <input
-                              type="number"
-                              placeholder="Y / vy"
+                            <NumericInput
+                              ariaLabel="Valor Y o velocidad Y"
+                              placeholder={act.type === 'physics.impulse' ? 'iy' : 'Y / vy'}
                               value={Number(
-                                act.parameters.dy ?? act.parameters.y ?? act.parameters.vy ?? act.parameters.fy ?? 0
+                                act.parameters.dy ??
+                                  act.parameters.y ??
+                                  act.parameters.iy ??
+                                  act.parameters.vy ??
+                                  act.parameters.fy ??
+                                  0
                               )}
-                              onChange={(e) => {
-                                const v = Number(e.target.value);
+                              onChange={(v) => {
                                 if (act.type === 'object.move') patchParams({ dy: v });
                                 else if (act.type === 'object.teleport') patchParams({ y: v });
                                 else if (act.type === 'physics.force') patchParams({ fy: v });
+                                else if (act.type === 'physics.impulse') patchParams({ iy: v });
                                 else patchParams({ vy: v });
                               }}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                             />
+                            {act.type === 'physics.impulse' && (
+                              <NumericInput
+                                ariaLabel="Impulso Z (3D)"
+                                placeholder="iz"
+                                value={Number(act.parameters.iz ?? 0)}
+                                onChange={(iz) => patchParams({ iz })}
+                                className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+                              />
+                            )}
                           </div>
                         )}
 
@@ -1840,17 +2211,19 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
                             >
                               <option value="">Objeto...</option>
+                              <option value="$self">$self (Emisor)</option>
+                              <option value="$other">$other (Colisión)</option>
                               {objects.map((o) => (
                                 <option key={o.id} value={o.id}>
                                   {o.name}
                                 </option>
                               ))}
                             </select>
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Cantidad de salud o daño"
                               min={1}
                               value={Number(act.parameters.amount ?? 10)}
-                              onChange={(e) => patchParams({ amount: Number(e.target.value) || 10 })}
+                              onChange={(amount) => patchParams({ amount })}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                             />
                           </div>
@@ -1864,6 +2237,8 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
                             >
                               <option value="">Objeto...</option>
+                              <option value="$self">$self (Emisor)</option>
+                              <option value="$other">$other (Colisión)</option>
                               {objects.map((o) => (
                                 <option key={o.id} value={o.id}>
                                   {o.name}
@@ -1929,25 +2304,20 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
 
                         {act.type === 'camera.shake' && (
                           <div className="grid grid-cols-2 gap-1">
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Intensidad de sacudida"
                               min={1}
-                              max={60}
                               value={Number(act.parameters.intensity ?? 10)}
-                              onChange={(e) =>
-                                patchParams({ intensity: Number(e.target.value) || 10 })
-                              }
+                              onChange={(intensity) => patchParams({ intensity })}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                               title="Intensidad (px)"
                             />
-                            <input
-                              type="number"
+                            <NumericInput
+                              ariaLabel="Duración de sacudida"
                               min={0.05}
                               step={0.05}
                               value={Number(act.parameters.duration ?? 0.25)}
-                              onChange={(e) =>
-                                patchParams({ duration: Number(e.target.value) || 0.25 })
-                              }
+                              onChange={(duration) => patchParams({ duration })}
                               className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                               title="Duración (s)"
                             />
@@ -1964,16 +2334,222 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                           />
                         )}
 
-                        {act.type === 'wait' && (
+                        {act.type === 'script.call' && (
+                          <div className="grid grid-cols-2 gap-1">
+                            <select
+                              aria-label="Objeto destino para script"
+                              value={String(act.parameters.target ?? '')}
+                              onChange={(e) => patchParams({ target: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Cualquier objeto / Escena</option>
+                              <option value="$self">$self (Emisor)</option>
+                              <option value="$other">$other (Colisión)</option>
+                              {objects.map((o) => (
+                                <option key={o.id} value={o.id}>{o.name}</option>
+                              ))}
+                            </select>
+                            <select
+                              aria-label="Script JS destino"
+                              value={String(act.parameters.scriptId ?? '')}
+                              onChange={(e) => patchParams({ scriptId: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Script por nombre...</option>
+                              {scripts.filter((s) => s.kind === 'script').map((sc) => (
+                                <option key={sc.id} value={sc.id}>{sc.name}</option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              placeholder="función (ej: activate)"
+                              value={String(act.parameters.methodName ?? 'activate')}
+                              onChange={(e) => patchParams({ methodName: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 text-[11px] text-zinc-100"
+                            />
+                            <input
+                              type="text"
+                              placeholder="arg opcional (ej: 10)"
+                              value={act.parameters.arg !== undefined ? String(act.parameters.arg) : ''}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                patchParams({
+                                  arg: raw === '' ? undefined : !Number.isNaN(Number(raw)) ? Number(raw) : raw,
+                                });
+                              }}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 text-[11px] text-zinc-100"
+                            />
+                          </div>
+                        )}
+
+                        {(act.type === 'ui.openInterface' ||
+                          act.type === 'ui.closeInterface' ||
+                          act.type === 'ui.toggleInterface') && (
+                          <select
+                            aria-label="Interfaz widget destino"
+                            value={String(act.parameters.target ?? '')}
+                            onChange={(e) => patchParams({ target: e.target.value })}
+                            className="w-full rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-1 text-[11px] text-zinc-100"
+                          >
+                            <option value="">Seleccionar interfaz (ui_widget)...</option>
+                            {objects.filter((o) => o.type === 'ui_widget').map((o) => (
+                              <option key={o.id} value={o.id}>{o.name}</option>
+                            ))}
+                          </select>
+                        )}
+
+                        {act.type === 'camera.switch' && (
+                          <div className="grid grid-cols-2 gap-1">
+                            <select
+                              aria-label="Cámara o punto objetivo destino"
+                              value={String(act.parameters.cameraId ?? act.parameters.cameraObjectId ?? '')}
+                              onChange={(e) => patchParams({ cameraId: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Seleccionar cámara u objeto...</option>
+                              {objects
+                                .filter((o) => o.type === 'camera_3d' || o.type === 'mesh_3d')
+                                .map((o) => (
+                                  <option key={o.id} value={o.id}>
+                                    {o.type === 'camera_3d' ? `📷 ${o.name}` : o.name}
+                                  </option>
+                                ))}
+                            </select>
+                            <NumericInput
+                              ariaLabel="Duración transición de cámara"
+                              min={0}
+                              step={0.1}
+                              value={Number(act.parameters.duration ?? act.parameters.blendSec ?? 0.5)}
+                              onChange={(duration) => patchParams({ duration })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+                              title="Duración transición (s)"
+                            />
+                          </div>
+                        )}
+
+                        {act.type === 'anim3d.setState' && (
+                          <div className="grid grid-cols-2 gap-1">
+                            <select
+                              value={String(act.parameters.target ?? '')}
+                              onChange={(e) => patchParams({ target: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Objeto 3D...</option>
+                              {objects.filter((o) => o.type === 'mesh_3d').map((o) => (
+                                <option key={o.id} value={o.id}>{o.name}</option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              placeholder="Estado (Idle, Run...)"
+                              value={String(act.parameters.stateName ?? 'Idle')}
+                              onChange={(e) => patchParams({ stateName: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 text-[11px] text-zinc-100"
+                            />
+                          </div>
+                        )}
+
+                        {act.type === 'vfx.emit' && (
+                          <div className="grid grid-cols-2 gap-1">
+                            <select
+                              value={String(act.parameters.target ?? '')}
+                              onChange={(e) => patchParams({ target: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">En origen...</option>
+                              {objects.map((o) => (
+                                <option key={o.id} value={o.id}>{o.name}</option>
+                              ))}
+                            </select>
+                            <NumericInput
+                              ariaLabel="Cantidad partículas VFX"
+                              min={4}
+                              max={200}
+                              value={Number(act.parameters.count ?? 24)}
+                              onChange={(count) => patchParams({ count })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+                              title="Cantidad partículas"
+                            />
+                          </div>
+                        )}
+
+                        {(act.type === 'ai.chase' || act.type === 'ai.moveTo' || act.type === 'ai.stop') && (
+                          <div className="grid grid-cols-2 gap-1">
+                            <select
+                              value={String(act.parameters.target ?? '')}
+                              onChange={(e) => patchParams({ target: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Agente IA...</option>
+                              {objects.filter((o) => o.type === 'mesh_3d').map((o) => (
+                                <option key={o.id} value={o.id}>{o.name}</option>
+                              ))}
+                            </select>
+                            {act.type === 'ai.chase' ? (
+                              <select
+                                value={String(act.parameters.chaseTargetId ?? '')}
+                                onChange={(e) => patchParams({ chaseTargetId: e.target.value })}
+                                className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                              >
+                                <option value="">Objetivo a perseguir...</option>
+                                {objects.map((o) => (
+                                  <option key={o.id} value={o.id}>{o.name}</option>
+                                ))}
+                              </select>
+                            ) : act.type === 'ai.moveTo' ? (
+                              <div className="grid grid-cols-2 gap-1">
+                                <NumericInput
+                                  ariaLabel="Destino IA X"
+                                  value={Number(act.parameters.x ?? 0)}
+                                  onChange={(x) => patchParams({ x })}
+                                  className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 font-mono text-[11px] text-zinc-100"
+                                  title="X"
+                                />
+                                <NumericInput
+                                  ariaLabel="Destino IA Z"
+                                  value={Number(act.parameters.z ?? 0)}
+                                  onChange={(z) => patchParams({ z })}
+                                  className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 font-mono text-[11px] text-zinc-100"
+                                  title="Z"
+                                />
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-zinc-500 self-center">Detiene agente</span>
+                            )}
+                          </div>
+                        )}
+
+                        {act.type === 'dialogue.start' && (
                           <input
-                            type="number"
+                            type="text"
+                            placeholder="ID del diálogo (ej: dlg_1)"
+                            value={String(act.parameters.dialogueId ?? '')}
+                            onChange={(e) => patchParams({ dialogueId: e.target.value })}
+                            className="w-full rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 text-[11px] text-zinc-100"
+                          />
+                        )}
+
+                        {act.type === 'i18n.setLocale' && (
+                          <select
+                            aria-label="Idioma a activar"
+                            value={String(act.parameters.locale ?? 'es')}
+                            onChange={(e) => patchParams({ locale: e.target.value })}
+                            className="w-full rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 text-[11px] text-zinc-100"
+                          >
+                            <option value="es">Español (es)</option>
+                            <option value="en">English (en)</option>
+                            <option value="pt">Português (pt)</option>
+                          </select>
+                        )}
+
+                        {act.type === 'wait' && (
+                          <NumericInput
+                            ariaLabel="Segundos de espera"
                             min={0.05}
                             step={0.05}
                             placeholder="Segundos"
                             value={Number(act.parameters.seconds ?? 0.5)}
-                            onChange={(e) =>
-                              patchParams({ seconds: Math.max(0.05, Number(e.target.value) || 0.5) })
-                            }
+                            onChange={(seconds) => patchParams({ seconds })}
                             className="w-full rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
                           />
                         )}

@@ -200,3 +200,78 @@ export function hitTestGizmoHandle(
   }
   return closest;
 }
+
+export type ColliderHandleType = 'col-move' | 'col-n' | 'col-s' | 'col-e' | 'col-w' | 'col-r';
+
+export interface ColliderHandlePoint {
+  type: ColliderHandleType;
+  colliderId: string;
+  stageX: number;
+  stageY: number;
+}
+
+export function computeColliderHandles(
+  obj: GameObjectData,
+  objectMap: Map<string, GameObjectData>
+): ColliderHandlePoint[] {
+  const world = getWorldTransform(obj, objectMap);
+  const sx = world.scaleX || 1;
+  const sy = world.scaleY || 1;
+  const cols = obj.colliders ?? [];
+
+  if (cols.length === 0) {
+    // Usar el contorno visual como colisionador implícito editable (se materializa al arrastrar)
+    const w = Math.abs(obj.transform.width * sx);
+    const h = Math.abs(obj.transform.height * sy);
+    const cx = world.x + (0.5 - obj.transform.anchorX) * w;
+    const cy = world.y + (0.5 - obj.transform.anchorY) * h;
+    return [
+      { type: 'col-move', colliderId: '__auto__', stageX: cx, stageY: cy },
+      { type: 'col-n', colliderId: '__auto__', stageX: cx, stageY: cy - h / 2 },
+      { type: 'col-s', colliderId: '__auto__', stageX: cx, stageY: cy + h / 2 },
+      { type: 'col-e', colliderId: '__auto__', stageX: cx + w / 2, stageY: cy },
+      { type: 'col-w', colliderId: '__auto__', stageX: cx - w / 2, stageY: cy },
+    ];
+  }
+
+  const col = cols[0];
+  const cx = world.x + (col.offsetX ?? 0) * sx;
+  const cy = world.y + (col.offsetY ?? 0) * sy;
+  if (col.shape === 'circle') {
+    const r = Math.max(4, (col.radius ?? 24) * Math.max(Math.abs(sx), Math.abs(sy)));
+    return [
+      { type: 'col-move', colliderId: col.id, stageX: cx, stageY: cy },
+      { type: 'col-r', colliderId: col.id, stageX: cx + r, stageY: cy },
+    ];
+  }
+
+  const hw = Math.max(4, ((col.width ?? obj.transform.width) * Math.abs(sx)) / 2);
+  const hh = Math.max(4, ((col.height ?? obj.transform.height) * Math.abs(sy)) / 2);
+  return [
+    { type: 'col-move', colliderId: col.id, stageX: cx, stageY: cy },
+    { type: 'col-n', colliderId: col.id, stageX: cx, stageY: cy - hh },
+    { type: 'col-s', colliderId: col.id, stageX: cx, stageY: cy + hh },
+    { type: 'col-e', colliderId: col.id, stageX: cx + hw, stageY: cy },
+    { type: 'col-w', colliderId: col.id, stageX: cx - hw, stageY: cy },
+  ];
+}
+
+export function hitTestColliderHandle(
+  stageX: number,
+  stageY: number,
+  handles: ColliderHandlePoint[],
+  zoom: number
+): ColliderHandlePoint | null {
+  const threshold = 11 / Math.max(zoom, 0.1);
+  let closest: ColliderHandlePoint | null = null;
+  let bestDist = Infinity;
+  for (const h of handles) {
+    const dist = Math.hypot(stageX - h.stageX, stageY - h.stageY);
+    if (dist <= threshold && dist < bestDist) {
+      bestDist = dist;
+      closest = h;
+    }
+  }
+  return closest;
+}
+

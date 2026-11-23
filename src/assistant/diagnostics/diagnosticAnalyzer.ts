@@ -509,5 +509,131 @@ export function analyzeProjectDiagnostics(
     }
   }
 
+  // 7. Validación inteligente de NexusScript (adjunción, física/colisión, referencias y conflicto con SmartCamera)
+  const attachedScriptIds = new Set<string>(scene.scriptIds ?? []);
+  for (const obj of scene.objects) {
+    for (const b of obj.scriptBindings ?? []) {
+      if (b.enabled) attachedScriptIds.add(b.scriptId);
+    }
+  }
+  const existingNames = new Set(scene.objects.map((o) => o.name));
+  const existingTags = new Set(scene.objects.flatMap((o) => o.tags ?? []));
+  const mainCam3d =
+    scene.objects.find((o) => o.type === 'camera_3d' && o.camera3d?.isMainCamera) ??
+    scene.objects.find((o) => o.type === 'camera_3d') ??
+    null;
+
+  for (const sc of project.scripts ?? []) {
+    if (sc.kind !== 'script') continue;
+    const code = sc.code ?? '';
+    if (!attachedScriptIds.has(sc.id)) {
+      diagnostics.push({
+        id: `diag-script-unattached-${sc.id}`,
+        severity: 'info',
+        code: 'SCRIPT_UNATTACHED',
+        title: `Script "${sc.name}" no está adjunto a la escena ni a ningún objeto`,
+        detail: 'Adjúntalo en Estudio de Código o en el Inspector para que se ejecute durante la partida.',
+        fix: {
+          label: 'Adjuntar a la escena actual',
+          apply: (proj) => ({
+            ...proj,
+            scenes: proj.scenes.map((s) =>
+              s.id === scene.id
+                ? { ...s, scriptIds: Array.from(new Set([...(s.scriptIds ?? []), sc.id])) }
+                : s
+            ),
+          }),
+        },
+      });
+    }
+
+    if (mainCam3d && mainCam3d.camera3d && mainCam3d.camera3d.mode !== 'fixed') {
+      if (/nexus\.camera\.(setPosition|blendTo|lookAt)\s*\(/.test(code) && attachedScriptIds.has(sc.id)) {
+        diagnostics.push({
+          id: `diag-script-cam-conflict-${sc.id}`,
+          severity: 'warning',
+          code: 'SCRIPT_CAMERA_CONFLICT',
+          title: `Script "${sc.name}" mueve la cámara pero "${mainCam3d.name}" está en modo automático`,
+          detail:
+            'Si la Cámara Inteligente sigue al jugador, sobrescribirá la posición del script. Cambia la cámara a modo "Fija" si el script la controla.',
+          objectId: mainCam3d.id,
+          fix: {
+            label: 'Cambiar cámara a modo Fija',
+            apply: (proj) =>
+              updateSceneObjectInProject(proj, scene.id, mainCam3d.id, (o) => ({
+                ...o,
+                camera3d: o.camera3d ? { ...o.camera3d, mode: 'fixed' } : o.camera3d,
+              })),
+          },
+        });
+      }
+    }
+
+    if (attachedScriptIds.has(sc.id)) {
+      const nameMatches = code.matchAll(/findByName\(\s*['"]([^'"]+)['"]\s*\)/g);
+      for (const m of nameMatches) {
+        const refName = m[1];
+        if (!existingNames.has(refName)) {
+          diagnostics.push({
+            id: `diag-script-refname-${sc.id}-${refName}`,
+            severity: 'warning',
+            code: 'SCRIPT_BROKEN_REF',
+            title: `Script "${sc.name}" busca el objeto "${refName}" que no existe`,
+            detail: `Verifica que el objeto llamado "${refName}" exista en la escena "${scene.name}".`,
+          });
+        }
+      }
+      const tagMatches = code.matchAll(/findByTag\(\s*['"]([^'"]+)['"]\s*\)/g);
+      for (const m of tagMatches) {
+        const refTag = m[1];
+        if (!existingTags.has(refTag)) {
+          diagnostics.push({
+            id: `diag-script-reftag-${sc.id}-${refTag}`,
+            severity: 'warning',
+            code: 'SCRIPT_BROKEN_REF',
+            title: `Script "${sc.name}" busca la etiqueta "${refTag}" sin objetos asignados`,
+            detail: `Añade la etiqueta "${refTag}" al menos a un objeto en el Inspector.`,
+          });
+        }
+      }
+    }
+  }
+
+  for (const obj of scene.objects) {
+    if (obj.type === 'mesh_3d' && (obj.scriptBindings ?? []).length > 0 && obj.physics3d?.enabled === false) {
+      const hasCollisionHook = (obj.scriptBindings ?? []).some((b) => {
+        if (!b.enabled) return false;
+        const sc = (project.scripts ?? []).find((s) => s.id === b.scriptId);
+        return Boolean(sc && /onCollisionEnter/.test(sc.code));
+      });
+      if (hasCollisionHook) {
+        diagnostics.push({
+          id: `diag-script-nophy-${obj.id}`,
+          severity: 'warning',
+          code: 'SCRIPT_COLLISION_NO_PHYSICS',
+          title: `"${obj.name}" tiene script onCollisionEnter pero Física 3D desactivada`,
+          detail: 'Activa el cuerpo físico 3D para que el motor dispare colisiones hacia el script.',
+          objectId: obj.id,
+          fix: {
+            label: 'Activar Física 3D',
+            apply: (proj) =>
+              updateSceneObjectInProject(proj, scene.id, obj.id, (o) => ({
+                ...o,
+                physics3d: {
+                  enabled: true,
+                  bodyType: o.physics3d?.bodyType ?? 'dynamic',
+                  shape: o.physics3d?.shape ?? 'box',
+                  mass: o.physics3d?.mass ?? 1,
+                  gravityScale: o.physics3d?.gravityScale ?? 1,
+                  restitution: o.physics3d?.restitution ?? 0.1,
+                  friction: o.physics3d?.friction ?? 0.6,
+                },
+              })),
+          },
+        });
+      }
+    }
+  }
+
   return diagnostics;
 }

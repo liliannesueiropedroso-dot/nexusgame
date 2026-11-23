@@ -31,7 +31,7 @@ export interface MechanicCatalogEntry {
   description: string;
   keywords: string[];
   compatibleWith: Array<
-    'sprite' | 'rectangle' | 'circle' | 'tilemap' | 'ui_button' | 'ui_panel' | 'ui_progress_bar' | 'ui_leaderboard' | 'any'
+    'sprite' | 'rectangle' | 'circle' | 'tilemap' | 'mesh_3d' | 'container' | 'ui_button' | 'ui_panel' | 'ui_progress_bar' | 'ui_leaderboard' | 'any'
   >;
   requiresComponents: string[];
   events: string[];
@@ -86,12 +86,33 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
       'teclado',
       'wasd',
     ],
-    compatibleWith: ['sprite', 'rectangle', 'circle'],
+    compatibleWith: ['sprite', 'rectangle', 'circle', 'mesh_3d', 'container'],
     requiresComponents: [],
     events: ['input.pressed', 'object.grounded'],
     actions: ['object.move', 'audio.beep'],
     buildApplyPatch: (target) => {
       if (!target) return null;
+      if (target.type === 'mesh_3d') {
+        return {
+          updatedObject: {
+            ...target,
+            physics3d: {
+              enabled: true,
+              bodyType: 'dynamic',
+              shape: target.physics3d?.shape ?? 'capsule',
+              mass: target.physics3d?.mass ?? 1,
+              gravityScale: target.physics3d?.gravityScale ?? 1,
+              restitution: target.physics3d?.restitution ?? 0,
+              friction: target.physics3d?.friction ?? 0.6,
+            },
+            components: upsertComponent(target, 'player_3d', {
+              speed: 6.5,
+              jumpForce: 8.5,
+            }),
+          },
+          summary: `Controlador Jugador 3D con gravedad aplicado a "${target.name}".`,
+        };
+      }
       return {
         updatedObject: {
           ...target,
@@ -127,12 +148,33 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
       'caminar',
       'jugador',
     ],
-    compatibleWith: ['sprite', 'rectangle', 'circle'],
+    compatibleWith: ['sprite', 'rectangle', 'circle', 'mesh_3d', 'container'],
     requiresComponents: [],
     events: ['input.pressed'],
     actions: ['object.move'],
     buildApplyPatch: (target) => {
       if (!target) return null;
+      if (target.type === 'mesh_3d') {
+        return {
+          updatedObject: {
+            ...target,
+            physics3d: {
+              enabled: true,
+              bodyType: 'dynamic',
+              shape: target.physics3d?.shape ?? 'capsule',
+              mass: target.physics3d?.mass ?? 1,
+              gravityScale: target.physics3d?.gravityScale ?? 1,
+              restitution: target.physics3d?.restitution ?? 0,
+              friction: target.physics3d?.friction ?? 0.6,
+            },
+            components: upsertComponent(target, 'player_3d', {
+              speed: 6.5,
+              jumpForce: 8.5,
+            }),
+          },
+          summary: `Controlador Jugador 3D aplicado a "${target.name}".`,
+        };
+      }
       return {
         updatedObject: {
           ...target,
@@ -255,7 +297,7 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
       'jugador',
       'rango',
     ],
-    compatibleWith: ['sprite', 'rectangle', 'circle'],
+    compatibleWith: ['sprite', 'rectangle', 'circle', 'mesh_3d', 'container'],
     requiresComponents: [],
     events: ['tick'],
     actions: ['object.move'],
@@ -264,10 +306,23 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
       return {
         updatedObject: {
           ...target,
+          ...(target.type === 'mesh_3d'
+            ? {
+                physics3d: {
+                  enabled: true,
+                  bodyType: 'dynamic' as const,
+                  shape: target.physics3d?.shape ?? ('box' as const),
+                  mass: target.physics3d?.mass ?? 1,
+                  gravityScale: target.physics3d?.gravityScale ?? 1,
+                  restitution: target.physics3d?.restitution ?? 0,
+                  friction: target.physics3d?.friction ?? 0.6,
+                },
+              }
+            : {}),
           components: upsertComponent(target, 'chase_player', {
-            speed: 135,
-            detectRadius: 460,
-            stopDistance: 36,
+            speed: target.type === 'mesh_3d' ? 3.8 : 135,
+            detectRadius: target.type === 'mesh_3d' ? 28 : 460,
+            stopDistance: target.type === 'mesh_3d' ? 1.2 : 36,
           }),
         },
         summary: `IA de seguimiento al jugador aplicada a "${target.name}".`,
@@ -281,7 +336,7 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
     description:
       'Mueve el objeto continuamente de un extremo a otro en eje horizontal o vertical.',
     keywords: ['patrulla', 'patrullar', 'vigia', 'enemigo', 'dron', 'ida y vuelta', 'oscilar'],
-    compatibleWith: ['sprite', 'rectangle', 'circle'],
+    compatibleWith: ['sprite', 'rectangle', 'circle', 'mesh_3d', 'container'],
     requiresComponents: [],
     events: ['tick'],
     actions: ['object.move'],
@@ -292,8 +347,8 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
           ...target,
           components: upsertComponent(target, 'patrol', {
             axis: 'x',
-            distance: 150,
-            speed: 110,
+            distance: target.type === 'mesh_3d' ? 4 : 150,
+            speed: target.type === 'mesh_3d' ? 2.8 : 110,
           }),
         },
         summary: `Patrulla automática aplicada a "${target.name}".`,
@@ -695,6 +750,203 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
           components: upsertComponent(target, 'checkpoint', {}),
         },
         summary: `"${target.name}" configurado como Checkpoint de reaparición.`,
+      };
+    },
+  },
+  {
+    id: 'world.resource_node',
+    family: 'Interacción',
+    name: 'Nodo de Recurso Recolectable (Reaparición)',
+    description:
+      'Entrega ítems al inventario del jugador, suma puntos y reaparece tras un tiempo configurable.',
+    keywords: ['recurso', 'recolectar', 'cristal', 'mineral', 'madera', 'respawn', 'mochila'],
+    compatibleWith: ['sprite', 'rectangle', 'circle', 'mesh_3d'],
+    requiresComponents: [],
+    events: ['collision.enter'],
+    actions: ['variable.add', 'audio.beep'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          role: 'collectible',
+          components: upsertComponent(target, 'world.resource_node', {
+            itemId: 'crystal',
+            amount: 1,
+            respawnSec: 20,
+            interactRadius: 56,
+            autoPickup: true,
+          }),
+        },
+        summary: `Nodo de recurso ("crystal") aplicado a "${target.name}".`,
+      };
+    },
+  },
+  {
+    id: 'tool.fishing_rod',
+    family: 'Interacción',
+    name: 'Caña de Pescar (Herramienta)',
+    description:
+      'Permite lanzar el anzuelo con la tecla F y capturar peces aleatorios hacia el inventario.',
+    keywords: ['pesca', 'cana', 'rio', 'mar', 'lago', 'herramienta', 'pez'],
+    compatibleWith: ['sprite', 'rectangle', 'mesh_3d'],
+    requiresComponents: [],
+    events: ['input.pressed'],
+    actions: ['variable.add', 'audio.beep'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          role: 'tool',
+          components: upsertComponent(target, 'tool.fishing_rod', {
+            castKey: 'KeyF',
+            castRange: 120,
+            biteTimeSec: 1.8,
+            fishPool: 'trucha,salmon,pez_dorado',
+          }),
+        },
+        summary: `Caña de pescar equipada en "${target.name}".`,
+      };
+    },
+  },
+  {
+    id: 'vehicle.watercraft',
+    family: 'Movimiento',
+    name: 'Bote / Vehículo Acuático',
+    description:
+      'Permite abordar y navegar sobre agua con la tecla E, conectando flotación y cámara.',
+    keywords: ['bote', 'barco', 'lancha', 'agua', 'navegar', 'vehiculo'],
+    compatibleWith: ['sprite', 'rectangle', 'mesh_3d'],
+    requiresComponents: [],
+    events: ['input.pressed'],
+    actions: ['object.move'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          role: 'boat',
+          components: upsertComponent(target, 'vehicle.watercraft', {
+            boardKey: 'KeyE',
+            maxSpeed: 220,
+            turnSpeed: 140,
+            boardRadius: 85,
+          }),
+        },
+        summary: `Vehículo acuático configurado en "${target.name}".`,
+      };
+    },
+  },
+  {
+    id: 'survival.vitals',
+    family: 'Interacción',
+    name: 'Vitales de Supervivencia (Hambre / Sed)',
+    description:
+      'Gestiona barras de hambre y sed continuas para mundos abiertos y supervivencia.',
+    keywords: ['hambre', 'sed', 'supervivencia', 'estamina', 'vitales', 'mundo abierto'],
+    compatibleWith: ['sprite', 'rectangle', 'mesh_3d'],
+    requiresComponents: [],
+    events: ['tick'],
+    actions: ['variable.set'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          components: upsertComponent(target, 'survival.vitals', {
+            hungerDrainPerMin: 3,
+            thirstDrainPerMin: 4,
+            staminaRegen: 18,
+          }),
+        },
+        summary: `Vitales de supervivencia añadidos a "${target.name}".`,
+      };
+    },
+  },
+  {
+    id: 'rpg.quest_giver',
+    family: 'Interacción',
+    name: 'NPC Dador de Misiones',
+    description:
+      'Entrega recompensas automáticas cuando el jugador reúne los ítems solicitados.',
+    keywords: ['mision', 'quest', 'npc', 'recompensa', 'rpg', 'historia'],
+    compatibleWith: ['sprite', 'rectangle', 'mesh_3d'],
+    requiresComponents: [],
+    events: ['collision.enter'],
+    actions: ['variable.add', 'audio.beep'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          role: 'npc',
+          components: upsertComponent(target, 'rpg.quest_giver', {
+            questId: 'quest_crystals',
+            targetItem: 'crystal',
+            requiredAmount: 3,
+            rewardPoints: 100,
+          }),
+        },
+        summary: `NPC de misiones configurado en "${target.name}".`,
+      };
+    },
+  },
+  {
+    id: 'net.entity_sync',
+    family: 'Escenas y UI',
+    name: 'Sincronización Multijugador en Tiempo Real',
+    description:
+      'Replica posición, animación y estado del jugador mediante WebSocket autoritativo.',
+    keywords: ['multijugador', 'multiplayer', 'red', 'websocket', 'online', 'cooperativo'],
+    compatibleWith: ['sprite', 'rectangle', 'mesh_3d'],
+    requiresComponents: [],
+    events: ['tick'],
+    actions: ['event.emit'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          net: {
+            replicated: true,
+            authority: 'local',
+            syncTransform: true,
+            syncAnim: true,
+            ownerId: null,
+          },
+          components: upsertComponent(target, 'net.entity_sync', {
+            authority: 'local',
+            roomId: 'sala_global',
+            syncRateHz: 12,
+          }),
+        },
+        summary: `Sincronización Multijugador activada en "${target.name}".`,
+      };
+    },
+  },
+  {
+    id: 'portal.web_sdk',
+    family: 'Escenas y UI',
+    name: 'Puente Portal Web (Poki / CrazyGames / Playgama)',
+    description:
+      'Integra ciclo de carga, pausa durante anuncios y guardado en la nube del portal.',
+    keywords: ['poki', 'crazygames', 'playgama', 'portal', 'web', 'anuncio', 'sdk'],
+    compatibleWith: ['any'],
+    requiresComponents: [],
+    events: ['scene.start'],
+    actions: ['storage.save'],
+    buildApplyPatch: (target) => {
+      if (!target) return null;
+      return {
+        updatedObject: {
+          ...target,
+          components: upsertComponent(target, 'portal.web_sdk', {
+            provider: 'auto',
+            autoGameplayEvents: true,
+          }),
+        },
+        summary: `Puente de Portal Web integrado en "${target.name}".`,
       };
     },
   },

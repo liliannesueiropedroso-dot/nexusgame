@@ -1,0 +1,909 @@
+Aquí tienes el paquete completo de correcciones reales, conexiones faltantes y nuevos sistemas, adaptado exactamente a los nombres de archivos, tipos y APIs de tu repositorio actual (sin placeholders ni código simulado).
+BLOQUE 1: Parches Críticos de Errores y Desconexiones Reales
+1.1. src/components/dock/MechanicsPanel.tsx — Corregir physics.impulse, camera.switch y vfx.emit
+En MechanicsPanel.tsx hay dos desajustes de nombres de parámetros respecto a stepGameSimulation.ts, physics3d.ts, runtimeTemplate.ts y threeRuntimeTemplate.ts:
+physics.impulse guardaba vx/vy en lugar de ix/iy (y iz en 3D).
+camera.switch guardaba cameraObjectId/blendSec en lugar de cameraId/duration.
+Reemplaza esos bloques en MechanicsPanel.tsx:
+Tsx
+// 1) Bloque physics.impulse / physics.force / physics.setVelocity / object.move / object.teleport:
+{(act.type === 'object.move' ||
+  act.type === 'object.teleport' ||
+  act.type === 'physics.impulse' ||
+  act.type === 'physics.force' ||
+  act.type === 'physics.setVelocity') && (
+  <div className="grid grid-cols-3 gap-1">
+    <select
+      value={String(act.parameters.target ?? '')}
+      onChange={(e) => patchParams({ target: e.target.value })}
+      className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+    >
+      <option value="">Objeto...</option>
+      <option value="$self">$self (Emisor)</option>
+      <option value="$other">$other (Colisión)</option>
+      {objects.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.name}
+        </option>
+      ))}
+    </select>
+    <NumericInput
+      ariaLabel="Valor X"
+      placeholder="X"
+      value={Number(
+        act.type === 'object.move'
+          ? act.parameters.dx ?? 0
+          : act.type === 'object.teleport'
+            ? act.parameters.x ?? 0
+            : act.type === 'physics.force'
+              ? act.parameters.fx ?? 0
+              : act.type === 'physics.impulse'
+                ? act.parameters.ix ?? act.parameters.vx ?? 0
+                : act.parameters.vx ?? 0
+      )}
+      onChange={(v) => {
+        if (act.type === 'object.move') patchParams({ dx: v });
+        else if (act.type === 'object.teleport') patchParams({ x: v });
+        else if (act.type === 'physics.force') patchParams({ fx: v });
+        else if (act.type === 'physics.impulse') patchParams({ ix: v });
+        else patchParams({ vx: v });
+      }}
+      className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+    />
+    <NumericInput
+      ariaLabel="Valor Y"
+      placeholder="Y"
+      value={Number(
+        act.type === 'object.move'
+          ? act.parameters.dy ?? 0
+          : act.type === 'object.teleport'
+            ? act.parameters.y ?? 0
+            : act.type === 'physics.force'
+              ? act.parameters.fy ?? 0
+              : act.type === 'physics.impulse'
+                ? act.parameters.iy ?? act.parameters.vy ?? 0
+                : act.parameters.vy ?? 0
+      )}
+      onChange={(v) => {
+        if (act.type === 'object.move') patchParams({ dy: v });
+        else if (act.type === 'object.teleport') patchParams({ y: v });
+        else if (act.type === 'physics.force') patchParams({ fy: v });
+        else if (act.type === 'physics.impulse') patchParams({ iy: v });
+        else patchParams({ vy: v });
+      }}
+      className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+    />
+    {act.type === 'physics.impulse' && (
+      <NumericInput
+        ariaLabel="Impulso Z (3D)"
+        placeholder="Z (3D)"
+        value={Number(act.parameters.iz ?? 0)}
+        onChange={(iz) => patchParams({ iz })}
+        className="col-span-3 rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+      />
+    )}
+  </div>
+)}
+
+// 2) Bloque camera.switch alineado con physics3d.ts y stepGameSimulation.ts:
+{act.type === 'camera.switch' && (
+  <div className="grid grid-cols-2 gap-1">
+    <select
+      aria-label="Cámara 3D destino"
+      value={String(act.parameters.cameraId ?? act.parameters.cameraObjectId ?? '')}
+      onChange={(e) => patchParams({ cameraId: e.target.value })}
+      className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+    >
+      <option value="">Seleccionar cámara...</option>
+      {objects.filter((o) => o.type === 'camera_3d' || o.type === 'mesh_3d').map((o) => (
+        <option key={o.id} value={o.id}>{o.name}</option>
+      ))}
+    </select>
+    <NumericInput
+      ariaLabel="Duración transición de cámara"
+      min={0}
+      step={0.1}
+      value={Number(act.parameters.duration ?? act.parameters.blendSec ?? 0.65)}
+      onChange={(duration) => patchParams({ duration })}
+      className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+      title="Duración transición (s)"
+    />
+  </div>
+)}
+1.2. src/engine/runtime/stepGameSimulation.ts — Resolver $self / $other y Física 2D con Hijos (parentId)
+En executeActionList, añade el parámetro opcional ctx?: { owner?: GameObjectData; other?: GameObjectData } y resuelve un helper resolveActionTarget(ref):
+Ts
+function resolveActionTarget(
+  rawRef: unknown,
+  objectMap: Map<string, GameObjectData>,
+  ctx?: { owner?: GameObjectData; other?: GameObjectData }
+): GameObjectData | undefined {
+  const ref = String(rawRef ?? '').trim();
+  if (!ref) return ctx?.owner;
+  if (ref === '$self') return ctx?.owner;
+  if (ref === '$other') return ctx?.other;
+  const direct = objectMap.get(ref);
+  if (direct) return direct;
+  for (const obj of objectMap.values()) {
+    if (obj.name === ref) return obj;
+  }
+  return undefined;
+}
+Y al disparar reglas de colisión/trigger en el bucle de mechanics, guarda (matchedOwner, matchedOther) y pásalos a executeActionList(mech.actions, mech.id, state, objectMap, { owner: matchedOwner, other: matchedOther }).
+En resolveAxisHorizontal y resolveAxisVertical, si obj.parentId existe, convierte el desplazamiento mundial al espacio local del padre usando stageDeltaToParentLocal de ../core/math:
+Ts
+import { getWorldTransform, stageDeltaToParentLocal } from '../core/math';
+
+function applyWorldDeltaToObject(
+  obj: GameObjectData,
+  dxWorld: number,
+  dyWorld: number,
+  objectMap: Map<string, GameObjectData>
+): void {
+  if (!obj.parentId) {
+    obj.transform.x += dxWorld;
+    obj.transform.y += dyWorld;
+    return;
+  }
+  const local = stageDeltaToParentLocal(dxWorld, dyWorld, obj.parentId, objectMap);
+  obj.transform.x += local.x;
+  obj.transform.y += local.y;
+}
+1.3. src/engine/physics3d/physics3d.ts y src/components/preview/PreviewModal.tsx — Timestep Fijo 3D, lighting.flicker y Widgets entre Escenas 2D
+En src/engine/physics3d/physics3d.ts: dentro del bucle de componentes de step(), añade lighting.flicker:
+Ts
+} else if (comp.type === 'lighting.flicker' && obj.type === 'light_3d' && obj.source.light3d) {
+  const spd = Number(comp.config.speed ?? 8);
+  const amt = Number(comp.config.amount ?? 0.25);
+  const baseKey = '__baseIntensity';
+  const l3 = obj.source.light3d as unknown as Record<string, number>;
+  if (l3[baseKey] === undefined) l3[baseKey] = obj.source.light3d.intensity;
+  const baseInt = l3[baseKey];
+  obj.source.light3d.intensity = Math.max(
+    0.1,
+    baseInt * (1 + Math.sin(elapsedTime * spd + obj.t3.x) * amt)
+  );
+}
+En src/components/preview/PreviewModal.tsx:
+Sincronizar intensidad y color de luces 3D dentro del bucle de renderizado 3D donde actualizas lightBindings:
+Ts
+const lightObj = lightBindings.get(objState.id);
+if (lightObj) {
+  lightObj.visible = objState.visible;
+  lightObj.position.set(objState.t3.x, objState.t3.y, objState.t3.z);
+  lightObj.rotation.set(
+    THREE.MathUtils.degToRad(objState.t3.rx),
+    THREE.MathUtils.degToRad(objState.t3.ry),
+    THREE.MathUtils.degToRad(objState.t3.rz)
+  );
+  const l3Src = objState.source.light3d;
+  if (l3Src) {
+    const actualLight = lightObj.children[0] as THREE.Light | undefined;
+    if (actualLight && 'intensity' in actualLight) {
+      actualLight.intensity = l3Src.intensity;
+      actualLight.color.set(l3Src.color);
+    }
+  }
+}
+Timestep fijo FIXED_DT = 1/60 en el loop 3D (para que el salto y gravedad sean idénticos a 30, 60 o 144 FPS):
+Ts
+let acc3d = 0;
+// Dentro de loop(now):
+if (!pausedRef.current && sim3d) {
+  acc3d += dt;
+  let sub = 0;
+  while (acc3d >= FIXED_DT && sub < 4) {
+    sim3d.step({
+      dt: FIXED_DT,
+      heldKeys,
+      justPressedKeys,
+      moveAxisX: mx,
+      moveAxisY: my,
+      orbitDeltaYawDeg: sub === 0 ? orbitYawDelta : 0,
+      orbitDeltaPitchDeg: sub === 0 ? orbitPitchDelta : 0,
+    });
+    justPressedKeys.clear();
+    orbitYawDelta = 0;
+    orbitPitchDelta = 0;
+    acc3d -= FIXED_DT;
+    sub++;
+  }
+}
+Reiniciar hiddenWidgetIds al cambiar de escena en Preview 2D: guarda lastSceneId2dRef y cuando manager.activeTopState.scene.id !== lastSceneId2dRef.current, recalcula hiddenWidgetIds a partir de visibleAtStart === false de la nueva escena.
+1.4. src/export/zipImporter.ts — Soporte de .fbx al Reimportar Proyectos
+En src/export/zipImporter.ts, cambia:
+Ts
+const isModel3d =
+  assetEntryMeta.kind === 'model3d' ||
+  assetEntryMeta.format === 'glb' ||
+  assetEntryMeta.format === 'gltf' ||
+  assetEntryMeta.format === 'fbx';
+1.5. src/export/html5/threeRuntimeTemplate.ts — Corregir Crash playAudio + conditionCombinator + Acumulador Fijo
+En threeRuntimeTemplate.ts:
+En world.resource_node, cambia playAudio('coin', 0.85, 'sfx'); por playSfx('coin', 0.85);.
+En runMechanics3D, reemplaza el conds.every(...) por soporte real de any / none / all:
+Js
+var comb = m.conditionCombinator || 'all';
+var ok = conds.length === 0
+  ? true
+  : comb === 'any'
+    ? conds.some(function (c) { return evalCondition3D(c, owner); })
+    : comb === 'none'
+      ? conds.every(function (c) { return !evalCondition3D(c, owner); })
+      : conds.every(function (c) { return evalCondition3D(c, owner); });
+Añade en evalCondition3D las condiciones faltantes (object.grounded, distance.less, distance.greater, random.chance, health.compare):
+Js
+if (c.type === 'object.grounded') {
+  var og = activeSim.objects.find(function (o) { return o.id === c.target || o.name === c.target; }) || owner;
+  return Boolean(og && og.isGrounded === (c.value === undefined ? true : Boolean(c.value)));
+}
+if (c.type === 'distance.less' || c.type === 'distance.greater') {
+  var da = activeSim.objects.find(function (o) { return o.id === c.target || o.name === c.target; }) || owner;
+  var db = activeSim.objects.find(function (o) { return o.id === c.secondaryTarget || o.name === c.secondaryTarget; });
+  if (!da || !db) return false;
+  var dist3 = Math.hypot(da.t3.x - db.t3.x, da.t3.y - db.t3.y, da.t3.z - db.t3.z);
+  var th3 = Number(c.value || 5);
+  return c.type === 'distance.less' ? dist3 < th3 : dist3 > th3;
+}
+if (c.type === 'random.chance') {
+  return Math.random() * 100 <= Number(c.value !== undefined ? c.value : 50);
+}
+En executeAction3D, añade camera.switch, anim3d.setState, ai.chase, ai.moveTo, ai.stop, leaderboard.submit:
+Js
+else if (act.type === 'camera.switch') {
+  var camId = String(p.cameraId || p.cameraObjectId || p.target || '');
+  makeScriptApi3D(FIXED_DT).camera.switchCamera(camId, Number(p.duration || p.blendSec || 0.65));
+} else if (act.type === 'anim3d.setState' && tgt && p.stateName) {
+  makeScriptHandle3D(tgt, {}).setAnimState(String(p.stateName));
+} else if (act.type === 'ai.chase' && tgt) {
+  tgt.source.aiAgent = Object.assign(tgt.source.aiAgent || { speed: 4, acceleration: 12, avoidanceRadius: 1, stoppingDistance: 1.5 }, { enabled: true, mode: 'chase', targetObjectId: String(p.chaseTargetId || '') });
+} else if (act.type === 'ai.moveTo' && tgt) {
+  tgt.source.aiAgent = Object.assign(tgt.source.aiAgent || { speed: 4, acceleration: 12, avoidanceRadius: 1, stoppingDistance: 1 }, { enabled: true, mode: 'moveTo', targetX: Number(p.x || 0), targetZ: Number(p.z || 0) });
+} else if (act.type === 'ai.stop' && tgt && tgt.source.aiAgent) {
+  tgt.source.aiAgent.mode = 'idle'; tgt.navPath = [];
+}
+BLOQUE 2: Exposición Visual de Herramientas ya Existentes
+2.1. Activar Arrastre Visual de Colisionadores 2D en CanvasViewport.tsx y PixiStageRenderer.ts
+Ya tienes computeColliderHandles y hitTestColliderHandle en src/engine/renderer2d/hitTest.ts. Conéctalos así:
+En src/engine/renderer2d/PixiStageRenderer.ts (dentro de drawDebugColliders()), dibuja los cuadraditos blancos/cian sobre los handles del objeto seleccionado:
+Ts
+if (this.mode === 'editor' && this.currentSelectedIds.length === 1) {
+  const selObj = objectMap.get(this.currentSelectedIds[0]);
+  if (selObj && selObj.visible && !selObj.locked) {
+    const colHandles = computeColliderHandles(selObj, objectMap);
+    const hs = 6.5 * invZoom;
+    for (const h of colHandles) {
+      g.rect(h.stageX - hs * 0.5, h.stageY - hs * 0.5, hs, hs);
+      g.fill({ color: h.type === 'col-move' ? 0xf59e0b : 0x22c55e, alpha: 1 });
+      g.stroke({ width: 1.4 * invZoom, color: 0x09090b });
+    }
+  }
+}
+En src/components/editor/CanvasViewport.tsx:
+Agrega a DragSession:
+Ts
+| {
+    kind: 'collider';
+    handleType: ColliderHandleType;
+    targetId: string;
+    startStageX: number;
+    startStageY: number;
+    initialObj: GameObjectData;
+    initialObjects: GameObjectData[];
+    changed: boolean;
+  }
+En handlePointerDown (antes de hitTestGizmoHandle), si showDebugColliders && selectedIds.length === 1:
+Ts
+if (showDebugColliders && selectedIds.length === 1) {
+  const primary = objectMap.get(selectedIds[0]);
+  if (primary && primary.visible && !primary.locked) {
+    const cHandles = computeColliderHandles(primary, objectMap);
+    const hitCol = hitTestColliderHandle(stagePt.x, stagePt.y, cHandles, camera.zoom);
+    if (hitCol) {
+      dragRef.current = {
+        kind: 'collider',
+        handleType: hitCol.type,
+        targetId: primary.id,
+        startStageX: stagePt.x,
+        startStageY: stagePt.y,
+        initialObj: structuredClone(primary),
+        initialObjects: structuredClone(scene.objects),
+        changed: false,
+      };
+      return;
+    }
+  }
+}
+En handlePointerMove, si drag.kind === 'collider':
+Ts
+if (drag.kind === 'collider') {
+  const dx = stagePt.x - drag.startStageX;
+  const dy = stagePt.y - drag.startStageY;
+  drag.changed = true;
+  const baseCols =
+    drag.initialObj.colliders && drag.initialObj.colliders.length > 0
+      ? structuredClone(drag.initialObj.colliders)
+      : [createDefaultColliderForObject(drag.initialObj, false)];
+  const col = baseCols[0];
+  const sx = Math.max(0.05, Math.abs(drag.initialObj.transform.scaleX));
+  const sy = Math.max(0.05, Math.abs(drag.initialObj.transform.scaleY));
+  const ldx = dx / sx;
+  const ldy = dy / sy;
+
+  if (drag.handleType === 'col-move') {
+    col.offsetX = roundTo(col.offsetX + ldx, 1);
+    col.offsetY = roundTo(col.offsetY + ldy, 1);
+  } else if (drag.handleType === 'col-r') {
+    col.radius = Math.max(4, roundTo(col.radius + ldx, 1));
+  } else if (drag.handleType === 'col-e') {
+    col.width = Math.max(4, roundTo(col.width + ldx, 1));
+    col.offsetX = roundTo(col.offsetX + ldx * 0.5, 1);
+  } else if (drag.handleType === 'col-w') {
+    col.width = Math.max(4, roundTo(col.width - ldx, 1));
+    col.offsetX = roundTo(col.offsetX + ldx * 0.5, 1);
+  } else if (drag.handleType === 'col-s') {
+    col.height = Math.max(4, roundTo(col.height + ldy, 1));
+    col.offsetY = roundTo(col.offsetY + ldy * 0.5, 1);
+  } else if (drag.handleType === 'col-n') {
+    col.height = Math.max(4, roundTo(col.height - ldy, 1));
+    col.offsetY = roundTo(col.offsetY + ldy * 0.5, 1);
+  }
+
+  const updated = drag.initialObjects.map((o) =>
+    o.id === drag.targetId ? { ...o, colliders: baseCols } : o
+  );
+  onPreviewObjectsChange(updated);
+  return;
+}
+2.2. Exponer Activación Directa, Retorno Inteligente y Selector Visual de Spritesheet en AnimationStateMachineModal.tsx
+En AnimationStateMachineModal.tsx, añade KeyCaptureField y estos controles justo dentro del bloque "Estado seleccionado" (de ese modo se conectan directamente con animFsmEvaluator.ts, que ya los evalúa):
+Tsx
+{/* Activación directa y retorno inteligente (ya soportado por el motor FSM) */}
+<div className="space-y-2 rounded border border-sky-500/30 bg-[#141822] p-2">
+  <div className="text-[10px] font-bold uppercase tracking-wide text-sky-300">
+    Disparador y Retorno en Tarjeta
+  </div>
+
+  <div className="space-y-1">
+    <span className="block text-[10px] text-zinc-400">Tecla rápida de estado</span>
+    <KeyCaptureField
+      ariaLabel="Tecla del estado de animación"
+      value={selectedState.triggerKey ?? ''}
+      onChange={(code) =>
+        setDraft((prev) => ({
+          ...prev,
+          states: prev.states.map((s) =>
+            s.id === selectedState.id ? { ...s, triggerKey: code } : s
+          ),
+        }))
+      }
+    />
+  </div>
+
+  <div className="grid grid-cols-2 gap-1.5">
+    <select
+      aria-label="Modo de tecla del estado"
+      value={selectedState.triggerKeyMode ?? 'pressed'}
+      onChange={(e) =>
+        setDraft((prev) => ({
+          ...prev,
+          states: prev.states.map((s) =>
+            s.id === selectedState.id
+              ? { ...s, triggerKeyMode: e.target.value as 'pressed' | 'held' }
+              : s
+          ),
+        }))
+      }
+      className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[11px] text-white"
+    >
+      <option value="pressed">Al pulsar</option>
+      <option value="held">Al mantener</option>
+    </select>
+
+    <label className="flex items-center gap-1.5 text-[11px] text-zinc-200 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={Boolean(selectedState.fromAnyState)}
+        onChange={(e) =>
+          setDraft((prev) => ({
+            ...prev,
+            states: prev.states.map((s) =>
+              s.id === selectedState.id ? { ...s, fromAnyState: e.target.checked } : s
+            ),
+          }))
+        }
+        className="accent-amber-500"
+      />
+      <span>Desde cualquiera</span>
+    </label>
+  </div>
+
+  <div>
+    <label className="block text-[10px] text-zinc-400">Condición en tarjeta (opcional)</label>
+    <input
+      type="text"
+      placeholder="Ej. speed > 0.1 || var:salud <= 0"
+      value={selectedState.conditionExpr ?? ''}
+      onChange={(e) =>
+        setDraft((prev) => ({
+          ...prev,
+          states: prev.states.map((s) =>
+            s.id === selectedState.id ? { ...s, conditionExpr: e.target.value } : s
+          ),
+        }))
+      }
+      className="w-full rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 font-mono text-[10px] text-zinc-100"
+    />
+  </div>
+
+  <div className="grid grid-cols-2 gap-1.5">
+    <div>
+      <label className="block text-[10px] text-zinc-400">Retorno automático</label>
+      <select
+        aria-label="Modo de retorno del estado"
+        value={selectedState.returnMode ?? 'none'}
+        onChange={(e) =>
+          setDraft((prev) => ({
+            ...prev,
+            states: prev.states.map((s) =>
+              s.id === selectedState.id
+                ? { ...s, returnMode: e.target.value as AnimStateNode['returnMode'] }
+                : s
+            ),
+          }))
+        }
+        className="w-full rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[11px] text-white"
+      >
+        <option value="none">Ninguno</option>
+        <option value="smart_locomotion">Inteligente (Idle/Walk/Run)</option>
+        <option value="idle">Volver a Idle</option>
+        <option value="state">Ir a estado específico</option>
+      </select>
+    </div>
+
+    <div>
+      <label className="block text-[10px] text-zinc-400">Cuándo retornar</label>
+      <select
+        aria-label="Cuándo retornar"
+        value={selectedState.returnOn ?? 'auto'}
+        onChange={(e) =>
+          setDraft((prev) => ({
+            ...prev,
+            states: prev.states.map((s) =>
+              s.id === selectedState.id
+                ? { ...s, returnOn: e.target.value as AnimStateNode['returnOn'] }
+                : s
+            ),
+          }))
+        }
+        className="w-full rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[11px] text-white"
+      >
+        <option value="auto">Automático</option>
+        <option value="grounded">Al tocar suelo</option>
+        <option value="animFinished">Al terminar clip</option>
+        <option value="keyReleased">Al soltar tecla</option>
+      </select>
+    </div>
+  </div>
+
+  {selectedState.returnMode === 'state' && (
+    <select
+      aria-label="Estado destino de retorno"
+      value={selectedState.returnStateId ?? ''}
+      onChange={(e) =>
+        setDraft((prev) => ({
+          ...prev,
+          states: prev.states.map((s) =>
+            s.id === selectedState.id ? { ...s, returnStateId: e.target.value } : s
+          ),
+        }))
+      }
+      className="w-full rounded border border-[#32323c] bg-[#121216] px-1.5 py-1 text-[11px] text-white"
+    >
+      <option value="">Elegir estado...</option>
+      {draft.states
+        .filter((s) => s.id !== selectedState.id)
+        .map((s) => (
+          <option key={s.id} value={s.id}>{s.name}</option>
+        ))}
+    </select>
+  )}
+</div>
+Y para que en 2D el usuario no tenga que adivinar startFrame y frameCount, añade en la sección mode === '2d' una mini-rejilla visual del spritesheet con clic para marcar inicio y rango de frames:
+Tsx
+{mode === '2d' && (() => {
+  const sheetAsset = assets.find((a) => a.id === selectedState.assetId);
+  const cols = Math.max(1, selectedState.cols ?? 4);
+  const rows = Math.max(1, selectedState.rows ?? 1);
+  const totalCells = Math.min(64, cols * rows);
+  const startF = selectedState.startFrame ?? 0;
+  const endF = startF + Math.max(1, selectedState.frameCount ?? 1) - 1;
+  if (!sheetAsset?.thumbnailDataUrl) return null;
+  return (
+    <div className="space-y-1">
+      <span className="block text-[10px] text-zinc-400">
+        Clic en fotograma para fijar inicio (Shift+clic para fin):
+      </span>
+      <div
+        className="grid gap-0.5 rounded border border-[#2f2f3b] bg-[#101015] p-1"
+        style={{ gridTemplateColumns: `repeat(${Math.min(8, cols)}, minmax(0, 1fr))` }}
+      >
+        {Array.from({ length: totalCells }, (_, idx) => {
+          const c = idx % cols;
+          const r = Math.floor(idx / cols);
+          const inRange = idx >= startF && idx <= endF;
+          return (
+            <button
+              key={idx}
+              type="button"
+              onClick={(e) => {
+                setDraft((prev) => ({
+                  ...prev,
+                  states: prev.states.map((s) => {
+                    if (s.id !== selectedState.id) return s;
+                    if (e.shiftKey && idx >= (s.startFrame ?? 0)) {
+                      return { ...s, frameCount: idx - (s.startFrame ?? 0) + 1 };
+                    }
+                    return { ...s, startFrame: idx };
+                  }),
+                }));
+              }}
+              className={`relative aspect-square rounded border ${
+                inRange ? 'border-emerald-400 ring-1 ring-emerald-400/60' : 'border-[#2c2c38]'
+              }`}
+              style={{
+                backgroundImage: `url("${sheetAsset.thumbnailDataUrl}")`,
+                backgroundSize: `${cols * 100}% ${rows * 100}%`,
+                backgroundPosition: `${cols > 1 ? (c / (cols - 1)) * 100 : 0}% ${rows > 1 ? (r / (rows - 1)) * 100 : 0}%`,
+              }}
+            >
+              <span className="absolute bottom-0 right-0 bg-black/70 px-0.5 font-mono text-[8px] text-zinc-200">
+                {idx}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+})()}
+2.3. Editor Visual de Zona Collider 3D (Editar Zona) + Pincel Aplanar + selBox Real en ThreeStageViewport.tsx
+Añade estado const [editingZone3D, setEditingZone3D] = useState(false); y un botón junto a Colisiones en la barra inferior de ThreeStageViewport.tsx.
+Cuando showColliders && editingZone3D && selectedIds.length === 1:
+Crea un THREE.Mesh invisible (zoneProxy) posicionado en t3 + physics3d.offset con escala physics3d.halfExtents * 2, adjunta transformControls.attach(zoneProxy) en lugar del objeto principal, y al soltar (dragging-changed) escribe physics3d.offset y physics3d.halfExtents.
+Añade 'sculpt_flatten' a ViewportBrushMode y en applyBrushStrokeAt:
+tMode = mode === 'sculpt_flatten' ? 'flatten' : ... (ya implementado en applyTerrainSculptBrush).
+Para el recuadro de selección selBox en ThreeStageViewport.tsx:
+Si mCfg.shape === 'terrain' && mCfg.terrainData, usa BoxGeometry(mCfg.terrainData.width, Math.max(1, mCfg.terrainData.amplitude * 2), mCfg.terrainData.depth) en vez de (1.03, 1.03, 1.03).
+BLOQUE 3: Sistemas Faltantes para Comunicación Total (Sprites ↔ 3D ↔ UI ↔ Código)
+3.1. Extensión de Contrato en src/engine/core/types.ts
+Añade estas definiciones a src/engine/core/types.ts para soportar Image Points 2D, Eventos por Fotograma, Bone Sockets 3D y Nine-Slice:
+Ts
+export type SpriteFitMode =
+  | 'original'
+  | 'contain'
+  | 'cover'
+  | 'stretch'
+  | 'crop'
+  | 'tile'
+  | 'nine_slice';
+
+export interface NineSliceMargins {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface SpriteImagePoint {
+  id: string;
+  name: string; // ej. "punta_arma", "pies", "mano"
+  /** Coordenadas normalizadas (0..1) respecto al sprite */
+  nx: number;
+  ny: number;
+}
+
+export interface AnimationFrameEvent {
+  id: string;
+  clipName: string;
+  /** En 2D: índice de frame; en 3D: segundo aproximado o progreso 0..1 */
+  frameIndex: number;
+  eventName: string;
+  soundAssetId?: string | null;
+  particlePreset?: ParticlePresetId;
+}
+
+export interface BoneSocketAttachment3D {
+  parentObjectId: string;
+  boneName: string;
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+}
+Y agrégalos de forma opcional a SpriteProperties (nineSlice?: NineSliceMargins, imagePoints?: SpriteImagePoint[], frameEvents?: AnimationFrameEvent[]) y a GameObjectData (boneSocket?: BoneSocketAttachment3D).
+3.2. Nine-Slice en PixiStageRenderer.ts y Puntos de Anclaje (getSpriteImagePointWorld)
+En src/engine/renderer2d/PixiStageRenderer.ts, importa NineSliceSprite desde 'pixi.js' y dentro del case 'sprite':
+Ts
+if (obj.sprite?.fitMode === 'nine_slice') {
+  const ns = obj.sprite.nineSlice ?? { left: 16, top: 16, right: 16, bottom: 16 };
+  const nineSlice = new NineSliceSprite({
+    texture: activeTexture,
+    leftWidth: ns.left,
+    topHeight: ns.top,
+    rightWidth: ns.right,
+    bottomHeight: ns.bottom,
+  });
+  nineSlice.width = Math.max(1, width);
+  nineSlice.height = Math.max(1, height);
+  nineSlice.position.set(-width * anchorX, -height * anchorY);
+  nineSlice.tint = parseHexColor(obj.sprite?.tint, 0xffffff);
+  return nineSlice;
+}
+Y helper reutilizable en src/engine/core/math.ts para que balas/partículas/objetos lean cualquier Image Point en coordenadas globales reales (con flipX/flipY, rotación y escala incluidos):
+Ts
+export function getSpriteImagePointWorld(
+  obj: GameObjectData,
+  pointName: string,
+  objectMap: Map<string, GameObjectData>
+): Vector2 {
+  const wt = getWorldTransform(obj, objectMap);
+  const pt = obj.sprite?.imagePoints?.find((p) => p.name === pointName);
+  if (!pt) return { x: wt.x, y: wt.y };
+
+  const w = obj.transform.width * wt.scaleX;
+  const h = obj.transform.height * wt.scaleY;
+  const nx = obj.sprite?.flipX ? 1 - pt.nx : pt.nx;
+  const ny = obj.sprite?.flipY ? 1 - pt.ny : pt.ny;
+  const lx = (nx - obj.transform.anchorX) * w;
+  const ly = (ny - obj.transform.anchorY) * h;
+
+  const rad = degToRad(wt.rotation);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    x: wt.x + (lx * cos - ly * sin),
+    y: wt.y + (lx * sin + ly * cos),
+  };
+}
+3.3. Nuevo Módulo src/engine/ai2d/gridPathfinding2d.ts — Pathfinding A* 2D y Raycasting con Línea de Visión
+Para que los enemigos 2D rodeen muros y tilemaps sólidos en lugar de atascarse en línea recta:
+Ts
+import type { GameObjectData, SceneData, Vector2 } from '../core/types';
+import { getWorldColliders } from '../physics/collision2d';
+
+export interface GridNav2D {
+  cellSize: number;
+  cols: number;
+  rows: number;
+  blocked: Uint8Array;
+}
+
+export function buildGridNav2D(
+  scene: SceneData,
+  worldWidth: number,
+  worldHeight: number,
+  cellSize = 32
+): GridNav2D {
+  const cs = Math.max(16, cellSize);
+  const cols = Math.max(4, Math.ceil(worldWidth / cs));
+  const rows = Math.max(4, Math.ceil(worldHeight / cs));
+  const blocked = new Uint8Array(cols * rows);
+
+  for (const obj of scene.objects) {
+    if (!obj.visible) continue;
+    const isSolid = obj.components.some((c) => c.enabled && c.type === 'solid');
+    if (!isSolid) continue;
+
+    if (obj.type === 'tilemap' && obj.tilemap) {
+      const tm = obj.tilemap;
+      const tw = tm.tileWidth * obj.transform.scaleX;
+      const th = tm.tileHeight * obj.transform.scaleY;
+      const ox = obj.transform.x - tm.cols * tw * obj.transform.anchorX;
+      const oy = obj.transform.y - tm.rows * th * obj.transform.anchorY;
+      for (const k of Object.keys(tm.cells)) {
+        const [cStr, rStr] = k.split(',');
+        const l = ox + Number(cStr) * tw;
+        const t = oy + Number(rStr) * th;
+        markRectBlocked(blocked, cols, rows, cs, l, t, l + tw, t + th);
+      }
+    } else {
+      for (const col of getWorldColliders(obj)) {
+        if (!col.isSensor) {
+          markRectBlocked(blocked, cols, rows, cs, col.left, col.top, col.right, col.bottom);
+        }
+      }
+    }
+  }
+
+  return { cellSize: cs, cols, rows, blocked };
+}
+
+function markRectBlocked(
+  blocked: Uint8Array,
+  cols: number,
+  rows: number,
+  cs: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number
+): void {
+  const c0 = Math.max(0, Math.floor(left / cs));
+  const c1 = Math.min(cols - 1, Math.floor((right - 0.1) / cs));
+  const r0 = Math.max(0, Math.floor(top / cs));
+  const r1 = Math.min(rows - 1, Math.floor((bottom - 0.1) / cs));
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      blocked[r * cols + c] = 1;
+    }
+  }
+}
+
+export function findPath2D(nav: GridNav2D, start: Vector2, goal: Vector2): Vector2[] {
+  const sc = Math.max(0, Math.min(nav.cols - 1, Math.floor(start.x / nav.cellSize)));
+  const sr = Math.max(0, Math.min(nav.rows - 1, Math.floor(start.y / nav.cellSize)));
+  const gc = Math.max(0, Math.min(nav.cols - 1, Math.floor(goal.x / nav.cellSize)));
+  const gr = Math.max(0, Math.min(nav.rows - 1, Math.floor(goal.y / nav.cellSize)));
+
+  const startIdx = sr * nav.cols + sc;
+  const goalIdx = gr * nav.cols + gc;
+  if (startIdx === goalIdx) return [goal];
+
+  const total = nav.cols * nav.rows;
+  const gScore = new Float32Array(total).fill(Infinity);
+  const fScore = new Float32Array(total).fill(Infinity);
+  const cameFrom = new Int32Array(total).fill(-1);
+  const closed = new Uint8Array(total);
+  const open = [startIdx];
+
+  gScore[startIdx] = 0;
+  fScore[startIdx] = Math.hypot(gc - sc, gr - sr);
+  const dirs = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.414], [-1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414]];
+
+  let guard = 0;
+  while (open.length > 0 && guard++ < 4000) {
+    let bestPos = 0;
+    for (let i = 1; i < open.length; i++) {
+      if (fScore[open[i]] < fScore[open[bestPos]]) bestPos = i;
+    }
+    const cur = open.splice(bestPos, 1)[0];
+    if (cur === goalIdx) {
+      const path: Vector2[] = [];
+      let trace = cur;
+      while (trace !== -1 && trace !== startIdx) {
+        const c = trace % nav.cols;
+        const r = Math.floor(trace / nav.cols);
+        path.unshift({
+          x: (c + 0.5) * nav.cellSize,
+          y: (r + 0.5) * nav.cellSize,
+        });
+        trace = cameFrom[trace];
+      }
+      if (path.length > 0) path[path.length - 1] = goal;
+      return path;
+    }
+
+    closed[cur] = 1;
+    const cc = cur % nav.cols;
+    const cr = Math.floor(cur / nav.cols);
+
+    for (const [dc, dr, cost] of dirs) {
+      const nc = cc + dc;
+      const nr = cr + dr;
+      if (nc < 0 || nc >= nav.cols || nr < 0 || nr >= nav.rows) continue;
+      const nIdx = nr * nav.cols + nc;
+      if (closed[nIdx] || (nav.blocked[nIdx] === 1 && nIdx !== goalIdx)) continue;
+      if (dc !== 0 && dr !== 0) {
+        if (nav.blocked[cr * nav.cols + nc] === 1 || nav.blocked[nr * nav.cols + cc] === 1) continue;
+      }
+      const tg = gScore[cur] + cost;
+      if (tg < gScore[nIdx]) {
+        cameFrom[nIdx] = cur;
+        gScore[nIdx] = tg;
+        fScore[nIdx] = tg + Math.hypot(gc - nc, gr - nr);
+        if (!open.includes(nIdx)) open.push(nIdx);
+      }
+    }
+  }
+  return [goal];
+}
+
+export function hasLineOfSight2D(
+  a: Vector2,
+  b: Vector2,
+  solidObjects: GameObjectData[]
+): boolean {
+  const dist = Math.hypot(b.x - a.x, b.y - a.y);
+  const steps = Math.max(2, Math.ceil(dist / 12));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const px = a.x + (b.x - a.x) * t;
+    const py = a.y + (b.y - a.y) * t;
+    for (const solid of solidObjects) {
+      for (const col of getWorldColliders(solid)) {
+        if (!col.isSensor && px >= col.left && px <= col.right && py >= col.top && py <= col.bottom) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+3.4. Partículas 3D con Texturas PNG Transparentes / Spritesheets (PreviewModal.tsx y threeRuntimeTemplate.ts)
+En tu PreviewModal.tsx (3D) actual, las partículas se dibujan como puntos cuadrados THREE.PointsMaterial sin textura. Para usar las texturas PNG importadas (pt.textureAssetId):
+Agrupa las partículas activas por textureAssetId (o '__default__') y crea un THREE.PointsMaterial con map: loadedPngTexture, alphaTest: 0.05, transparent: true, blending: pt.additive ? THREE.AdditiveBlending : THREE.NormalBlending, o usa THREE.Sprite reciclados de un pool (hasta 120 sprites) cuando cols * rows > 1 para poder animar tex.offset por cada cuadro del spritesheet de humo/explosión/fuego!
+3.5. Puente Multijugador Embebido para Exportación HTML5 (runtimeTemplate.ts y threeRuntimeTemplate.ts)
+Para que los juegos exportados como .zip se conecten al mismo servidor WebSocket (/ws/multiplayer) que funciona en Preview, inyecta este bloque ligero en generateNexusRuntimeJs y generateNexus3DRuntimeJs:
+Js
+function createExportMultiplayerBridge(sceneData) {
+  var mpCfg = sceneData && sceneData.multiplayer;
+  if (!mpCfg || !mpCfg.enabled || typeof WebSocket === 'undefined') return null;
+  var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var wsUrl = mpCfg.serverUrl || (proto + '//' + window.location.host + '/ws/multiplayer');
+  var playerId = 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+  var remotes = new Map();
+  var ws = null;
+  var lastSend = 0;
+
+  try {
+    ws = new WebSocket(wsUrl);
+    ws.addEventListener('open', function () {
+      ws.send(JSON.stringify({
+        type: 'join',
+        roomId: mpCfg.roomId || 'sala_global',
+        playerId: playerId,
+        name: 'Jugador_' + playerId.slice(-4),
+        mode: (gameData && gameData.mode) || '2d',
+        sceneId: sceneData.id,
+        maxPlayers: mpCfg.maxPlayers || 16
+      }));
+    });
+    ws.addEventListener('message', function (ev) {
+      try {
+        var msg = JSON.parse(String(ev.data));
+        if (msg.type === 'room_snapshot' && msg.snapshot) {
+          remotes.clear();
+          (msg.snapshot.players || []).forEach(function (p) {
+            if (p.playerId !== playerId) remotes.set(p.playerId, p);
+          });
+        } else if ((msg.type === 'player_joined' || msg.type === 'player_state') && msg.player) {
+          if (msg.player.playerId !== playerId) remotes.set(msg.player.playerId, msg.player);
+        } else if (msg.type === 'player_left') {
+          remotes.delete(String(msg.playerId || ''));
+        }
+      } catch (_) {}
+    });
+  } catch (_) {}
+
+  return {
+    sendPose: function (pose) {
+      if (!ws || ws.readyState !== 1) return;
+      var now = performance.now();
+      if (now - lastSend < Math.round(1000 / Math.max(2, mpCfg.syncRateHz || 12))) return;
+      lastSend = now;
+      ws.send(JSON.stringify(Object.assign({ type: 'state_update' }, pose)));
+    },
+    getRemotes: function () { return Array.from(remotes.values()); },
+    close: function () { try { if (ws) ws.close(); } catch (_) {} }
+  };
+}
+3.6. Puente Reactivo Extendido en UIWidgetOverlayLayer.tsx (Widgets ↔ Scripts ↔ Inventario)
+Añade dentro de UIWidgetOverlayLayer.tsx (onClick y useEffect de sincronización) estas dos capacidades:
+Llamar a funciones de scripts desde botones HTML con data-nexus-call="NombreObjeto.metodo":
+Ts
+const callExpr = actionEl.getAttribute('data-nexus-call');
+if (callExpr) {
+  bridgeRef.current?.onEmitEvent?.(`__script_call__:${callExpr}`, value);
+}
+Mostrar ítems del inventario automáticamente en HTML con data-nexus-inv="crystal":
+Ts
+el.querySelectorAll<HTMLElement>('[data-nexus-inv]').forEach((node) => {
+  const itemId = node.getAttribute('data-nexus-inv');
+  if (!itemId) return;
+  node.textContent = String(variables.get(`inv_${itemId}`) ?? 0);
+});
+BLOQUE 4: Orden Recomendado de Aplicación y Verificación
+Aplica los bloques en este orden para no romper nada y validar cada paso con tu suite de pruebas actual (npx --yes tsx --test ..., npm run lint, npm run build):
+Paso 1 (Parches Bloque 1): Aplica primero las correcciones en MechanicsPanel.tsx, stepGameSimulation.ts, physics3d.ts, PreviewModal.tsx, threeRuntimeTemplate.ts y zipImporter.ts. Ejecuta npm run lint y los 5 archivos .test.ts existentes.
+Paso 2 (UX y Visores Bloque 2): Conecta los handles de colisionadores 2D en CanvasViewport.tsx + PixiStageRenderer.ts, los campos faltantes en AnimationStateMachineModal.tsx (incluyendo la rejilla visual de spritesheet), y Editar Zona + sculpt_flatten + selBox dinámico en ThreeStageViewport.tsx.
+Paso 3 (Sistemas Pro Bloque 3): Integra NineSliceSprite, Image Points, gridPathfinding2d.ts, partículas PNG en 3D y el cliente WebSocket en runtimeTemplate.ts / threeRuntimeTemplate.ts, agregando pruebas unitarias para Nine-Slice, getSpriteImagePointWorld y findPath2D en src/engine/tests/.

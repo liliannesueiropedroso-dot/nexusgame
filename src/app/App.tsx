@@ -58,6 +58,9 @@ export function App() {
         const blobs = await nexusStorage.getProjectAssetsMap(projectId);
         setActiveBlobs(blobs);
         setActiveProject(proj);
+        try {
+          window.localStorage.setItem('nexus_last_open_project_id', projectId);
+        } catch {}
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Error al abrir el proyecto.';
         notify('error', msg);
@@ -83,7 +86,13 @@ export function App() {
         setLoadingList(false);
 
         const params = new URLSearchParams(window.location.search);
-        if (params.get('autostart') === '1' && list.length > 0) {
+        let rememberedId: string | null = null;
+        try {
+          rememberedId = window.localStorage.getItem('nexus_last_open_project_id');
+        } catch {}
+        if (rememberedId && list.some((p) => p.id === rememberedId)) {
+          await openProjectById(rememberedId);
+        } else if (params.get('autostart') === '1' && list.length > 0) {
           await openProjectById(list[0].id);
         }
       } catch (err) {
@@ -110,6 +119,9 @@ export function App() {
       await refreshProjectsList();
       setActiveBlobs(new Map());
       setActiveProject(saved);
+      try {
+        window.localStorage.setItem('nexus_last_open_project_id', saved.id);
+      } catch {}
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Error al crear el proyecto.';
       notify('error', msg);
@@ -237,6 +249,9 @@ export function App() {
           initialProject={activeProject}
           initialAssetBlobs={activeBlobs}
           onBackToProjects={async () => {
+            try {
+              window.localStorage.removeItem('nexus_last_open_project_id');
+            } catch {}
             setActiveProject(null);
             setActiveBlobs(new Map());
             await refreshProjectsList();

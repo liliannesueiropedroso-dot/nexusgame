@@ -75,9 +75,14 @@ export async function importProjectFromZip(
     const isAudio =
       assetEntryMeta.kind === 'audio' ||
       assetEntryMeta.mimeType.startsWith('audio/') ||
-      ['wav', 'mp3', 'ogg'].includes(assetEntryMeta.format);
+      ['wav', 'mp3', 'ogg', 'm4a', 'aac', 'flac', 'webm'].includes(assetEntryMeta.format);
+    const isModel3d =
+      assetEntryMeta.kind === 'model3d' ||
+      assetEntryMeta.format === 'glb' ||
+      assetEntryMeta.format === 'gltf' ||
+      assetEntryMeta.format === 'fbx';
 
-    if (!isAudio && (!thumbnailDataUrl || !width || !height)) {
+    if (!isAudio && !isModel3d && (!thumbnailDataUrl || !width || !height)) {
       const thumb = await generateThumbnailFromBlob(blob);
       thumbnailDataUrl = thumb.thumbnailDataUrl;
       width = thumb.width;
@@ -91,7 +96,7 @@ export async function importProjectFromZip(
       filename: assetEntryMeta.filename,
       mimeType: assetEntryMeta.mimeType,
       format: assetEntryMeta.format,
-      kind: isAudio ? 'audio' : 'image',
+      kind: isModel3d ? 'model3d' : isAudio ? 'audio' : 'image',
       folderId: assetEntryMeta.folderId ?? null,
       tags: assetEntryMeta.tags,
       size: blob.size,
@@ -110,6 +115,7 @@ export async function importProjectFromZip(
   const project: NexusProject = {
     id: finalProjectId,
     formatVersion: manifest.formatVersion || NEXUS_FORMAT_VERSION,
+    mode: manifest.project.mode ?? '2d',
     name: existingProjectIds.has(manifest.project.id)
       ? `${manifest.project.name} (importado)`
       : manifest.project.name,
@@ -120,6 +126,7 @@ export async function importProjectFromZip(
     initialSceneId: manifest.project.initialSceneId || manifest.project.activeSceneId || manifest.project.scenes[0].id,
     scenes: structuredClone(manifest.project.scenes),
     assets: restoredAssets,
+    scripts: manifest.project.scripts ? structuredClone(manifest.project.scripts) : undefined,
     folders: manifest.project.folders ? structuredClone(manifest.project.folders) : undefined,
     prefabs: manifest.project.prefabs ? structuredClone(manifest.project.prefabs) : undefined,
     variables: manifest.project.variables

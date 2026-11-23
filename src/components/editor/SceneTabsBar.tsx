@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy, Plus, Star, Trash2, X } from 'lucide-react';
+import { Copy, Pencil, Plus, Star, Trash2, X } from 'lucide-react';
 import { SCENE_KIND_LABELS, type SceneData, type SceneKind } from '../../engine/core/types';
 
 interface SceneTabsBarProps {
@@ -8,6 +8,7 @@ interface SceneTabsBarProps {
   initialSceneId?: string;
   onSelectScene: (sceneId: string) => void;
   onCreateScene: (name: string, kind: SceneKind) => void;
+  onRenameScene: (sceneId: string, nextName: string) => void;
   onDuplicateScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onSetInitialScene: (sceneId: string) => void;
@@ -19,6 +20,7 @@ export const SceneTabsBar: React.FC<SceneTabsBarProps> = ({
   initialSceneId,
   onSelectScene,
   onCreateScene,
+  onRenameScene,
   onDuplicateScene,
   onDeleteScene,
   onSetInitialScene,
@@ -26,6 +28,8 @@ export const SceneTabsBar: React.FC<SceneTabsBarProps> = ({
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newKind, setNewKind] = useState<SceneKind>('level');
+  const [editingSceneId, setEditingSceneId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
 
   const resolvedInitialId = initialSceneId || scenes[0]?.id;
   const activeScene = scenes.find((s) => s.id === activeSceneId) ?? scenes[0];
@@ -44,12 +48,31 @@ export const SceneTabsBar: React.FC<SceneTabsBarProps> = ({
     setCreating(false);
   };
 
+  const startRename = (scene: SceneData) => {
+    setEditingSceneId(scene.id);
+    setEditingName(scene.name);
+  };
+
+  const commitRename = () => {
+    if (!editingSceneId) return;
+    const trimmed = editingName.trim();
+    if (trimmed) {
+      onRenameScene(editingSceneId, trimmed);
+    }
+    setEditingSceneId(null);
+  };
+
+  const cancelRename = () => {
+    setEditingSceneId(null);
+  };
+
   return (
     <div className="relative flex h-8 shrink-0 items-center justify-between border-b border-[#2c2c34] bg-[#16161a] px-2 gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Escenas del proyecto">
         {scenes.map((scene) => {
           const isActive = scene.id === activeSceneId;
           const isInitial = scene.id === resolvedInitialId;
+          const isEditing = editingSceneId === scene.id;
           return (
             <div
               key={scene.id}
@@ -59,32 +82,68 @@ export const SceneTabsBar: React.FC<SceneTabsBarProps> = ({
                   : 'border-transparent text-zinc-400 hover:bg-[#1d1d23] hover:text-zinc-200'
               }`}
             >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                onClick={() => onSelectScene(scene.id)}
-                className="flex items-center gap-1.5 text-left"
-              >
-                {isInitial && (
-                  <Star
-                    className="h-3 w-3 text-amber-400 fill-amber-400 shrink-0"
-                    aria-label="Escena inicial"
-                  />
-                )}
-                <span className="max-w-32 truncate">{scene.name}</span>
-                <span className="text-[10px] font-normal text-zinc-500">
-                  · {SCENE_KIND_LABELS[scene.kind ?? 'level'].split(' ')[0]}
-                </span>
-              </button>
+              {isEditing ? (
+                <input
+                  type="text"
+                  aria-label={`Renombrar escena ${scene.name}`}
+                  value={editingName}
+                  onChange={(e) => setEditingName(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      commitRename();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      cancelRename();
+                    }
+                  }}
+                  autoFocus
+                  className="w-28 rounded border border-blue-500 bg-[#111116] px-1.5 py-0.5 text-[11px] font-medium text-white focus:outline-none"
+                />
+              ) : (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  onClick={() => onSelectScene(scene.id)}
+                  onDoubleClick={() => startRename(scene)}
+                  title="Clic para abrir · Doble clic para renombrar (ej. Menu, Nivel_1)"
+                  className="flex items-center gap-1.5 text-left"
+                >
+                  {isInitial && (
+                    <Star
+                      className="h-3 w-3 text-amber-400 fill-amber-400 shrink-0"
+                      aria-label="Escena inicial"
+                    />
+                  )}
+                  <span className="max-w-32 truncate">{scene.name}</span>
+                  <span className="text-[10px] font-normal text-zinc-500">
+                    · {SCENE_KIND_LABELS[scene.kind ?? 'level'].split(' ')[0]}
+                  </span>
+                </button>
+              )}
 
-              {scenes.length > 1 && (
+              {!isEditing && (
+                <button
+                  type="button"
+                  onClick={() => startRename(scene)}
+                  title={`Renombrar escena ${scene.name}`}
+                  aria-label={`Renombrar escena ${scene.name}`}
+                  className="ml-0.5 rounded p-0.5 text-zinc-500 opacity-60 group-hover:opacity-100 hover:bg-blue-500/20 hover:text-blue-300"
+                >
+                  <Pencil className="h-2.5 w-2.5" />
+                </button>
+              )}
+
+              {scenes.length > 1 && !isEditing && (
                 <button
                   type="button"
                   onClick={() => onDeleteScene(scene.id)}
                   title={`Eliminar escena ${scene.name}`}
                   aria-label={`Eliminar escena ${scene.name}`}
-                  className="ml-0.5 rounded p-0.5 text-zinc-500 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400"
+                  className="rounded p-0.5 text-zinc-500 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400"
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>

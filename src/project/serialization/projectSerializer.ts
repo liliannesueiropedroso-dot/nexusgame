@@ -19,6 +19,7 @@ export function serializeProjectToManifest(project: NexusProject): ExportedProje
     exportedAt: new Date().toISOString(),
     project: {
       id: project.id,
+      mode: project.mode ?? '2d',
       name: project.name,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
@@ -26,6 +27,7 @@ export function serializeProjectToManifest(project: NexusProject): ExportedProje
       activeSceneId: project.activeSceneId,
       initialSceneId: project.initialSceneId,
       scenes: structuredClone(project.scenes),
+      scripts: project.scripts ? structuredClone(project.scripts) : undefined,
       folders: project.folders ? structuredClone(project.folders) : undefined,
       prefabs: project.prefabs ? structuredClone(project.prefabs) : undefined,
       variables: project.variables ? structuredClone(project.variables) : undefined,

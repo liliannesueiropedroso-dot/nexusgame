@@ -1,15 +1,20 @@
-import React, { useState } from 'react';
-import { Archive, Check, Code2, Download, Globe, X } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Archive, Check, CheckCircle2, Code2, Download, Globe, X } from 'lucide-react';
+import { validateScriptSyntax } from '../../engine/scripting/scriptRuntime';
 import {
   PORTAL_TARGETS,
   type Html5CompileOptions,
   type PortalTargetId,
 } from '../../export/html5/portalSdks';
+import type { NexusProject } from '../../project/models/project';
 
 interface ExportModalProps {
   open: boolean;
   projectName: string;
+  project?: NexusProject;
+  assetBlobs?: Map<string, Blob>;
   compiling: boolean;
+  defaultTouchControls?: boolean;
   onClose: () => void;
   onCompileHtml5: (options: Html5CompileOptions) => void;
   onExportEditableZip: () => void;
@@ -17,10 +22,22 @@ interface ExportModalProps {
 
 type ExportTab = 'html5' | 'editable';
 
+const PORTAL_MAX_MB: Record<string, number> = {
+  crazygames: 50,
+  poki: 100,
+  itch: 200,
+  newgrounds: 100,
+  web: 250,
+  custom: 250,
+};
+
 export const ExportModal: React.FC<ExportModalProps> = ({
   open,
   projectName,
+  project,
+  assetBlobs,
   compiling,
+  defaultTouchControls = true,
   onClose,
   onCompileHtml5,
   onExportEditableZip,
@@ -29,8 +46,78 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [portal, setPortal] = useState<PortalTargetId>('web');
   const [customSdkUrl, setCustomSdkUrl] = useState('');
   const [scaleMode, setScaleMode] = useState<'letterbox' | 'cover'>('letterbox');
-  const [touchControls, setTouchControls] = useState(true);
+  const [touchControls, setTouchControls] = useState(defaultTouchControls);
   const [showFullscreenButton, setShowFullscreenButton] = useState(true);
+
+  useEffect(() => {
+    if (open) {
+      setTouchControls(defaultTouchControls);
+    }
+  }, [open, defaultTouchControls]);
+
+  const preCheck = useMemo(() => {
+    if (!project) return null;
+    const assetIds = new Set((project.assets ?? []).map((a) => a.id));
+    let totalAssetBytes = 0;
+    if (assetBlobs) {
+      for (const b of assetBlobs.values()) totalAssetBytes += b.size;
+    } else {
+      for (const a of project.assets ?? []) totalAssetBytes += a.size ?? 0;
+    }
+    const jsonBytes = JSON.stringify(project).length;
+    const estimatedMb = Number(((totalAssetBytes + jsonBytes + 450_000) / (1024 * 1024)).toFixed(2));
+    const maxMb = PORTAL_MAX_MB[portal] ?? 250;
+
+    const brokenRefs: string[] = [];
+    const syntaxErrors: string[] = [];
+
+    for (const sc of project.scripts ?? []) {
+      const src = sc.kind === 'interface' ? sc.js : sc.code;
+      if (src && src.trim()) {
+        const res = validateScriptSyntax(src);
+        if (!res.valid) syntaxErrors.push(`Script "${sc.name}": ${res.error}`);
+      }
+    }
+    for (const scn of project.scenes ?? []) {
+      if (scn.backgroundMusic?.assetId && !assetIds.has(scn.backgroundMusic.assetId)) {
+        brokenRefs.push(`${scn.name}: Música de fondo faltante`);
+      }
+      if (scn.lighting?.skyDomeAssetId && !assetIds.has(scn.lighting.skyDomeAssetId)) {
+        brokenRefs.push(`${scn.name}: SkyDome 360 faltante`);
+      }
+      for (const o of scn.objects) {
+        const checkAsset = (id: string | null | undefined, label: string) => {
+          if (id && !assetIds.has(id)) brokenRefs.push(`${o.name}: ${label}`);
+        };
+        checkAsset(o.sprite?.assetId, 'Sprite');
+        checkAsset(o.tilemap?.assetId, 'Tileset');
+        checkAsset(o.mesh3d?.glbAssetId, 'Modelo 3D');
+        checkAsset(o.mesh3d?.foliageConfig?.modelAssetId, 'Modelo scatter');
+        checkAsset(o.optimization?.lodAssetId, 'Modelo LOD');
+        if (o.uiWidget?.js?.trim()) {
+          const res = validateScriptSyntax(o.uiWidget.js);
+          if (!res.valid) syntaxErrors.push(`Widget "${o.name}": ${res.error}`);
+        }
+      }
+    }
+
+    const warnings: string[] = [];
+    if (estimatedMb > maxMb) {
+      warnings.push(`Peso estimado (${estimatedMb} MB) supera límite sugerido de ${portal.toUpperCase()} (${maxMb} MB).`);
+    }
+    if (!touchControls) {
+      warnings.push('Controles táctiles móviles desactivados.');
+    }
+
+    return {
+      estimatedMb,
+      maxMb,
+      brokenRefs,
+      syntaxErrors,
+      warnings,
+      allGreen: brokenRefs.length === 0 && syntaxErrors.length === 0 && warnings.length === 0,
+    };
+  }, [project, assetBlobs, portal, touchControls]);
 
   if (!open) return null;
 
@@ -160,6 +247,58 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </div>
             </div>
 
+            {/* Pre-Check Automático de Exportación */}
+            {preCheck && (
+              <div
+                aria-label="Pre-Check Automático de Exportación"
+                className={`rounded border p-3 space-y-1.5 ${
+                  preCheck.syntaxErrors.length > 0 || preCheck.brokenRefs.length > 0
+                    ? 'border-red-500/45 bg-red-500/10'
+                    : preCheck.warnings.length > 0
+                      ? 'border-amber-500/40 bg-amber-500/10'
+                      : 'border-emerald-500/40 bg-emerald-500/10'
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold">
+                  <span className="flex items-center gap-1.5 text-zinc-100">
+                    {preCheck.allGreen ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
+                    )}
+                    <span>Pre-Check Automático</span>
+                  </span>
+                  <span className="font-mono text-[10.5px] text-zinc-300">
+                    Peso est.: {preCheck.estimatedMb} MB / {preCheck.maxMb} MB máx
+                  </span>
+                </div>
+
+                {preCheck.syntaxErrors.length === 0 &&
+                  preCheck.brokenRefs.length === 0 &&
+                  preCheck.warnings.length === 0 && (
+                    <div className="text-[11px] text-emerald-300">
+                      ✓ Sin errores de sintaxis JS, todas las referencias válidas y controles táctiles listos.
+                    </div>
+                  )}
+
+                {preCheck.syntaxErrors.map((err, i) => (
+                  <div key={i} className="font-mono text-[10.5px] text-red-300">
+                    ✗ {err}
+                  </div>
+                ))}
+                {preCheck.brokenRefs.map((ref, i) => (
+                  <div key={i} className="text-[10.5px] text-amber-200">
+                    ⚠ Referencia rota: {ref}
+                  </div>
+                ))}
+                {preCheck.warnings.map((w, i) => (
+                  <div key={i} className="text-[10.5px] text-amber-200">
+                    ⚠ {w}
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Opciones de compilación */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
@@ -185,7 +324,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     onChange={(e) => setTouchControls(e.target.checked)}
                     className="rounded border-zinc-600 bg-[#141416] accent-blue-500"
                   />
-                  <span>Incluir controles táctiles en pantalla</span>
+                  <span>Joystick virtual móvil 360° + Gamepad</span>
                 </label>
 
                 <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">

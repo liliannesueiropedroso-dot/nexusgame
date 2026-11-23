@@ -3,8 +3,11 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronUp,
+  Code2,
   Database,
   Film,
+  Globe,
+  MessageSquare,
   Sparkles,
   Volume2,
   Zap,
@@ -12,14 +15,24 @@ import {
 import type { EngineDiagnostic } from '../../assistant/diagnostics/diagnosticAnalyzer';
 import type {
   AudioBusSettings,
+  DataTableDef,
+  DialogueGraph,
   GameMechanic,
   GameObjectData,
+  I18nConfig,
   ProjectVariable,
   SceneData,
 } from '../../engine/core/types';
-import type { PrefabDefinition, ProjectAssetMeta } from '../../project/models/project';
+import type {
+  NexusScriptAsset,
+  PrefabDefinition,
+  ProjectAssetMeta,
+} from '../../project/models/project';
 import { AudioMixerPanel } from './AudioMixerPanel';
+import { CodeStudioPanel } from './CodeStudioPanel';
+import { DataI18nPanel } from './DataI18nPanel';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
+import { DialogueEditorPanel } from './DialogueEditorPanel';
 import { MechanicsPanel } from './MechanicsPanel';
 import { ParticleStudioPanel } from './ParticleStudioPanel';
 import { SceneAnimatorPanel } from './SceneAnimatorPanel';
@@ -27,7 +40,10 @@ import { VariablesPanel } from './VariablesPanel';
 
 export type DockTab =
   | 'mechanics'
+  | 'code'
   | 'variables'
+  | 'dialogues'
+  | 'data'
   | 'particles'
   | 'animator'
   | 'audio'
@@ -41,6 +57,7 @@ interface BottomDockProps {
   mechanics: GameMechanic[];
   objects: GameObjectData[];
   selectedObjectId?: string | null;
+  selectedObject?: GameObjectData | null;
   variables: ProjectVariable[];
   audioBuses?: AudioBusSettings;
   assets: ProjectAssetMeta[];
@@ -49,11 +66,25 @@ interface BottomDockProps {
   scenes?: SceneData[];
   activeScene?: SceneData;
   prefabs?: PrefabDefinition[];
+  scripts?: NexusScriptAsset[];
+  dialogues?: DialogueGraph[];
+  dataTables?: DataTableDef[];
+  i18n?: I18nConfig;
   onChangeMechanics: (next: GameMechanic[]) => void;
   onChangeVariables: (next: ProjectVariable[]) => void;
   onChangeAudioBuses: (next: AudioBusSettings) => void;
+  onChangeScripts?: (next: NexusScriptAsset[]) => void;
+  onChangeDialogues?: (next: DialogueGraph[]) => void;
+  onChangeDataTables?: (next: DataTableDef[]) => void;
+  onChangeI18n?: (next: I18nConfig) => void;
+  onAttachScriptToScene?: (scriptId: string) => void;
+  onDetachScriptFromScene?: (scriptId: string) => void;
+  onAttachScriptToObject?: (objectId: string, scriptId: string) => void;
+  onDetachScriptFromObject?: (objectId: string, scriptId: string) => void;
+  onInsertInterfaceIntoScene?: (script: NexusScriptAsset) => void;
   onUpdateScene?: (updater: (scene: SceneData) => SceneData) => void;
   onImportFiles?: (files: File[]) => void;
+  onCreateAsset?: (meta: ProjectAssetMeta, blob: Blob) => Promise<void> | void;
   onUpdateObject?: (id: string, updater: (obj: GameObjectData) => GameObjectData) => void;
   onApplyDiagnosticFix: (diag: EngineDiagnostic) => void;
   onSelectObjectById: (id: string) => void;
@@ -67,6 +98,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   mechanics,
   objects,
   selectedObjectId,
+  selectedObject,
   variables,
   audioBuses,
   assets,
@@ -75,11 +107,25 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   scenes = [],
   activeScene,
   prefabs = [],
+  scripts = [],
+  dialogues = [],
+  dataTables = [],
+  i18n = { defaultLocale: 'es', autoDetectBrowser: true, entries: {} },
   onChangeMechanics,
   onChangeVariables,
   onChangeAudioBuses,
+  onChangeScripts,
+  onChangeDialogues,
+  onChangeDataTables,
+  onChangeI18n,
+  onAttachScriptToScene,
+  onDetachScriptFromScene,
+  onAttachScriptToObject,
+  onDetachScriptFromObject,
+  onInsertInterfaceIntoScene,
   onUpdateScene,
   onImportFiles,
+  onCreateAsset,
   onUpdateObject,
   onApplyDiagnosticFix,
   onSelectObjectById,
@@ -101,14 +147,14 @@ export const BottomDock: React.FC<BottomDockProps> = ({
       className="shrink-0 border-t border-[#2e2e36] bg-[#16161a]"
     >
       {/* Barra de pestañas del dock */}
-      <div className="flex h-8 items-center justify-between px-2">
-        <div className="flex items-center gap-1 overflow-x-auto" role="tablist">
+      <div className="flex h-8 items-center justify-between gap-2 px-2">
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto" role="tablist">
           <button
             type="button"
             role="tab"
             aria-selected={open && activeTab === 'mechanics'}
             onClick={() => handleTabClick('mechanics')}
-            className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
               open && activeTab === 'mechanics'
                 ? 'bg-[#25252d] text-blue-400'
                 : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
@@ -121,9 +167,24 @@ export const BottomDock: React.FC<BottomDockProps> = ({
           <button
             type="button"
             role="tab"
+            aria-selected={open && activeTab === 'code'}
+            onClick={() => handleTabClick('code')}
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+              open && activeTab === 'code'
+                ? 'bg-[#25252d] text-cyan-400'
+                : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
+            }`}
+          >
+            <Code2 className="h-3.5 w-3.5" />
+            <span>Código e Interfaces ({scripts.length})</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
             aria-selected={open && activeTab === 'variables'}
             onClick={() => handleTabClick('variables')}
-            className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
               open && activeTab === 'variables'
                 ? 'bg-[#25252d] text-emerald-400'
                 : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
@@ -136,9 +197,39 @@ export const BottomDock: React.FC<BottomDockProps> = ({
           <button
             type="button"
             role="tab"
+            aria-selected={open && activeTab === 'dialogues'}
+            onClick={() => handleTabClick('dialogues')}
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+              open && activeTab === 'dialogues'
+                ? 'bg-[#25252d] text-pink-400'
+                : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
+            }`}
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            <span>Diálogos ({dialogues.length})</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={open && activeTab === 'data'}
+            onClick={() => handleTabClick('data')}
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+              open && activeTab === 'data'
+                ? 'bg-[#25252d] text-amber-300'
+                : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
+            }`}
+          >
+            <Globe className="h-3.5 w-3.5" />
+            <span>Tablas &amp; i18n</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
             aria-selected={open && activeTab === 'particles'}
             onClick={() => handleTabClick('particles')}
-            className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
               open && activeTab === 'particles'
                 ? 'bg-[#25252d] text-orange-400'
                 : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
@@ -153,7 +244,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
             role="tab"
             aria-selected={open && activeTab === 'animator'}
             onClick={() => handleTabClick('animator')}
-            className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
               open && activeTab === 'animator'
                 ? 'bg-[#25252d] text-violet-400'
                 : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
@@ -168,7 +259,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
             role="tab"
             aria-selected={open && activeTab === 'audio'}
             onClick={() => handleTabClick('audio')}
-            className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
               open && activeTab === 'audio'
                 ? 'bg-[#25252d] text-sky-400'
                 : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
@@ -183,7 +274,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
             role="tab"
             aria-selected={open && activeTab === 'diagnostics'}
             onClick={() => handleTabClick('diagnostics')}
-            className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
               open && activeTab === 'diagnostics'
                 ? 'bg-[#25252d] text-amber-400'
                 : diagnostics.length > 0
@@ -200,7 +291,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
           type="button"
           onClick={onToggleOpen}
           aria-label={open ? 'Contraer panel inferior' : 'Expandir panel inferior'}
-          className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-[#222229] hover:text-zinc-200"
+          className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-[#222229] hover:text-zinc-200 whitespace-nowrap"
         >
           {open ? (
             <>
@@ -226,8 +317,32 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               variables={variables}
               assets={assets}
               scenes={scenes}
+              activeScene={activeScene}
+              selectedObjectId={selectedObjectId}
               prefabs={prefabs}
+              scripts={scripts}
               onChangeMechanics={onChangeMechanics}
+              onUpdateScene={onUpdateScene}
+              onUpdateObject={onUpdateObject}
+              onSelectObjectById={onSelectObjectById}
+            />
+          )}
+          {activeTab === 'code' && (
+            <CodeStudioPanel
+              scripts={scripts}
+              activeScene={activeScene}
+              objects={objects}
+              selectedObject={selectedObject}
+              variables={variables}
+              dataTables={dataTables}
+              i18n={i18n}
+              dialogues={dialogues}
+              onChangeScripts={(next) => onChangeScripts?.(next)}
+              onAttachScriptToScene={onAttachScriptToScene}
+              onDetachScriptFromScene={onDetachScriptFromScene}
+              onAttachScriptToObject={onAttachScriptToObject}
+              onDetachScriptFromObject={onDetachScriptFromObject}
+              onInsertInterfaceIntoScene={onInsertInterfaceIntoScene}
             />
           )}
           {activeTab === 'variables' && (
@@ -236,10 +351,27 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               onChangeVariables={onChangeVariables}
             />
           )}
+          {activeTab === 'dialogues' && (
+            <DialogueEditorPanel
+              dialogues={dialogues}
+              assets={assets}
+              variables={variables}
+              onChangeDialogues={(next) => onChangeDialogues?.(next)}
+            />
+          )}
+          {activeTab === 'data' && (
+            <DataI18nPanel
+              dataTables={dataTables}
+              i18n={i18n}
+              onChangeDataTables={(next) => onChangeDataTables?.(next)}
+              onChangeI18n={(next) => onChangeI18n?.(next)}
+            />
+          )}
           {activeTab === 'particles' && (
             <ParticleStudioPanel
               objects={objects}
               selectedObjectId={selectedObjectId}
+              assets={assets}
               onUpdateObject={onUpdateObject}
               onSelectObjectById={onSelectObjectById}
             />
@@ -261,6 +393,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               onChangeAudioBuses={onChangeAudioBuses}
               onUpdateScene={onUpdateScene}
               onImportFiles={onImportFiles}
+              onCreateAsset={onCreateAsset}
             />
           )}
           {activeTab === 'diagnostics' && (

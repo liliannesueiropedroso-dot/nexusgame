@@ -1,3 +1,10 @@
+import type { SceneContextType } from '../core/types';
+import {
+  SUPER_BEHAVIOR_CATEGORIES,
+  SUPER_BEHAVIOR_SPECS,
+  type SuperBehaviorCategory,
+} from './superBehaviorDefinitions';
+
 export type BehaviorCategory =
   | 'Movimiento y Física'
   | 'Plataformas Pro'
@@ -5,7 +12,8 @@ export type BehaviorCategory =
   | 'Arcade y Economía'
   | 'Juice y Partículas'
   | 'Sonido y Música'
-  | 'Cámara y Escena';
+  | 'Cámara y Escena'
+  | SuperBehaviorCategory;
 
 export type BehaviorFieldType =
   | 'number'
@@ -35,6 +43,9 @@ export interface BehaviorRegistryEntry {
   description: string;
   keywords: string[];
   requires?: string[];
+  contexts?: SceneContextType[];
+  inputs?: string[];
+  outputs?: string[];
   schema: BehaviorSchemaField[];
   defaultConfig: Record<string, unknown>;
 }
@@ -47,6 +58,7 @@ export const BEHAVIOR_CATEGORIES: BehaviorCategory[] = [
   'Juice y Partículas',
   'Sonido y Música',
   'Cámara y Escena',
+  ...SUPER_BEHAVIOR_CATEGORIES,
 ];
 
 function buildEntry(
@@ -59,6 +71,9 @@ function buildEntry(
     defaults[field.key] = field.defaultValue;
   }
   return {
+    contexts: ['gameplay', 'open_world'],
+    inputs: [],
+    outputs: [],
     ...entry,
     defaultConfig: { ...defaults, ...(entry.defaultConfig ?? {}) },
   };
@@ -1065,6 +1080,36 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
       { key: 'keepIfSame', label: 'No reiniciar si ya suena', type: 'boolean', defaultValue: true },
     ],
   }),
+  buildEntry({
+    type: 'player_3d',
+    label: 'Controlador Jugador 3D (WASD + Salto)',
+    category: 'Movimiento y Física',
+    description:
+      'Control en tercera persona / 3D con desplazamiento WASD o flechas relativo a la cámara, salto con coyote time y rotación fluida.',
+    keywords: ['3d', 'jugador 3d', 'tercera persona', 'wasd', 'salto'],
+    schema: [
+      { key: 'speed', label: 'Velocidad (m/s)', type: 'number', min: 1, max: 30, step: 0.5, defaultValue: 6.5 },
+      { key: 'jumpForce', label: 'Fuerza de salto', type: 'number', min: 2, max: 25, step: 0.5, defaultValue: 8.5 },
+      { key: 'jumpSoundAssetId', label: 'Sonido de salto (PC)', type: 'audioAsset', defaultValue: '' },
+    ],
+  }),
+  buildEntry({
+    type: 'lighting.flicker',
+    label: 'Luz Parpadeante Dinámica (Antorcha / Neón)',
+    category: 'Juice y Partículas',
+    description:
+      'Modula suavemente la intensidad de objetos Luz 2D o Luz 3D como una antorcha o letrero de neón.',
+    keywords: ['luz', 'antorcha', 'parpadeo', 'neon', 'iluminacion'],
+    schema: [
+      { key: 'speed', label: 'Velocidad (Hz)', type: 'number', min: 1, max: 30, step: 0.5, defaultValue: 8 },
+      { key: 'amount', label: 'Variación intensidad (0-1)', type: 'number', min: 0.05, max: 0.9, step: 0.05, defaultValue: 0.25 },
+    ],
+  }),
+  ...SUPER_BEHAVIOR_SPECS.map((spec) => ({
+    ...spec,
+    category: spec.category as BehaviorCategory,
+    schema: spec.schema.map((f) => ({ ...f })),
+  })),
 ];
 
 const REGISTRY_MAP = new Map<string, BehaviorRegistryEntry>(

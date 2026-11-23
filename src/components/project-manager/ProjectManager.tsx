@@ -84,7 +84,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
               NEXUS GAME ENGINE
             </h1>
             <span className="text-xs text-zinc-400 whitespace-nowrap">
-              Fase 1 · Editor 2D Local
+              Editor Híbrido 2D y 3D Local
             </span>
           </div>
         </div>
@@ -243,13 +243,24 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                               </button>
                             </div>
                           ) : (
-                            <button
-                              type="button"
-                              onClick={() => onOpenProject(proj.id)}
-                              className="text-left font-semibold text-zinc-100 hover:text-blue-400"
-                            >
-                              {proj.name}
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => onOpenProject(proj.id)}
+                                className="text-left font-semibold text-zinc-100 hover:text-blue-400"
+                              >
+                                {proj.name}
+                              </button>
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                                  proj.mode === '3d'
+                                    ? 'bg-purple-600/20 text-purple-300 border border-purple-500/40'
+                                    : 'bg-blue-600/20 text-blue-300 border border-blue-500/40'
+                                }`}
+                              >
+                                {proj.mode === '3d' ? '3D' : '2D'}
+                              </span>
+                            </div>
                           )}
                         </div>
                       </td>

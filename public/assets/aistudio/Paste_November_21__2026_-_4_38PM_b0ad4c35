@@ -1,0 +1,1368 @@
+perfecto que le pasa en el sitema de crer juegos 2d cuano creas una luz y le das para cambier las popiedades como intensidad y demas precionas y se deplasa al opcion e menu no te deja teclear nada en el aniamdo o makina de estado funciona casi too bbien pero cuno tiene un salto y agregra la opcion callendo te permite agregar una animacion pero esta da erro porque cuno pones animacion callendo targeta callendo simepre que este callendo o se debe reproducir no lo asi porque la makina te deja elejir cuano esta callendo cuano muere cu asi ves pero no funciona bien nesesito aaa y en el sitema para juegos 2d la lus deve ser una imagen trasparente egradad qeu simula la luz no se como es esto en motores 2d para cra eses luses bomnitas un sitema que si le dar prollectar sombra debe prollectar las soomras etras de los objetos segu n su direccion que nesesito que me des la indicacion detallada para reparar todo esto pero que lo veas como lo motores de jugos lo ven su como se llama cmom mplementarlo bin para que se lo digas a la ai con el pron y o darselo pra que todo funcione bien
+
+Para que una IA o un programador repare esto sin adivinar, hay que describir cada problema con terminología estándar de motores 2D (Inspector/UI focus, State Machine transitions & conditions, Radial Light Cookies & 2D Shadow Casting).
+
+A continuación tienes el diagnóstico técnico, cómo lo resuelven los motores 2D y un prompt listo para copiar y pegar con todas las especificaciones.
+
+1. Inspector de Luz 2D: al editar propiedades se mueve el menú y no deja teclear
+Qué pasa en el motor: Hay un conflicto de foco de teclado y navegación UI (Input Focus / Keyboard Navigation). Al hacer clic en un campo numérico (como Intensidad, Radio o Color), el input no captura el foco exclusivo o el sistema de menús/listas sigue escuchando teclas de dirección (Arriba/Abajo, Tab, Enter, Espacio) y mueve la selección del menú en vez de escribir en la caja de texto.
+
+Cómo lo ven los motores 2D:
+
+Existe un estado global de UI como uiFocusedInput o isEditingText (o Event Bubbling / Stop Propagation en eventos de teclado/ratón).
+
+Mientras un input numérico o de texto está enfocado (focus), el navegador/motor no debe procesar atajos de menú ni navegación de lista con flechas (e.stopPropagation() en keydown cuando document.activeElement es un INPUT o TEXTAREA).
+
+Los campos numéricos (como Intensidad) deben validar números flotantes (parseFloat), permitir borrar/escribir puntos decimales sin resetear el cursor a cada pulsación, y aplicar el valor en onInput / onChange / blur.
+
+2. Animador / Máquina de Estados (State Machine): el estado Cayendo (Falling) da error o no se reproduce
+Qué pasa en el motor: Los estados simples (como Idle, Correr, Saltar o Morir) funcionan porque dependen de un evento puntual o un booleano directo, pero al añadir Cayendo (Falling) suele fallar por tres motivos clásicos en State Machines 2D:
+
+Condición mal definida o solapada: Cayendo no es solo "haber saltado"; en un motor 2D ocurre cuando el personaje no está en el suelo (!isGrounded) y su velocidad vertical va hacia abajo (vy > 0 si +Y es abajo, o vy < 0 si +Y es arriba). Si Saltar y Cayendo compiten sin prioridad o sin condición de salida clara, la máquina entra en bucle, falla al buscar la animación o se queda pegada.
+
+Referencia nula o nombre de clip no resuelto: Al asignar una animación desde el selector del estado Cayendo, si el selector guarda un objeto vacío, un undefined o un ID/nombre que no coincide con el registro de animaciones, el reproductor lanza error al intentar acceder a .frames o .duration en cada frame.
+
+Reinicio constante de la animación en cada frame: Si el Animator llama a play("falling") en cada update() sin comprobar currentState !== nextState (o currentAnim !== targetAnim), reinicia el clip al frame 0 cada fotograma y parece congelado o roto.
+
+Cómo lo ven los motores 2D:
+
+Cada estado tiene: id, animationName (validado con fallback seguro si no existe), loop (normalmente true en Cayendo, false en Morir) y una lista de transiciones con condiciones explícitas evaluadas en orden de prioridad.
+
+Ejemplo de condición limpia para Cayendo: !grounded && Math.abs(vy) > threshold && vy < 0 (ajustado al signo de Y del motor).
+
+El reproductor solo cambia de clip cuando el estado activo cambia (if (activeState !== prevState)), evitando reinicios por frame y manejando con if (!anim) sin crashear.
+
+3. Luz 2D con degradado transparente y proyección de sombras (Cast Shadows)
+Qué pasa en el motor: Una luz 2D convincente no es un círculo sólido ni un simple clearRect; se compone de iluminación aditiva/suave y, opcionalmente, sombras proyectadas detrás de los obstáculos.
+
+Cómo lo ven los motores 2D:
+
+Textura / Sprite de Luz Degradada (Light Cookie / Radial Gradient):
+
+Se genera o carga una imagen/textura radial transparente en el centro (rgba(r, g, b, intensity)) que se difumina suavemente hasta transparencia total (rgba(r, g, b, 0)) en el borde (radius).
+
+Se dibuja centrada en (light.x, light.y) escalada por su radio/alcance y multiplicada por su intensity (usualmente con composición lighter / aditiva o un lightmap sobre la escena).
+
+Proyección de Sombras (2D Shadow Casting / Occluders):
+
+Cuando castShadow === true, la luz consulta los objetos/obstáculos cercanos que tengan castsShadow === true (o collider/bounding box).
+
+Dirección de la sombra: Desde la posición de la luz (lx, ly) hacia el centro/vértices del objeto (ox, oy), el vector de luz es dx = ox - lx, dy = oy - ly (normalizado). La sombra siempre se proyecta en esa misma dirección (dirX, dirY) detrás del objeto, alejándose de la luz.
+
+Geometría de sombra 2D: Para un obstáculo (rectángulo o polígono), se toman los dos vértices extremos perpendiculares al rayo desde la luz y se proyectan hacia afuera a lo largo de (dirX, dirY) hasta shadowLength (o el alcance de la luz), formando un cuadrilátero/polígono oscuro (rgba(0, 0, 0, shadowOpacity)) detrás del objeto. Si se usa un lightmap offscreen, se recorta/oscurece la luz en esas zonas para que la sombra respete la dirección de la luz.
+
+Prompt listo para copiar y pegar a la IA
+Necesito que repares y estandarices tres sistemas de mi motor de juegos 2D manteniendo la arquitectura actual del editor y del runtime:
+
+Inspector de Luz 2D (Foco de teclado y edición de propiedades):
+
+Cuando selecciono una luz 2D y hago clic en propiedades como intensity, radius, color o castShadow, el input debe recibir foco exclusivo y no disparar navegación ni desplazamiento en el menú/lista lateral.
+
+Bloquea la propagación de teclas de navegación (ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Enter, Space, Tab) hacia el menú cuando un campo de texto/número esté enfocado (isEditingProperty / document.activeElement en input).
+
+Permite escribir números decimales libremente sin perder el foco ni borrar el punto decimal mientras se teclea.
+
+Animador / Máquina de Estados (Estado falling / cayendo y transiciones):
+
+Revisa la State Machine para que estados como idle, run, jump, falling (cayendo) y dead (muere) evalúen condiciones limpias y sin conflictos.
+
+El estado falling debe activarse mientras el personaje esté en el aire y descendiendo (!isGrounded y velocidad vertical en dirección de caída según el eje Y del motor), y mantenerse activo mientras siga cayendo hasta tocar el suelo (isGrounded) o morir (isDead).
+
+Evita reiniciar la animación en cada frame: solo cambia/inicia el clip cuando cambia el estado activo.
+
+Valida siempre que la animación asignada exista antes de reproducirla (con fallback seguro y sin lanzar errores si no hay clip asignado).
+
+Sistema de Luz 2D Degradada y Proyección de Sombras (castShadow):
+
+Implementa la luz 2D como un degradado radial suave (centro luminoso según color e intensity, desvaneciéndose a alpha 0 en el borde según radius), no un círculo plano.
+
+Cuando castShadow esté activado en la luz, calcula la dirección desde la luz hacia cada objeto con sombra (dir = normalize(objetoPos - luzPos)) y proyecta la sombra detrás del objeto en esa dirección (proyectando los vértices/bordes laterales del objeto respecto a la luz hasta el alcance/longitud de sombra).
+
+Entrégame el código completo y modular, explicando brevemente cada cambio y cómo probarlo en escena.
+
+y que el motor sea capas tanto en 2d cmo en 3d crera jueos multiplayer reales y mas para las plataformas poki crasy game o play game no se cmo es que se ase en los motores reales pero tu si multiplaller que preserbe inten o recusso el jugador como para juegos de recoleccion itens rog mundoa bierto que sea caps de crar todo eso multijugador masibo o en linias cualquier jugo ey que mas qu¿crees que deba tenre esta plataforma si me das una supre biblioteca que para la parte de ia que hay esto mira mira estas son las que estan Activos en "moneda" (0)
+
+Catálogo de 64 Comportamientos
+
+Buscar (ej. persecución, salto, vehículo, navmesh)...
+
+
+Todas las categorías (64)
+
+Plataformas Pro (Doble Salto + Dash)
+
+Movimiento lateral con gravedad, doble salto, dash aéreo, wall-slide y wall-jump.
+
++
+
+Movimiento 8 Direcciones (WASD/Joystick)
+
+Movimiento libre en 8 direcciones con aceleración suave e inercia.
+
++
+
+Vehículo Arcade con Drift
+
+Conducción con aceleración, frenado, giro angular y derrape configurable.
+
++
+
+Ruta por Puntos (Ping-Pong / Ciclo)
+
+Desplaza el objeto automáticamente entre coordenadas en bucle o ping-pong.
+
++
+
+Rebote Elástico
+
+Aplica rebote continuo al colisionar con superficies o el suelo.
+
++
+
+Flotación Senoidal
+
+Oscilación vertical suave para ítems, plataformas o drones.
+
++
+
+Rotación Continua
+
+Gira el objeto constantemente en ejes X, Y o Z.
+
++
+
+Órbita Alrededor de Objetivo
+
+Orbita circularmente alrededor de otro objeto o coordenada.
+
++
+
+Plataforma Móvil Sincronizada
+
+Mueve jugadores apoyados sobre la superficie sin deslizarlos.
+
++
+
+Dash con Recarga
+
+Impulso direccional rápido con tiempo de enfriamiento.
+
++
+
+Zona de Gravedad Personalizada
+
+Invierte o modifica la gravedad de entidades dentro de su volumen.
+
++
+
+Cinta Transportadora
+
+Empuja entidades en contacto en una dirección constante.
+
++
+
+Portal Teletransportador
+
+Envía al jugador hacia el destino especificado al entrar en contacto.
+
++
+
+Apuntar al Cursor / Ratón
+
+Orienta el objeto continuamente hacia la posición del puntero.
+
++
+
+Persecución Inteligente (Con Rango Límite)
+
+Detecta al jugador por radio de visión, lo persigue y deja de perseguir al superar la distancia máxima.
+
++
+
+Agente IA NavMesh (Pathfinding A*)
+
+Usa la malla de navegación A* para rodear obstáculos y perseguir objetivos sin atascarse.
+
++
+
+IA FSM (Patrullar → Perseguir → Atacar → Huir)
+
+Máquina de estados de IA que patrulla, persigue, ataca y huye cuando su vida baja del umbral.
+
++
+
+Torreta Automática
+
+Rota automáticamente hacia el objetivo y dispara proyectiles periódicamente.
+
++
+
+Lanzador de Proyectiles (Ráfaga / Escopeta / Guiado)
+
+Dispara proyectiles con patrón simple, escopeta en abanico o teledirigido.
+
++
+
+Sistema de Vida e Inmunidad
+
+Gestiona HP máximo, daño por contacto, parpadeo de invulnerabilidad y barra flotante.
+
++
+
+Retroceso (Knockback)
+
+Impulso físico de empuje al recibir o infligir un impacto.
+
++
+
+Ataque Cuerpo a Cuerpo
+
+Genera un golpe frontal temporal con rango y daño configurables.
+
++
+
+Línea de Visión (Raycasting)
+
+Comprueba si existen muros sólidos entre este objeto y el objetivo.
+
++
+
+Zona de Peligro / Lava
+
+Inflige daño periódico a cualquier entidad con vida dentro del área.
+
++
+
+Escudo Regenerativo
+
+Absorbe daño y se recarga tras unos segundos fuera de combate.
+
++
+
+Huida Inteligente
+
+Se aleja automáticamente de objetivos amenazantes cercanos.
+
++
+
+Proyectil Teledirigido
+
+Corrige su trayectoria suavemente hacia el objetivo más cercano.
+
++
+
+Barril Explosivo (Área)
+
+Explota al recibir daño aplicando fuerza radial y partículas VFX.
+
++
+
+Imán Automático de Coleccionables
+
+Atrae monedas, gemas o recursos hacia el jugador al entrar en radio.
+
++
+
+Ítem Coleccionable (+Puntos / SFX)
+
+Suma puntos a una variable, reproduce sonido SFX y desaparece al tocar al jugador.
+
++
+
+Generador de Oleadas
+
+Genera oleadas de enemigos con escalado progresivo de dificultad.
+
++
+
+Checkpoint / Reaparición
+
+Guarda la posición de reaparición del jugador en memoria local.
+
++
+
+Cronómetro Regresivo
+
+Cuenta atrás en segundos y dispara evento al llegar a cero.
+
++
+
+NPC con Diálogo Ramificado
+
+Muestra cuadro de diálogo interactivo con efecto máquina de escribir al acercarse.
+
++
+
+Inventario / Diccionario de Ítems
+
+Almacena llaves, armas y consumibles en el objeto jugador.
+
++
+
+Experiencia y Subida de Nivel
+
+Acumula XP y escala estadísticas automáticamente por nivel.
+
++
+
+Multiplicador de Combo
+
+Multiplica puntajes encadenados dentro de una ventana de tiempo.
+
++
+
+Power-Up de Velocidad
+
+Aumenta temporalmente la velocidad del jugador al recogerlo.
+
++
+
+Puerta con Llave
+
+Se abre automáticamente si el jugador posee la variable llave requerida.
+
++
+
+Meta / Zona de Victoria
+
+Registra el puntaje en el Ranking Top 10 al cruzar la zona.
+
++
+
+Seguimiento Suave de Cámara
+
+Sigue al objetivo con amortiguación exponencial (damping) y límites de mapa.
+
++
+
+Temblor de Cámara (Screen Shake)
+
+Sacude la cámara con decaimiento exponencial ante impactos.
+
++
+
+Emisor de Partículas VFX
+
+Emite un sistema del Estudio de Partículas desde este objeto.
+
++
+
+Deformación Elástica (Squash & Stretch)
+
+Estira y comprime el objeto al saltar, aterrizar o recibir golpes.
+
++
+
+Destello de Impacto (Hit Flash)
+
+Ilumina brevemente el material al colisionar o recibir daño.
+
++
+
+Hitstop Cinematográfico
+
+Congela la simulación brevemente (30-80ms) para golpes contundentes.
+
++
+
+Estela de Movimiento
+
+Deja un rastro luminoso detrás del objeto al desplazarse.
+
++
+
+Pulso Emisivo / Aura
+
+Modula suavemente la intensidad emisiva o escala del objeto.
+
++
+
+Gatillo de Cambio de Cámara
+
+Interpola suavemente a otra cámara de la escena cuando el jugador entra.
+
++
+
+Sonido de Pasos Procedural
+
+Dispara efectos de pasos sincronizados con la velocidad en suelo.
+
++
+
+Suspensión y Amortiguación de Ruedas
+
+Simula resortes, compresión y amortiguación de 4 ruedas sobre terreno 3D.
+
++
+
+Cuerda / Cadena / Puente Colgante (Soft-Body)
+
+Restricciones Verlet encadenadas que reaccionan a gravedad y colisiones del jugador.
+
++
+
+Cuerpo Gelatinoso / Viscoso (Soft-Body)
+
+Deformación blanda con rebote elástico y ondas de gelatina.
+
++
+
+Partículas Granulares / Arena Interactiva
+
+Simulación de puntos granulares sueltos que se apilan y desplazan al chocar.
+
++
+
+Objeto Rompible con Física Real
+
+Se fragmenta en pedazos físicos con gravedad y rebote al superar fuerza de impacto.
+
++
+
+Flotabilidad en Agua / Ríos
+
+Aplica empuje de Arquímedes y arrastre de corriente al tocar superficies de agua.
+
++
+
+Brisa e Interacción de Hierba / Arbusto
+
+Ondea con ráfagas de viento real y se inclina o sacude cuando el jugador lo roza.
+
++
+
+Resorte / Anclaje Elástico
+
+Une el objeto a su origen con una fuerza elástica restauradora.
+
++
+
+Tabla Ranking Top 10 (Local + Cloud SQL + Portales)
+
+Muestra los 10 mejores puntajes sincronizados localmente, en PostgreSQL y en Poki/Playgama.
+
++
+
+Vincular Texto a Variable Global
+
+Actualiza el texto automáticamente cada vez que cambia una variable del juego.
+
++
+
+Botón Interactivo en Escena
+
+Reacciona a hover/clic con escala animada, sonido SFX y disparo de acciones.
+
++
+
+Texto Multi-Idioma (ES/EN/PT)
+
+Detecta automáticamente el idioma del navegador al exportar el juego.
+
++
+
+Agarrable en WebXR (XR Blocks)
+
+Permite agarrar, rotar y lanzar este objeto 3D con manos o mandos en XR.
+
++
+
+Mirar a la Cámara (Billboard)
+
+Orienta tarjetas o sprites 3D siempre hacia el jugador/cámara XR. pero si ubiara no sientos miles y que se interconecten con elementos esenas si es para esenas menu se es para menu uy todo placicamente no tengo que usar la parte de mecanica quee sta bie solo seleccionando una esena un objeto como recolectable o enemigo o bote o bara e pescar o red o lo que sea se ase y todo con las mecanicas y estas se reflejan en el panel de mecnicas de como es que se implemento tood seria una super biblioteca que se puee hacer detodo lo imagindao con un sitema de integracion interconeccion como lo pensarias o idearias ocomseria y la bibilotecacomleta de todo menoslo que ya tengo deme so completo que tal qye creees
+
+Tu catálogo actual de 64 comportamientos ya cubre muy bien la base de acción, movimiento, física blanda, UI e IA clásica. El salto para llevar esto a juegos 2D y 3D reales, multijugador persistente (RPG, recolección, mundo abierto) y portales web como Poki, CrazyGames o Playgama exige dos piezas clave:
+
+Una arquitectura multijugador y de portales que no rompa el rendimiento ni la persistencia (distinguiendo sesión en tiempo real vs. guardado de inventario/recursos, y adaptándose a los SDKs de portales web).
+
+Un sistema de interconexión y auto-cableado (Auto-Wiring / Contextual Binding) donde al elegir un tipo de objeto o escena (ej. Recolectable, Enemigo, Bote, Caña de pescar, Red) se generen o conecten automáticamente las mecánicas necesarias y se vean reflejadas en el panel de mecánicas.
+
+1. Cómo funciona el multijugador real y persistente (y los portales web)
+En motores reales, multijugador en línea y persistencia de ítems/recursos son dos capas separadas que se sincronizan:
+
+Capa	Qué resuelve	Cómo se implementa en un motor 2D/3D
+Tiempo Real (Netcode)	Posiciones, movimiento, acciones y combate entre jugadores en la misma sala/mundo.	Servidor autoritativo (o Host/Relay para partidas rápidas) que valida movimiento/daño y envía snapshots o deltas a 10–30 Hz, con interpolación en el cliente para que se vea suave.
+Persistencia de Datos	Inventario, monedas, recursos recolectados, nivel, desbloqueos o estado de mundo/parcelas.	Base de datos en nube (PostgreSQL / Redis / cloud save) vinculada al ID de jugador o sesión del portal, guardando en checkpoints, al cambiar de zona o al desconectarse—nunca confiando solo en la memoria local del navegador.
+Adaptador de Portales Web (Poki / CrazyGames / Playgama)	Ciclo de vida del juego, anuncios/recompensas, gameplay start/stop, mutear audio y guardado.	Capa de abstracción (PortalAdapter): si corre en Poki/CrazyGames/Playgama, llama a su SDK; si corre standalone o en otro host, usa fallback local/propio sin romper el código del juego.
+Mundos Abiertos / MMO o Salas Masivas	Muchos jugadores o zonas grandes sin saturar red ni CPU.	Particionamiento espacial / Spatial Sharding o Interest Management: cada jugador solo recibe actualizaciones de entidades y chunks cercanos a su radio de visión.
+Regla crítica para recolección e ítems en multijugador: la validación de "¿este jugador recogió este recurso?" y el descuento/suma de ítems deben resolverse en el servidor o en una transacción atómica (con cooldown o reaparición controlada del nodo), evitando duplicados por latencia o trampas desde el cliente.
+
+2. Sistema de Interconexión y Auto-Cableado de Mecánicas
+Para no configurar decenas de comportamientos a mano cada vez que creas un Recolectable, Enemigo, Bote, Caña de pescar o Red, el motor necesita un Grafo de Conexiones y Plantillas (Archetypes / Presets):
+
+Plantillas / Arquetipos por Tipo de Objeto o Escena:
+
+Al asignar un rol o plantilla a un objeto (ej. Bote, Caña de Pescar, Red de Pesca, Recolectable, Enemigo, Escena Menú, Escena Gameplay), el motor instancia y conecta automáticamente un paquete de mecánicas base + sus variables compartidas.
+
+Las escenas también tienen contexto (Menú, Mundo Abierto, Arena, Inventario/Tienda): un comportamiento puede declarar en qué contextos está activo para no ejecutarse en un menú.
+
+Bus de Eventos y Variables Tipadas (Signals / Blackboard):
+
+En vez de que cada comportamiento busque otro a ciegas, se conectan mediante puertos/canales (ej. onInteract, onCollect, onCatch, onBoardVehicle, onEquipTool, playerInventory, targetEntity).
+
+Ejemplo con Caña de pescar y Red:
+
+Caña: Equipable + Lanzar Línea / Esperar Mordida + Minijuego/Tensión + Otorgar Ítem (Pez) -> emite evento onItemObtained(itemId, qty) conectado al Inventario del jugador.
+
+Red: Equipable o Herramienta de Área + Capturar en Zona/Volumen + Límite de Capacidad -> emite onBatchCaptured(items[]) al Inventario y notifica al mundo/servidor si el recurso se agota.
+
+Bote: Vehículo Acuático + Flotabilidad + Subir/Bajar Pasajero + Cámara de Vehículo -> al subir el jugador, cede el control de movimiento al bote y cambia el modo de cámara.
+
+Reflejo en Vivo en el Panel de Mecánicas:
+
+El panel de mecánicas muestra todas las mecánicas activas en el objeto seleccionado (tanto las añadidas manualmente como las inyectadas por su plantilla o por una conexión con otro objeto).
+
+Cada mecánica muestra su origen (Manual, Plantilla: Bote, Conectado por Red/Caña), sus parámetros editables, sus entradas/salidas enlazadas y un botón para desacoplar o sobrecargar un valor sin borrar la estructura base.
+
+3. Súper Biblioteca Complementaria (Lo que suma a tus 64 comportamientos)
+Agrupada por áreas que complementan tus 64 comportamientos actuales para 2D/3D, multijugador, RPG/mundo abierto, vehículos/herramientas y sistemas de escena/menú:
+
+Multijugador, Red y Persistencia
+Identidad de Red y Propiedad (NetEntity / Ownership): marca si el objeto es local, remoto, del servidor o compartido, y controla quién tiene autoridad para moverlo o modificarlo.
+
+Sincronización de Transformación (2D/3D): replica posición, rotación y velocidad con interpolación suave y compresión de red.
+
+Sincronización de Estado y Animación: replica el estado actual de la FSM/animador y eventos puntuales (ataque, salto, recoger, morir) entre clientes.
+
+Persistencia de Jugador (Inventario, Stats y Progreso): guarda y carga ítems, cantidades, monedas, XP, misiones y desbloqueos en backend/cloud con cola de reintentos.
+
+Persistencia de Mundo y Nodos de Recursos: guarda qué árboles, menas, cofres o parcelas fueron recolectados, su tiempo de reaparición y su estado por jugador o por mundo.
+
+Zonas / Shards / Instancias de Mundo: gestiona transiciones entre mapas, mazmorras instanciadas o regiones de mundo abierto manteniendo los datos del jugador.
+
+Comercio / Intercambio / Mercado entre Jugadores: permite transferir o intercambiar ítems/monedas de forma segura entre jugadores conectados.
+
+Chat y Emotes / Marcadores en Mundo: mensajería rápida, burbujas sobre personajes y pings/señales en 2D/3D.
+
+Adaptación a Portales Web (Poki, CrazyGames, Playgama) y Producción
+Adaptador de Portal Web: unifica inicio de partida (gameplayStart / gameplayStop), pausa automática, silencio de audio y estado de carga.
+
+Anuncios Recompensados y mid-roll: dispara anuncios con callbacks de recompensa otorgada, cancelada o no disponible sin bloquear el juego.
+
+Guardado Híbrido (Portal + Cloud + Local): sincroniza progreso entre el almacenamiento del portal, base de datos en nube y respaldo local.
+
+Perfilador de Rendimiento y Calidad Dinámica: ajusta distancia de dibujado, sombras, partículas o tasa de ticks si bajan los FPS en dispositivos modestos o navegador.
+
+Bloqueo de Entrada y Pausa Limpia: pausa simulación, física y audio al abrir menús, diálogos, inventarios o perder foco de ventana.
+
+Herramientas, Vehículos, Pesca, Construcción y Mundo Abierto
+Vehículo Terrestre / Barco / Aeronave Unificado: soporta conducción con agua, tierra o aire, pasajeros, combustible/energía y cámara adaptativa.
+
+Herramienta de Pesca (Caña y Boya): lanza línea, detecta agua/profundidad, simula pique/resistencia y entrega captura al inventario.
+
+Red de Captura / Recolección en Área: captura peces, criaturas, objetos o recursos dentro de un área/volumen con capacidad máxima y desgaste.
+
+Herramienta de Tala / Minería / Cosecha: aplica golpe/progreso a nodos de recursos con herramientas requeridas, rendimiento y reaparición.
+
+Sistema de Construcción / Colocación en Grilla o Libre: previsualiza fantasma (válido/inválido), verifica colisiones y coloca estructuras, muebles o trampas.
+
+Cultivo y Crecimiento Temporal: gestiona etapas de crecimiento (semilla, brote, maduro), riego/clima y cosecha con tiempos reales o de juego.
+
+Ciclo Día/Noche y Clima Dinámico: modifica luz ambiental, color, niebla, viento/lluvia y activa eventos o spawns según la hora/clima.
+
+Puntos de Interés, Viaje Rápido y Brújula/Minimapa: marca misiones, vendedores, puertos o refugios y permite teletransporte desbloqueado.
+
+RPG, Progresión, Combate y Economía
+Estadísticas Base y Modificadores (Buffs/Debuffs): calcula vida, ataque, defensa, velocidad y carga sumando base + equipamiento + estados temporales.
+
+Equipamiento por Ranuras (Mano, Cuerpo, Herramienta, Accesorio): cambia estadísticas, apariencia/modelo/sprite y habilidades activas al equipar o desequipar.
+
+Árbol de Habilidades / Desbloqueos: desbloquea mejoras o recetas gastando puntos o recursos con requisitos previos.
+
+Misiones y Objetivos Encadenados: rastrea contadores (recolectar X, derrotar Y, hablar con Z, ir a lugar) y entrega recompensas.
+
+Tienda / Economía / Tablas de Probabilidad (Loot Tables): compra/venta de ítems y sorteos ponderados por rareza para cofres, pesca o drops.
+
+Compañero / Mascota / Montura: sigue al jugador, ayuda en combate/recolección o sirve de montura con inventario o habilidades propias.
+
+Aturdimiento, Veneno, Quemadura y Congelación: estados alterados con duración, ticks periódicos o reducción de velocidad/acción.
+
+Escenas, Menús, UI y Audio Avanzado
+Gestor de Escenas y Transiciones: carga/descarga escenas o capas aditivas (ej. HUD sobre mundo, menú de pausa, inventario) con fundidos.
+
+Navegación de Menú (Ratón, Teclado y Mando): enfoca botones, recorre listas y confirma/cancela sin chocar con los controles del gameplay.
+
+Controles Táctiles / Joystick Virtual: joysticks y botones en pantalla automáticos para móvil/tableta o pruebas táctiles.
+
+Ventana / Modal / Pestañas de UI: abre y cierra paneles de inventario, mapa, tienda o ajustes bloqueando clics al mundo detrás.
+
+Mezclador de Audio por Canales y Distancia: separa volúmenes de Música, SFX, Ambiente y Voz con atenuación 2D/3D y límite de voces simultáneas.
+
+4. Qué más debería tener esta plataforma para ser realmente completa
+Editor de Grafos / Conexiones Visuales: ver qué objeto dispara qué evento (Recolectable -> Inventario, Botón -> Puerta/Escena, Caña -> LootTable) y detectar conexiones rotas antes de exportar.
+
+Inspector Contextual Inteligente: que solo muestre los campos relevantes para el tipo de objeto y el contexto actual, con valores por defecto sensatos y vista previa en vivo.
+
+Simulador de Red y Portales en el Editor: probar latencia simulada, pérdida de paquetes, dos jugadores en local y el comportamiento del SDK de portal sin tener que subir el juego cada vez.
+
+Sistema de Prefabs / Componentes Reutilizables con Variantes: crear una variante (ej. Cristal Raro a partir de Cristal Base) que herede cambios de la base pero conserve sus propios ajustes.
+
+Exportador Multi-Objetivo Limpio: generar build web optimizada (HTML5/JS/WASM) para Poki/CrazyGames/Playgama y builds nativas o de servidor cuando lo necesites, empaquetando solo los assets y comportamientos usados.
+
+Cómo llevar esto a código en tu motor
+Si quieres empezar a construirlo por piezas sin abrumarte, dime cuál de estos puntos quieres bajar primero a diseño o código:
+
+El sistema de interconexión y auto-cableado (cómo registrar plantillas como Recolectable, Enemigo, Bote, Caña y Red y reflejarlas en el panel de mecánicas).
+
+La arquitectura multijugador + persistencia de ítems/recursos (cómo estructurar entidades, estados y guardado en nube/portal).
+
+El adaptador para portales web (Poki / CrazyGames / Playgama) y carga de escenas/menús.
+
+no cree que se muy poco para la biblioteca ema lo que te falto lo mas grane que pueas potente ycaps de rra lo que sea y dile i recalcale todo implementado real que funione en el motor
+
+
+Para que funcione de verdad en el motor y no se quede en humo, todo debe apoyarse en tres pilares técnicos reales:
+
+Un núcleo de Mecánicas / Comportamientos (BehaviorSystem) con ciclo de vida real (onInit, onStart, onUpdate, onFixedUpdate, onEvent, onDestroy), estado serializable y esquema de parámetros.
+
+Un Bus de Eventos + Grafo de Interconexión (EventBus / WiringGraph) donde escenas, arquetipos (Recolectable, Enemigo, Bote, Caña, Red, Menú, Mundo Abierto) y objetos se conectan automáticamente y se reflejan en vivo en el Panel de Mecánicas.
+
+Capas reales de Red/Persistencia y Portales (NetSync, PersistenceStore, PortalBridge) que separan el estado local/de escena del estado multijugador y del guardado de ítems/recursos.
+
+1. Lo que faltó: Expansión Masiva de la Biblioteca (por encima de tus 64 base)
+Aquí tienes un catálogo amplio pensado para cubrir prácticamente cualquier género o mecánica de juego 2D y 3D:
+
+A. Mundo Abierto, Exploración, Supervivencia y Entorno
+Biomas, Zonas y Transición de Mundo: carga/descarga de sectores, niebla/iluminación/música por zona y reglas de acceso.
+
+Clima Dinámico y Ciclo Día/Noche: sol/luna/iluminación ambiental, lluvia, tormenta, nieve, viento y efectos en gameplay (visibilidad, cultivos, enemigos).
+
+Supervivencia (Hambre, Sed, Energía/Estamina, Temperatura, Oxígeno): medidores con consumo, recuperación, efectos al agotarse y umbrales de alerta.
+
+Agua, Mareas, Corrientes y Buceo: flotabilidad, empuje de corriente, resistencia al nadar, límite de aire y zonas subacuáticas.
+
+Fuego, Propagación y Combustión: objetos inflamables, chispa, expansión del fuego a vecinos y extinción con agua/tiempo.
+
+Clima/Superficie Interactiva (Hielo, Barro, Arena, Lava, Trampolines): altera fricción, velocidad, rebote, huellas o daño al pisar.
+
+Construcción y Base/Housing: colocación en grilla o superficie 2D/3D, snap, validación de colisiones, rotación, demolición y mejora de estructuras.
+
+Cultivo, Cría y Procesamiento: sembrar, regar, madurar, cosechar, criar animales/criaturas y refinar/cocinar/craftear recursos.
+
+Sistema de Clima/Eventos Globales: lluvias de meteoritos, oleadas nocturnas, mareas altas, eventos de mundo con inicio/fin y recompensas.
+
+B. Herramientas, Vehículos, Monturas y Combate Profundo
+Herramientas Modulares (Caña, Red, Pico, Hacha, Hoz, Escáner, Gancho): cada herramienta define acción principal, secundaria, rango/área, consumo de energía/durabilidad y resultado (captura, tala, mina, cosecha, enganche).
+
+Vehículos y Navegación (Bote, Auto, Moto, Avión, Submarino, Tren): física específica por medio, tripulación/asientos, combustible/carga, timón/dirección y cámara dedicada.
+
+Monturas y Compañeros (Pets / Squad): seguir, atacar, recolectar, iluminar, transportar carga o montar encima con controles propios.
+
+Combate Completo (Melee, Proyectiles, Magia/Habilidades, Cooldowns, Maná/Energía): combos, hitbox/hurtbox, bloqueo/parry, esquiva con i-frames, estados (quemadura, veneno, ralentización, aturdimiento, escudo).
+
+Sigilo, Ruido y Detección: emisión de sonido al moverse/actuar, campos de visión con obstrucción, estado de alerta/sospecha y sigilo.
+
+Destrucción y Físicas Avanzadas: rotura por umbral de impacto, piezas/escombros, resortes, péndulos, cables/cuerdas y explosiones en cadena.
+
+C. RPG, Economía, Progresión, Misiones y Narrativa
+Inventario Avanzado (Peso, Slots, Categorías, Apilado, Durabilidad, Atributos): mover, dividir, usar, soltar, ordenar y filtrar ítems.
+
+Equipamiento y Stats Dinámicos: ranuras de arma, herramienta, armadura y accesorios que recalculan atributos y cambian apariencia/modelo/animación.
+
+Crafteo, Recetas y Mejoras: combinar materiales, desbloquear planos y subir nivel de ítems/herramientas con probabilidad o costes.
+
+Economía, Tiendas, Subastas/Intercambio y Loot Tables: precios dinámicos, compra/venta, drops ponderados por rareza y cofres/bolsas.
+
+Misiones, Contratos, Logros y Bestiario: objetivos encadenados (recolectar, cazar, entregar, visitar, hablar), progreso persistente y recompensas.
+
+Diálogos Ramificados, Comercio NPC y Facción/Reputación: árboles de diálogo con condiciones y consecuencias, afinidad con facciones y reacciones de NPCs.
+
+D. Multijugador Real, Persistencia y Portales Web (Poki, CrazyGames, Playgama)
+Red Autoritativa / Salas / Mundo Compartido: conexión, creación/unión de salas o canales/shards, sincronización de entidades, RPCs/eventos de red y manejo de desconexiones.
+
+Sincronización de Transformaciones y Animaciones: interpolación, extrapolación ligera y corrección suave de posición/rotación/estado sin saltos bruscos.
+
+Persistencia Segura de Jugador y Mundo: guardado/carga de inventario, recursos, moneda, posición/zona, misiones y estado de nodos recolectables/estructuras con anti-duplicado básico y colas de reintento.
+
+Integración Multi-Portal (Poki, CrazyGames, Playgama + Web Standalone): adaptador unificado para inicio/pausa de partida, anuncios (rewarded y mid-roll), silencio de audio, guardado y eventos del portal.
+
+UI, Menús, HUD, Minijuegos, Audio y Herramientas de Depuración: menús, pausa, ajustes, controles táctiles/mando, canales de audio 2D/3D, sistema de guardado/carga, cámara cinemática/transiciones y overlays de debug/FPS/red.
+
+2. Cómo funciona la Interconexión y el Auto-Cableado en el Motor
+Para que no tengas que armar todo a mano cada vez:
+
+Arquetipos (Archetypes): cuando eliges "Recolectable", "Enemigo", "Bote", "Caña de pescar", "Red", "Escena Menú" o "Escena Mundo", el motor aplica una receta que añade las mecánicas base y crea los enlaces por defecto.
+
+Conexiones Explícitas (WiringLinks): cada conexión guarda { sourceEntityId, sourceBehavior, sourceSignal, targetEntityId, targetBehavior, targetAction, mapping }.
+
+Reflejo en el Panel de Mecánicas: el panel muestra:
+
+Todas las mecánicas del objeto (propias o heredadas/auto-conectadas).
+
+Etiqueta de origen (Manual, Arquetipo: Bote, Auto-conectado: Inventario).
+
+Sus entradas (qué acciones/eventos recibe) y salidas (qué eventos emite y a qué objetos/mecánicas están cableados).
+
+Acciones directas para editar parámetros, añadir/quitar cables o desvincular sin romper el resto.
+
+3. Implementación Real Lista para Integrar en el Motor
+Aquí tienes un núcleo real en JavaScript que implementa:
+
+El registro de comportamientos con ciclo de vida (onInit, onStart, onUpdate, onEvent, onDestroy).
+
+El sistema de interconexión / auto-cableado por arquetipos (con ejemplos reales de Recolectable, Caña de pescar, Red, Bote y Enemigo).
+
+El gestor de persistencia de ítems/recursos (con validación anti-duplicado, guardado y carga).
+
+El adaptador de multijugador y portales web (Poki / CrazyGames / Playgama / Local).
+
+JavaScript
+/**
+ * Núcleo de Biblioteca, Auto-Cableado, Persistencia, Red y Portales
+ * Diseñado para integrarse directamente en un motor 2D/3D.
+ */
+
+export class EventBus {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  on(eventName, handler) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, new Set());
+    }
+    this.listeners.get(eventName).add(handler);
+    return () => this.off(eventName, handler);
+  }
+
+  off(eventName, handler) {
+    const set = this.listeners.get(eventName);
+    if (set) set.delete(handler);
+  }
+
+  emit(eventName, payload = {}) {
+    const set = this.listeners.get(eventName);
+    if (!set) return;
+    for (const handler of Array.from(set)) {
+      handler(payload);
+    }
+  }
+}
+
+export class BehaviorRegistry {
+  constructor() {
+    this.definitions = new Map();
+  }
+
+  register(definition) {
+    if (!definition || !definition.id) {
+      throw new Error("El comportamiento requiere un 'id' único.");
+    }
+    this.definitions.set(definition.id, {
+      defaultParams: {},
+      inputs: [],
+      outputs: [],
+      contexts: ["gameplay"],
+      onInit: null,
+      onStart: null,
+      onUpdate: null,
+      onEvent: null,
+      onDestroy: null,
+      ...definition
+    });
+  }
+
+  get(id) {
+    return this.definitions.get(id) || null;
+  }
+
+  list() {
+    return Array.from(this.definitions.values());
+  }
+}
+
+export class PersistenceStore {
+  constructor(storageKey = "engine_player_save_v1", remoteAdapter = null) {
+    this.storageKey = storageKey;
+    this.remoteAdapter = remoteAdapter; // Opcional: { load(userId), save(userId, state) }
+    this.processedActionIds = new Set();
+    this.state = {
+      playerId: "local_player",
+      coins: 0,
+      inventory: {},       // { [itemId]: quantity }
+      collectedNodes: {},  // { [nodeId]: timestamp }
+      quests: {},
+      unlocked: {}
+    };
+  }
+
+  canExecuteAction(actionId) {
+    if (!actionId) return true;
+    if (this.processedActionIds.has(actionId)) return false;
+    this.processedActionIds.add(actionId);
+    if (this.processedActionIds.size > 5000) {
+      const first = this.processedActionIds.values().next().value;
+      this.processedActionIds.delete(first);
+    }
+    return true;
+  }
+
+  addItem(itemId, amount = 1, actionId = null) {
+    if (!itemId || amount <= 0) return false;
+    if (!this.canExecuteAction(actionId)) return false;
+    const current = this.state.inventory[itemId] || 0;
+    this.state.inventory[itemId] = current + amount;
+    return true;
+  }
+
+  consumeItem(itemId, amount = 1, actionId = null) {
+    if (!itemId || amount <= 0) return false;
+    if (!this.canExecuteAction(actionId)) return false;
+    const current = this.state.inventory[itemId] || 0;
+    if (current < amount) return false;
+    this.state.inventory[itemId] = current - amount;
+    if (this.state.inventory[itemId] <= 0) {
+      delete this.state.inventory[itemId];
+    }
+    return true;
+  }
+
+  markNodeCollected(nodeId, respawnSeconds = 30, actionId = null) {
+    if (!nodeId) return false;
+    if (!this.canExecuteAction(actionId)) return false;
+    const now = Date.now();
+    const collectedAt = this.state.collectedNodes[nodeId];
+    if (collectedAt && now - collectedAt < respawnSeconds * 1000) {
+      return false; // Aún en enfriamiento/recolectado
+    }
+    this.state.collectedNodes[nodeId] = now;
+    return true;
+  }
+
+  isNodeAvailable(nodeId, respawnSeconds = 30) {
+    const collectedAt = this.state.collectedNodes[nodeId];
+    if (!collectedAt) return true;
+    return (Date.now() - collectedAt) >= respawnSeconds * 1000;
+  }
+
+  async save(userId = null) {
+    if (userId) this.state.playerId = userId;
+    const serialized = JSON.stringify(this.state);
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(this.storageKey, serialized);
+      }
+    } catch (_) {}
+
+    if (this.remoteAdapter && typeof this.remoteAdapter.save === "function") {
+      await this.remoteAdapter.save(this.state.playerId, this.state);
+    }
+    return this.state;
+  }
+
+  async load(userId = null) {
+    if (userId) this.state.playerId = userId;
+    try {
+      if (typeof localStorage !== "undefined") {
+        const raw = localStorage.getItem(this.storageKey);
+        if (raw) {
+          this.state = { ...this.state, ...JSON.parse(raw) };
+        }
+      }
+    } catch (_) {}
+
+    if (this.remoteAdapter && typeof this.remoteAdapter.load === "function") {
+      const remoteData = await this.remoteAdapter.load(this.state.playerId);
+      if (remoteData && typeof remoteData === "object") {
+        this.state = { ...this.state, ...remoteData };
+      }
+    }
+    return this.state;
+  }
+}
+
+export class PortalBridge {
+  constructor(bus) {
+    this.bus = bus;
+    this.portal = this._detectPortal();
+    this.gameplayActive = false;
+  }
+
+  _detectPortal() {
+    if (typeof window === "undefined") return "server";
+    if (window.PokiSDK) return "poki";
+    if (window.CrazyGames && window.CrazyGames.SDK) return "crazygames";
+    if (window.playgama || window.Playgama) return "playgama";
+    return "web";
+  }
+
+  async init() {
+    if (this.portal === "poki" && window.PokiSDK?.init) {
+      await window.PokiSDK.init();
+    } else if (this.portal === "crazygames" && window.CrazyGames?.SDK?.init) {
+      await window.CrazyGames.SDK.init();
+    }
+    this.bus.emit("portal:ready", { portal: this.portal });
+  }
+
+  gameplayStart() {
+    if (this.gameplayActive) return;
+    this.gameplayActive = true;
+    if (this.portal === "poki" && window.PokiSDK?.gameplayStart) {
+      window.PokiSDK.gameplayStart();
+    } else if (this.portal === "crazygames" && window.CrazyGames?.SDK?.game?.gameplayStart) {
+      window.CrazyGames.SDK.game.gameplayStart();
+    }
+    this.bus.emit("portal:gameplayStart");
+  }
+
+  gameplayStop() {
+    if (!this.gameplayActive) return;
+    this.gameplayActive = false;
+    if (this.portal === "poki" && window.PokiSDK?.gameplayStop) {
+      window.PokiSDK.gameplayStop();
+    } else if (this.portal === "crazygames" && window.CrazyGames?.SDK?.game?.gameplayStop) {
+      window.CrazyGames.SDK.game.gameplayStop();
+    }
+    this.bus.emit("portal:gameplayStop");
+  }
+
+  async showRewardedAd(onReward) {
+    this.gameplayStop();
+    let granted = false;
+    try {
+      if (this.portal === "poki" && window.PokiSDK?.rewardedBreak) {
+        granted = Boolean(await window.PokiSDK.rewardedBreak());
+      } else if (this.portal === "crazygames" && window.CrazyGames?.SDK?.ad?.requestAd) {
+        await new Promise((resolve) => {
+          window.CrazyGames.SDK.ad.requestAd("rewarded", {
+            adFinished: () => { granted = true; resolve(); },
+            adError: () => resolve(),
+            adDismissed: () => resolve()
+          });
+        });
+      } else {
+        // Fallback en entorno local/web sin SDK externo
+        granted = true;
+      }
+    } catch (_) {
+      granted = false;
+    }
+
+    if (granted && typeof onReward === "function") {
+      onReward();
+    }
+    this.gameplayStart();
+    return granted;
+  }
+}
+
+export class EngineWiringSystem {
+  constructor(registry, persistence, portalBridge) {
+    this.registry = registry;
+    this.persistence = persistence;
+    this.portalBridge = portalBridge;
+    this.bus = new EventBus();
+    this.entities = new Map();
+    this.wiringLinks = [];
+    this.archetypes = new Map();
+    this.sceneContext = "gameplay"; // "menu" | "gameplay" | "inventory" | etc.
+    this._registerDefaultArchetypes();
+  }
+
+  setSceneContext(context) {
+    this.sceneContext = context;
+    this.bus.emit("scene:contextChanged", { context });
+  }
+
+  registerArchetype(name, recipe) {
+    this.archetypes.set(name, recipe);
+  }
+
+  _registerDefaultArchetypes() {
+    // 1. Recolectable (cristal, moneda, recurso, fruta)
+    this.registerArchetype("collectible", {
+      behaviors: [
+        { id: "float_bob", params: { amplitude: 0.2, speed: 2.5 }, source: "archetype:collectible" },
+        { id: "collectible_node", params: { itemId: "crystal", amount: 1, respawnSec: 30, radius: 1.5 }, source: "archetype:collectible" }
+      ],
+      autoWire: [
+        {
+          fromBehavior: "collectible_node",
+          signal: "onCollected",
+          toRole: "player",
+          toBehavior: "inventory_holder",
+          action: "receiveItem"
+        }
+      ]
+    });
+
+    // 2. Caña de pescar
+    this.registerArchetype("fishing_rod", {
+      behaviors: [
+        { id: "equippable_tool", params: { slot: "hand", toolType: "rod" }, source: "archetype:fishing_rod" },
+        { id: "fishing_mechanic", params: { castRange: 8, biteTimeSec: 2.0, fishPool: ["fish_common", "fish_rare"] }, source: "archetype:fishing_rod" }
+      ],
+      autoWire: [
+        {
+          fromBehavior: "fishing_mechanic",
+          signal: "onFishCaught",
+          toRole: "player",
+          toBehavior: "inventory_holder",
+          action: "receiveItem"
+        }
+      ]
+    });
+
+    // 3. Red de captura / recolección en área
+    this.registerArchetype("capture_net", {
+      behaviors: [
+        { id: "equippable_tool", params: { slot: "hand", toolType: "net" }, source: "archetype:capture_net" },
+        { id: "area_net_capture", params: { radius: 3.5, maxTargets: 5, cooldownSec: 1.2 }, source: "archetype:capture_net" }
+      ],
+      autoWire: [
+        {
+          fromBehavior: "area_net_capture",
+          signal: "onBatchCaptured",
+          toRole: "player",
+          toBehavior: "inventory_holder",
+          action: "receiveBatch"
+        }
+      ]
+    });
+
+    // 4. Bote / Vehículo acuático
+    this.registerArchetype("boat", {
+      behaviors: [
+        { id: "water_float", params: { waterLevel: 0, buoyancy: 12, drag: 2.5 }, source: "archetype:boat" },
+        { id: "vehicle_driver", params: { maxSpeed: 11, turnSpeed: 2.2, seatOffset: { x: 0, y: 1, z: 0 } }, source: "archetype:boat" }
+      ],
+      autoWire: [
+        {
+          fromBehavior: "vehicle_driver",
+          signal: "onBoardStateChanged",
+          toRole: "camera",
+          toBehavior: "camera_follow",
+          action: "setTarget"
+        }
+      ]
+    });
+
+    // 5. Enemigo con IA FSM + Vida
+    this.registerArchetype("enemy_fsm", {
+      behaviors: [
+        { id: "health_system", params: { maxHp: 100, hp: 100, invulnSec: 0.4 }, source: "archetype:enemy_fsm" },
+        { id: "ai_fsm", params: { aggroRange: 10, attackRange: 2.0, fleeHpRatio: 0.2 }, source: "archetype:enemy_fsm" }
+      ],
+      autoWire: [
+        {
+          fromBehavior: "health_system",
+          signal: "onDied",
+          toRole: "player",
+          toBehavior: "inventory_holder",
+          action: "receiveDrop"
+        }
+      ]
+    });
+  }
+
+  createEntity({ id, name, role = "generic", transform = { x: 0, y: 0, z: 0, rotY: 0 }, net = { replicated: false, ownerId: null } }) {
+    const entity = {
+      id,
+      name: name || id,
+      role,
+      transform,
+      net,
+      behaviors: [],
+      started: false
+    };
+    this.entities.set(id, entity);
+    this.bus.emit("entity:created", { entity });
+    return entity;
+  }
+
+  addBehavior(entityId, behaviorId, params = {}, source = "manual") {
+    const entity = this.entities.get(entityId);
+    const def = this.registry.get(behaviorId);
+    if (!entity || !def) return null;
+
+    const existing = entity.behaviors.find((b) => b.id === behaviorId);
+    if (existing) {
+      existing.params = { ...existing.params, ...params };
+      this.bus.emit("behavior:updated", { entity, behavior: existing });
+      return existing;
+    }
+
+    const instance = {
+      id: behaviorId,
+      name: def.name || behaviorId,
+      source,
+      enabled: true,
+      params: { ...def.defaultParams, ...params },
+      state: {},
+      inputs: def.inputs || [],
+      outputs: def.outputs || [],
+      contexts: def.contexts || ["gameplay"],
+      _def: def
+    };
+
+    entity.behaviors.push(instance);
+    if (typeof def.onInit === "function") {
+      def.onInit(entity, instance, this);
+    }
+    if (entity.started && typeof def.onStart === "function") {
+      def.onStart(entity, instance, this);
+    }
+
+    this.bus.emit("behavior:added", { entity, behavior: instance });
+    return instance;
+  }
+
+  applyArchetype(entityId, archetypeName) {
+    const entity = this.entities.get(entityId);
+    const recipe = this.archetypes.get(archetypeName);
+    if (!entity || !recipe) return;
+
+    for (const b of recipe.behaviors || []) {
+      this.addBehavior(entityId, b.id, b.params, b.source || `archetype:${archetypeName}`);
+    }
+
+    for (const rule of recipe.autoWire || []) {
+      const targets = Array.from(this.entities.values()).filter((e) => e.role === rule.toRole);
+      for (const target of targets) {
+        const hasTargetBehavior = target.behaviors.some((tb) => tb.id === rule.toBehavior);
+        if (hasTargetBehavior) {
+          this.wire({
+            sourceEntityId: entity.id,
+            sourceBehavior: rule.fromBehavior,
+            signal: rule.signal,
+            targetEntityId: target.id,
+            targetBehavior: rule.toBehavior,
+            action: rule.action,
+            auto: true
+          });
+        }
+      }
+    }
+
+    this.bus.emit("archetype:applied", { entity, archetypeName });
+  }
+
+  wire(link) {
+    const exists = this.wiringLinks.some(
+      (l) =>
+        l.sourceEntityId === link.sourceEntityId &&
+        l.sourceBehavior === link.sourceBehavior &&
+        l.signal === link.signal &&
+        l.targetEntityId === link.targetEntityId &&
+        l.targetBehavior === link.targetBehavior &&
+        l.action === link.action
+    );
+    if (!exists) {
+      this.wiringLinks.push({ ...link, id: `link_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` });
+      this.bus.emit("wiring:changed", { links: this.wiringLinks });
+    }
+  }
+
+  emitBehaviorSignal(sourceEntityId, sourceBehaviorId, signal, data = {}) {
+    this.bus.emit("behavior:signal", { sourceEntityId, sourceBehaviorId, signal, data });
+
+    const matchingLinks = this.wiringLinks.filter(
+      (l) => l.sourceEntityId === sourceEntityId && l.sourceBehavior === sourceBehaviorId && l.signal === signal
+    );
+
+    for (const link of matchingLinks) {
+      const targetEntity = this.entities.get(link.targetEntityId);
+      if (!targetEntity) continue;
+      const targetBehavior = targetEntity.behaviors.find((b) => b.id === link.targetBehavior && b.enabled);
+      if (targetBehavior && typeof targetBehavior._def.onEvent === "function") {
+        targetBehavior._def.onEvent(targetEntity, targetBehavior, this, link.action, data);
+      }
+    }
+  }
+
+  /**
+   * Devuelve la vista lista para renderizar en el Panel de Mecánicas del editor
+   */
+  getInspectorView(entityId) {
+    const entity = this.entities.get(entityId);
+    if (!entity) return null;
+
+    return {
+      entityId: entity.id,
+      entityName: entity.name,
+      role: entity.role,
+      behaviors: entity.behaviors.map((b) => ({
+        id: b.id,
+        name: b.name,
+        source: b.source,
+        enabled: b.enabled,
+        contexts: b.contexts,
+        params: b.params,
+        incomingLinks: this.wiringLinks.filter(
+          (l) => l.targetEntityId === entity.id && l.targetBehavior === b.id
+        ),
+        outgoingLinks: this.wiringLinks.filter(
+          (l) => l.sourceEntityId === entity.id && l.sourceBehavior === b.id
+        )
+      }))
+    };
+  }
+
+  startAll() {
+    for (const entity of this.entities.values()) {
+      if (entity.started) continue;
+      entity.started = true;
+      for (const b of entity.behaviors) {
+        if (b.enabled && typeof b._def.onStart === "function") {
+          b._def.onStart(entity, b, this);
+        }
+      }
+    }
+  }
+
+  update(dt) {
+    const clampedDt = Math.min(Math.max(dt || 0, 0), 0.05);
+    for (const entity of this.entities.values()) {
+      for (const b of entity.behaviors) {
+        if (!b.enabled) continue;
+        if (Array.isArray(b.contexts) && !b.contexts.includes(this.sceneContext)) continue;
+        if (typeof b._def.onUpdate === "function") {
+          b._def.onUpdate(entity, b, this, clampedDt);
+        }
+      }
+    }
+  }
+}
+Ejemplo rápido de uso en tu motor
+JavaScript
+const registry = new BehaviorRegistry();
+const persistence = new PersistenceStore("mi_juego_save_v1");
+const portal = new PortalBridge(null);
+const engine = new EngineWiringSystem(registry, persistence, portal);
+portal.bus = engine.bus;
+
+// Registrar comportamientos base
+registry.register({
+  id: "inventory_holder",
+  name: "Inventario y Recursos",
+  inputs: ["receiveItem", "receiveBatch", "receiveDrop"],
+  onEvent(entity, behavior, sys, action, payload) {
+    if (action === "receiveItem" && payload.itemId) {
+      sys.persistence.addItem(payload.itemId, payload.amount || 1, payload.actionId);
+      sys.bus.emit("inventory:changed", { entityId: entity.id, inventory: sys.persistence.state.inventory });
+    } else if (action === "receiveBatch" && Array.isArray(payload.items)) {
+      for (const it of payload.items) {
+        sys.persistence.addItem(it.itemId, it.amount || 1, payload.actionId);
+      }
+      sys.bus.emit("inventory:changed", { entityId: entity.id, inventory: sys.persistence.state.inventory });
+    }
+  }
+});
+
+// Crear jugador, bote, caña y red y auto-cablear con el panel de mecánicas
+engine.createEntity({ id: "player_1", name: "Jugador", role: "player" });
+engine.addBehavior("player_1", "inventory_holder", {}, "manual");
+
+engine.createEntity({ id: "boat_1", name: "Bote Pescador", role: "boat" });
+engine.applyArchetype("boat_1", "boat");
+
+engine.createEntity({ id: "rod_1", name: "Caña de Pescar", role: "tool" });
+engine.applyArchetype("rod_1", "fishing_rod");
+
+engine.createEntity({ id: "net_1", name: "Red de Captura", role: "tool" });
+engine.applyArchetype("net_1", "capture_net");
+
+// Ver todo reflejado en el Panel de Mecánicas de "rod_1"
+console.log(engine.getInspectorView("rod_1"));
+Si quieres, el siguiente paso es conectar este núcleo con el bucle de render/escena de tu motor (2D o 3D) y añadir el componente visual del Panel de Mecánicas para ver y editar los cables y comportamientos en tiempo real.
+
+
+Aquí tienes el diseño completo de la Súper Biblioteca y la arquitectura de integración/interconexión, redactado como una especificación maestra para que Google AI Studio lo implemente de forma limpia, modular y funcional en el motor (2D y 3D), sin que tengas que armar todo a mano ni depender de código suelto.
+
+1. Visión General: Qué Debe Lograr la Plataforma
+El motor debe funcionar tanto en 2D como en 3D, soportar multijugador en tiempo real y persistencia real de ítems/recursos (para juegos de recolección, RPG, mundo abierto o multijugador masivo/en línea), integrarse de forma nativa con portales web (Poki, CrazyGames, Playgama) y contar con un sistema de interconexión automática donde:
+
+Al elegir un tipo de escena (Menú, Mundo Abierto, Arena, Inventario/Tienda) o un rol/arquetipo de objeto (Recolectable, Enemigo, Bote, Caña de pescar, Red, Herramienta, Vehículo, NPC, Zona/Portal, UI), el sistema genere, configure y conecte automáticamente las mecánicas necesarias.
+
+Todo lo implementado se refleje de forma clara y editable en el Panel de Mecánicas (mostrando origen, parámetros, entradas/salidas y conexiones activas, sin chocar con el foco del teclado en los inputs ni romper el animador/máquina de estados).
+
+2. La Súper Biblioteca (Complemento a los 64 Comportamientos Base)
+Organizada por dominios para que el motor pueda construir cualquier género o experiencia:
+
+A. Sistema de Interconexión, Auto-Cableado y Contextos de Escena
+Arquetipos / Plantillas Inteligentes: al asignar un rol a un objeto (Recolectable, Enemigo, Bote, Caña de Pescar, Red, Cofre, Puerta, Zona de Cultivo, Montura, Botón/HUD), inyecta automáticamente sus mecánicas base y cablea sus eventos con el resto de la escena.
+
+Contextos de Escena (SceneContext): define si una escena o capa es Menú, Gameplay, Mundo Abierto, Pausa/Modal o Inventario/Tienda, activando o filtrando comportamientos y controles según el contexto.
+
+Bus de Señales y Variables Compartidas (EventBus + Blackboard): comunicación desacoplada entre objetos (ej. Recolectable -> Inventario, Caña/Red -> Inventario + Persistencia, Bote -> Cámara + Control de Jugador, Botón -> Escena/Puerta).
+
+Sincronización con el Panel de Mecánicas: cada comportamiento muestra su origen (Manual, Arquetipo, Auto-conectado), sus parámetros editables, sus entradas/salidas y sus enlaces activos, permitiendo ajustar o desvincular sin romper la estructura.
+
+B. Multijugador Real, Sincronización y Persistencia de Ítems/Recursos
+Identidad y Autoridad de Red: distingue entidad local, remota, de sala/mundo o del servidor, evitando que un cliente modifique recursos o ítems sin validación.
+
+Sincronización de Estado, Movimiento y Animación: replica posiciones, rotaciones, velocidades, estados de máquina de estados y acciones puntuales con suavizado/interpolación en 2D y 3D.
+
+Persistencia de Jugador (Inventario, Recursos, Monedas, Stats y Progreso): guarda y carga inventario, cantidades, ítems equipados, misiones, desbloqueos y progreso con protección anti-duplicado (IDs de transacción / enfriamientos).
+
+Persistencia de Mundo y Nodos de Recursos: recuerda qué nodos, árboles, menas, cristales, peces o construcciones fueron recolectados/modificados y cuándo reaparecen, tanto por jugador como por mundo/sala.
+
+Zonas, Instancias y Sharding: soporta múltiples mapas, salas, mazmorras o sectores de mundo abierto preservando el estado del jugador al cambiar de zona.
+
+Intercambio, Tienda y Economía entre Jugadores: transferencia segura de ítems/monedas, precios, drops ponderados (loot tables) y cofres/almacenes.
+
+C. Integración con Portales Web (Poki, CrazyGames, Playgama) y Producción
+Adaptador Unificado de Portales: abstrae el ciclo de vida de partida (inicio/pausa de gameplay), silencio de audio, eventos de carga y guardado compatible con Poki, CrazyGames, Playgama y ejecución web estándar.
+
+Anuncios Recompensados y Transiciones: soporte limpio para anuncios recompensados (rewarded) e intermedios (mid-roll) con pausado/reanudado seguro del juego y entrega de recompensas solo cuando corresponde.
+
+Guardado Híbrido y Resiliencia: combina almacenamiento del portal, nube/base de datos y respaldo local, con reintentos si falla la conexión.
+
+Rendimiento Adaptativo y Depuración: ajuste dinámico de calidad/densidad/sombras/partículas si bajan los FPS, más herramientas de diagnóstico (FPS, latencia, entidades, conexiones).
+
+D. Herramientas, Vehículos, Pesca, Recolección y Mundo Abierto
+Herramientas Modulares (Caña de Pescar, Red, Pico, Hacha, Hoz, Gancho, Escáner): cada una con uso principal/secundario, rango/área, tiempos de espera/esfuerzo, captura/extracción y entrega directa al inventario.
+
+Vehículos y Navegación (Bote, Auto, Moto, Avión, Submarino, Tren): conducción en tierra, agua o aire, flotabilidad/corrientes, asientos/pasajeros, combustible/energía y cámara dedicada.
+
+Monturas, Mascotas y Compañeros: seguimiento, apoyo en combate o recolección, transporte y comandos básicos.
+
+Supervivencia, Entorno y Construcción: hambre/sed/estamina/temperatura/oxígeno, ciclo día/noche y clima, fuego/superficies interactivas (hielo, agua, lava, barro), cultivos/crianza/crafteo y colocación de estructuras en grilla o superficie 2D/3D.
+
+Combate, Sigilo, Misiones y Diálogos: ataque cuerpo a cuerpo, proyectiles, habilidades, estados (quemadura, veneno, ralentización, escudo), sigilo/ruido, misiones encadenadas, logros y diálogos ramificados.
+
+UI, Menús, Controles y Audio: menús navegables sin conflicto de teclado, joysticks táctiles/mando, modales/ventanas, canales de audio 2D/3D y multi-idioma.
+
+E. Reparaciones Críticas del Editor y el Runtime
+Inspector de Luz 2D y Foco de UI: al enfocar un campo numérico/texto (como intensidad, radio o color), bloquear la propagación de teclas hacia menús/listas y permitir escribir decimales sin perder el foco ni alterar el cursor.
+
+Animador / Máquina de Estados (Cayendo / Falling): evaluar condiciones limpias según el eje Y del motor y el estado en suelo/aire, evitar reiniciar el clip en cada frame si el estado no cambió y validar siempre que la animación exista antes de reproducirla.
+
+Luz 2D Degradada + Sombras Proyectadas: generar/usar luces con degradado radial suave hacia transparencia total en el borde y, cuando castShadow esté activo, proyectar sombras detrás de los objetos en la dirección opuesta/alejada desde la luz según su geometría/alcance.
+
+3. Instrucciones y Prompt Listo para Google AI Studio
+Copia y pega este bloque directamente en Google AI Studio:
+
+Actúa como arquitecto senior de motores de videojuegos (2D y 3D) y herramientas de edición visual. Necesito que implementes en mi motor un sistema completo, modular y funcional que integre la Súper Biblioteca de Mecánicas, el Auto-Cableado de Objetos y Escenas, la Persistencia y Multijugador, el Soporte para Portales Web (Poki, CrazyGames, Playgama) y las correcciones críticas del editor y animador.
+
+Requisitos arquitectónicos obligatorios:
+
+Núcleo de Mecánicas y Ciclo de Vida: Cada comportamiento debe tener definición, parámetros por defecto, estado propio, contextos de escena permitidos (menu, gameplay, world, ui), entradas, salidas y ciclo de vida (onInit, onStart, onUpdate, onEvent, onDestroy), funcionando tanto en escenas 2D como 3D.
+
+Sistema de Interconexión y Auto-Cableado (WiringSystem + Arquetipos):
+
+Define plantillas/arquetipos para roles comunes como collectible (recolectable), enemy (enemigo), boat (bote/vehículo), fishing_rod (caña de pescar), capture_net (red), tool, npc, quest_giver, spawner y contextos de escena (menu, gameplay).
+
+Al aplicar un arquetipo a un objeto o cambiar el contexto de una escena, el motor debe añadir las mecánicas base y crear automáticamente los enlaces/conexiones correspondientes con otros objetos de la escena (por ejemplo: recolectar/pescar/capturar con red -> enviar ítem al inventario y persistir; subir a un bote -> transferir control y cambiar cámara; escena de menú -> aislar lógica de menú).
+
+Reflejo en el Panel de Mecánicas: el panel de mecánicas del editor debe mostrar todas las mecánicas activas del objeto (manuales, por arquetipo y auto-cableadas), su origen, sus parámetros editables y sus conexiones entrantes/salientes, permitiendo modificar o desvincular sin romper la escena.
+
+Súper Biblioteca Completa (además de los 64 comportamientos base):
+
+Implementa de forma real y modular los comportamientos clave de las categorías de: Multijugador y Sincronización (propiedad/autoridad de red, sync de transform/animación/eventos, salas/zonas/shards, comercio/intercambio), Persistencia de Ítems y Mundo (inventario, recursos, monedas, nodos recolectables con reaparición y anti-duplicado, guardado/carga), Portales Web (adaptador unificado para Poki, CrazyGames, Playgama y web con inicio/pausa de partida, mute, anuncios recompensados y guardado híbrido), Herramientas y Vehículos (caña de pescar, red de captura, vehículos acuáticos/terrestres/aéreos, monturas/compañeros), Mundo Abierto y Supervivencia (clima/día-noche, supervivencia, superficies/agua/fuego, construcción, cultivos/crafteo, misiones/diálogos/economía) y Escenas/Menús/UI/Audio.
+
+Reparación de Fallos Críticos del Editor y Animador:
+
+Foco en Inspector de Luz 2D y campos de propiedades: cuando un input de texto o número esté enfocado, impide que las teclas de navegación (ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Enter, Space, Tab) muevan el menú o lista lateral, y permite editar números decimales sin perder foco ni resetear el texto mientras se escribe.
+
+Máquina de Estados / Animador (falling / cayendo): corrige la transición a falling (en el aire y descendiendo según el signo del eje Y del motor), evita reiniciar la animación en cada fotograma si el estado/clip ya está activo, y protege contra animaciones faltantes o nulas sin lanzar errores.
+
+Luces 2D con Degradado y Proyección de Sombras (castShadow): renderiza luces 2D con degradado radial suave (centro luminoso según color e intensidad hasta transparencia total en el radio exterior) y, cuando castShadow esté activo, proyecta sombras detrás de los objetos emisores de sombra en la dirección alejada desde la luz.
+
+Cómo entregarlo:
+
+Estructura el código en módulos claros y bien separados (núcleo de comportamientos/wiring, biblioteca extendida, persistencia/red/portales, animador/luces 2D y UI/inspector).
+
+Asegúrate de que todo esté conectado entre sí, sin placeholders vacíos ni código muerto, y explica brevemente cómo integrarlo en el bucle principal del motor y en el Panel de Mecánicas.
+

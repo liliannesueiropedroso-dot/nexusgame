@@ -1,8 +1,12 @@
 import type {
   AudioBusSettings,
+  DataTableDef,
+  DialogueGraph,
   GameObjectData,
+  I18nConfig,
   ProjectVariable,
   SceneData,
+  TouchControlsConfig,
 } from '../../engine/core/types';
 
 export const NEXUS_PROJECT_FORMAT = 'nexus-project' as const;
@@ -11,7 +15,14 @@ export const NEXUS_ENGINE_PHASE = 'phase-2-2d-engine' as const;
 
 export type StageOrientation = 'horizontal' | 'vertical';
 
-export type ProjectTemplateId = 'empty_single' | 'platformer_multiscene' | 'topdown_adventure';
+export type ProjectMode = '2d' | '3d';
+
+export type ProjectTemplateId =
+  | 'empty_single'
+  | 'platformer_multiscene'
+  | 'topdown_adventure'
+  | 'arena_3d'
+  | 'platformer_3d';
 
 export type ResolutionPresetId =
   | '1280x720'
@@ -48,8 +59,28 @@ export type AssetFormat =
   | 'm4a'
   | 'aac'
   | 'flac'
-  | 'webm';
-export type AssetKind = 'image' | 'audio';
+  | 'webm'
+  | 'glb'
+  | 'gltf'
+  | 'fbx';
+export type AssetKind = 'image' | 'audio' | 'model3d';
+
+export type ScriptAssetKind = 'script' | 'interface';
+
+export interface NexusScriptAsset {
+  id: string;
+  name: string;
+  kind: ScriptAssetKind;
+  description?: string;
+  /** Código JS (para kind==='script') o HTML (para kind==='interface') */
+  code: string;
+  /** CSS aislado (para kind==='interface') */
+  css?: string;
+  /** Código JS interactivo asociado al widget (para kind==='interface') */
+  js?: string;
+  targetScope?: 'object' | 'scene';
+  updatedAt: number;
+}
 
 export interface ProjectFolder {
   id: string;
@@ -88,11 +119,13 @@ export interface ProjectSettings {
   height: number;
   orientation: StageOrientation;
   backgroundColor: string;
+  touchControls?: TouchControlsConfig;
 }
 
 export interface NexusProject {
   id: string;
   formatVersion: string;
+  mode?: ProjectMode;
   name: string;
   createdAt: number;
   updatedAt: number;
@@ -101,14 +134,19 @@ export interface NexusProject {
   initialSceneId?: string;
   scenes: SceneData[];
   assets: ProjectAssetMeta[];
+  scripts?: NexusScriptAsset[];
   folders?: ProjectFolder[];
   prefabs?: PrefabDefinition[];
   variables?: ProjectVariable[];
   audioBuses?: AudioBusSettings;
+  dialogues?: DialogueGraph[];
+  dataTables?: DataTableDef[];
+  i18n?: I18nConfig;
 }
 
 export interface NexusProjectSummary {
   id: string;
+  mode?: ProjectMode;
   name: string;
   updatedAt: number;
   createdAt: number;
@@ -131,6 +169,7 @@ export interface ExportedProjectManifest {
   exportedAt: string;
   project: {
     id: string;
+    mode?: ProjectMode;
     name: string;
     createdAt: number;
     updatedAt: number;
@@ -138,10 +177,14 @@ export interface ExportedProjectManifest {
     activeSceneId: string;
     initialSceneId?: string;
     scenes: SceneData[];
+    scripts?: NexusScriptAsset[];
     folders?: ProjectFolder[];
     prefabs?: PrefabDefinition[];
     variables?: ProjectVariable[];
     audioBuses?: AudioBusSettings;
+    dialogues?: DialogueGraph[];
+    dataTables?: DataTableDef[];
+    i18n?: I18nConfig;
   };
   assets: Array<ProjectAssetMeta & { path: string }>;
 }
@@ -150,6 +193,7 @@ export function summarizeProject(project: NexusProject): NexusProjectSummary {
   const objectCount = project.scenes.reduce((acc, s) => acc + s.objects.length, 0);
   return {
     id: project.id,
+    mode: project.mode ?? '2d',
     name: project.name,
     updatedAt: project.updatedAt,
     createdAt: project.createdAt,

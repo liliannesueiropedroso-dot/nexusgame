@@ -9,6 +9,7 @@ import type {
 } from '../core/types';
 import { canLayersCollide, getWorldColliders } from '../physics/collision2d';
 import { moveTowards } from '../physics/characterController2d';
+import { buildGridNav2D, findPath2D, hasLineOfSight2D } from '../ai2d/gridPathfinding2d';
 import type { InputState, SimulationState } from './stepGameSimulation';
 
 export interface RuntimeParticle {
@@ -22,6 +23,21 @@ export interface RuntimeParticle {
   colorStart: string;
   colorEnd: string;
   alpha: number;
+  alphaStart?: number;
+  alphaEnd?: number;
+  rotationDeg?: number;
+  rotationSpeed?: number;
+  textureAssetId?: string | null;
+  cols?: number;
+  rows?: number;
+  spritesheetFps?: number;
+  additive?: boolean;
+  drag?: number;
+  turbulence?: number;
+  particleShape?: string;
+  sizeCurve?: number[];
+  alphaCurve?: number[];
+  speedCurve?: number[];
   age: number;
   maxAge: number;
 }
@@ -156,6 +172,65 @@ export function getParticlePresetDefaults(preset: ParticlePresetId): Partial<Par
         colorEnd: '#dc2626',
         blendAlpha: 1,
       };
+    case 'liquid':
+      return {
+        rate: 36,
+        maxParticles: 140,
+        speedMin: 60,
+        speedMax: 150,
+        angleDeg: -85,
+        spreadDeg: 40,
+        gravity: 360,
+        sizeStart: 8,
+        sizeEnd: 5,
+        lifetime: 0.9,
+        colorStart: '#7dd3fc',
+        colorEnd: '#0284c7',
+        blendAlpha: 0.88,
+        particleShape: 'liquid',
+        emitterShape: 'cone',
+        drag: 0.25,
+      };
+    case 'waterfall':
+      return {
+        rate: 55,
+        maxParticles: 180,
+        speedMin: 90,
+        speedMax: 180,
+        angleDeg: 90,
+        spreadDeg: 18,
+        gravity: 420,
+        sizeStart: 10,
+        sizeEnd: 14,
+        lifetime: 1.1,
+        colorStart: '#bae6fd',
+        colorEnd: '#0369a1',
+        blendAlpha: 0.78,
+        particleShape: 'liquid',
+        emitterShape: 'box',
+        emitterRadius: 24,
+        turbulence: 22,
+      };
+    case 'ripple':
+      return {
+        rate: 12,
+        maxParticles: 40,
+        speedMin: 0,
+        speedMax: 8,
+        angleDeg: 0,
+        spreadDeg: 360,
+        gravity: 0,
+        sizeStart: 4,
+        sizeEnd: 26,
+        lifetime: 0.85,
+        colorStart: '#e0f2fe',
+        colorEnd: '#38bdf8',
+        blendAlpha: 0.75,
+        particleShape: 'ring',
+        emitterShape: 'ring',
+        sizeCurve: [0.3, 0.75, 1, 1.1],
+        alphaCurve: [0.9, 0.65, 0.25, 0],
+      };
     default:
       return {};
   }
@@ -275,14 +350,30 @@ export function emitParticlesFromConfig(
   const spreadRad = (cfg.spreadDeg * Math.PI) / 180;
   const speedMin = Math.min(cfg.speedMin, cfg.speedMax);
   const speedMax = Math.max(cfg.speedMin, cfg.speedMax);
+  const rad = Math.max(0, cfg.emitterRadius ?? 18);
 
   for (let i = 0; i < count; i++) {
     if (state.emitterParticles.length >= Math.max(40, cfg.maxParticles + 180)) break;
+    let ox = 0;
+    let oy = 0;
+    if (cfg.emitterShape === 'ring') {
+      const a = Math.random() * Math.PI * 2;
+      ox = Math.cos(a) * rad;
+      oy = Math.sin(a) * rad;
+    } else if (cfg.emitterShape === 'sphere') {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * rad;
+      ox = Math.cos(a) * r;
+      oy = Math.sin(a) * r;
+    } else if (cfg.emitterShape === 'box') {
+      ox = (Math.random() - 0.5) * rad * 2;
+      oy = (Math.random() - 0.5) * rad * 2;
+    }
     const angle = angleBase + (Math.random() - 0.5) * spreadRad;
     const speed = speedMin + Math.random() * (speedMax - speedMin);
     state.emitterParticles.push({
-      x,
-      y,
+      x: x + ox,
+      y: y + oy,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
       gravity: cfg.gravity,
@@ -290,7 +381,22 @@ export function emitParticlesFromConfig(
       sizeEnd: cfg.sizeEnd,
       colorStart: cfg.colorStart,
       colorEnd: cfg.colorEnd,
-      alpha: cfg.blendAlpha,
+      alpha: cfg.alphaStart ?? cfg.blendAlpha,
+      alphaStart: cfg.alphaStart ?? cfg.blendAlpha,
+      alphaEnd: cfg.alphaEnd ?? 0,
+      rotationDeg: Math.random() * 360,
+      rotationSpeed: cfg.rotationSpeed ?? 0,
+      textureAssetId: cfg.textureAssetId ?? null,
+      cols: cfg.cols ?? 1,
+      rows: cfg.rows ?? 1,
+      spritesheetFps: cfg.spritesheetFps ?? 12,
+      additive: Boolean(cfg.additive),
+      drag: cfg.drag ?? 0,
+      turbulence: cfg.turbulence ?? 0,
+      particleShape: cfg.particleShape ?? (cfg.preset === 'liquid' || cfg.preset === 'waterfall' ? 'liquid' : 'circle'),
+      sizeCurve: cfg.sizeCurve,
+      alphaCurve: cfg.alphaCurve,
+      speedCurve: cfg.speedCurve,
       age: 0,
       maxAge: Math.max(0.08, cfg.lifetime * (0.85 + Math.random() * 0.3)),
     });
@@ -300,9 +406,21 @@ export function emitParticlesFromConfig(
 export function stepEmitterParticles(state: SimulationState, dt: number): void {
   for (const obj of state.scene.objects) {
     if (!obj.visible) continue;
-    const emitters: ParticleEmitterConfig[] = [];
+    const emitters: Array<ParticleEmitterConfig & { offsetX?: number; offsetY?: number }> = [];
     if (obj.particleEmitter?.enabled) {
-      emitters.push(obj.particleEmitter);
+      const pe = obj.particleEmitter;
+      if (pe.layers && pe.layers.length > 0) {
+        for (const layer of pe.layers) {
+          if (!layer.enabled) continue;
+          emitters.push({
+            ...pe,
+            ...layer,
+            enabled: true,
+          });
+        }
+      } else {
+        emitters.push(pe);
+      }
     }
     for (const comp of obj.components) {
       if (comp.enabled && comp.type === 'juice.particle_emitter') {
@@ -335,19 +453,44 @@ export function stepEmitterParticles(state: SimulationState, dt: number): void {
       const count = Math.floor(acc);
       state.runtimeTimers.set(key, acc - count);
       if (count > 0) {
-        emitParticlesFromConfig(state, obj.transform.x, obj.transform.y, em, Math.min(12, count));
+        emitParticlesFromConfig(
+          state,
+          obj.transform.x + Number(em.offsetX ?? 0),
+          obj.transform.y + Number(em.offsetY ?? 0),
+          em,
+          Math.min(12, count)
+        );
       }
     }
   }
 
   if (state.emitterParticles.length > 0) {
     const alive: RuntimeParticle[] = [];
-    for (const pt of state.emitterParticles) {
+    for (let i = 0; i < state.emitterParticles.length; i++) {
+      const pt = state.emitterParticles[i];
       pt.age += dt;
       if (pt.age >= pt.maxAge) continue;
       pt.vy += pt.gravity * dt;
-      pt.x += pt.vx * dt;
-      pt.y += pt.vy * dt;
+      if (pt.drag && pt.drag > 0) {
+        const d = Math.max(0, 1 - pt.drag * dt);
+        pt.vx *= d;
+        pt.vy *= d;
+      }
+      if (pt.turbulence && pt.turbulence > 0) {
+        pt.vx += Math.sin(pt.age * 7.3 + i) * pt.turbulence * dt;
+      }
+      const t = pt.age / pt.maxAge;
+      let spdScale = 1;
+      if (pt.speedCurve && pt.speedCurve.length >= 2) {
+        const sc = t * (pt.speedCurve.length - 1);
+        const s0 = Math.min(pt.speedCurve.length - 2, Math.floor(sc));
+        spdScale = (pt.speedCurve[s0] ?? 1) + ((pt.speedCurve[s0 + 1] ?? 1) - (pt.speedCurve[s0] ?? 1)) * (sc - s0);
+      }
+      pt.x += pt.vx * spdScale * dt;
+      pt.y += pt.vy * spdScale * dt;
+      if (pt.rotationSpeed) {
+        pt.rotationDeg = (pt.rotationDeg ?? 0) + pt.rotationSpeed * dt;
+      }
       alive.push(pt);
     }
     state.emitterParticles = alive;
@@ -931,23 +1074,62 @@ export function stepExtendedObjectBehavior(params: {
 
     case 'ai.enemy_chaser': {
       if (players.length > 0) {
-        const spd = Number(cfg.speed ?? 145);
+        const baseSpd = Number(cfg.speed ?? 145);
         const rad = Number(cfg.detectRadius ?? 480);
         const dmg = Number(cfg.contactDamage ?? 15);
         const target = players[0];
+        const targetBody = state.bodies.get(target.id);
+        const fleeRatio = Number(cfg.fleeHealthRatio ?? obj.aiAgent?.fleeHealthRatio ?? 0.25);
+        const insistRatio = Number(cfg.insistDamageRatio ?? obj.aiAgent?.insistDamageRatio ?? 0.45);
+        const myHpRatio = body.maxHealth > 0 ? body.health / body.maxHealth : 1;
+        const targetHpRatio = targetBody && targetBody.maxHealth > 0 ? targetBody.health / targetBody.maxHealth : 1;
+        const isFleeing = myHpRatio <= fleeRatio;
+        const isInsisting = !isFleeing && targetHpRatio <= insistRatio;
+
         const dx = target.transform.x - obj.transform.x;
         const dy = target.transform.y - obj.transform.y;
         const dist = Math.hypot(dx, dy);
-        if (dist <= rad && dist > 4) {
-          body.vx = (dx / dist) * spd;
-          body.vy = (dy / dist) * spd;
+
+        const visionFov = Number(cfg.visionFovDeg ?? obj.aiAgent?.visionFovDeg ?? 140);
+        const facingX = obj.sprite?.flipX ? -1 : 1;
+        const cosHalfFov = Math.cos(((Math.min(360, visionFov) * 0.5) * Math.PI) / 180);
+        const dot = dist > 0.001 ? (dx / dist) * facingX : 1;
+        const inCone = visionFov >= 359 || dot >= cosHalfFov || dist <= 96;
+
+        const solidObjs = state.scene.objects.filter(
+          (o) => o.visible && o.components.some((c) => c.enabled && c.type === 'solid')
+        );
+        const requireLos = cfg.requireLineOfSight === true;
+        const clearLos = hasLineOfSight2D(
+          { x: obj.transform.x, y: obj.transform.y },
+          { x: target.transform.x, y: target.transform.y },
+          solidObjs
+        );
+
+        if ((isFleeing || (inCone && (!requireLos || clearLos))) && dist <= rad && (isFleeing || dist > 4)) {
+          let goalX = isFleeing ? obj.transform.x - dx : target.transform.x;
+          let goalY = isFleeing ? obj.transform.y - dy : target.transform.y;
+          if (!isFleeing && !clearLos) {
+            const nav = buildGridNav2D(state.scene, Math.max(1280, stage.width), Math.max(720, stage.height), 32);
+            const path = findPath2D(nav, { x: obj.transform.x, y: obj.transform.y }, { x: target.transform.x, y: target.transform.y });
+            if (path.length > 0) {
+              goalX = path[0].x;
+              goalY = path[0].y;
+            }
+          }
+          const gx = goalX - obj.transform.x;
+          const gy = goalY - obj.transform.y;
+          const gLen = Math.hypot(gx, gy) || 1;
+          const spd = isFleeing ? baseSpd * 1.12 : isInsisting ? baseSpd * 1.25 : baseSpd;
+          body.vx = (gx / gLen) * spd;
+          body.vy = (gy / gLen) * spd;
           obj.transform.x += body.vx * dt;
           if (cfg.respectSolids !== false) resolveHorizontal(obj);
           obj.transform.y += body.vy * dt;
           if (cfg.respectSolids !== false) resolveVertical(obj);
-          if (obj.sprite) obj.sprite.flipX = dx < 0;
+          if (obj.sprite) obj.sprite.flipX = body.vx < 0;
         }
-        if (dmg > 0 && dist < (obj.transform.width + target.transform.width) * 0.45) {
+        if (!isFleeing && dmg > 0 && dist < (obj.transform.width + target.transform.width) * 0.45) {
           applyDamageToObject(state, target, dmg, 0.5);
         }
       }
@@ -1658,6 +1840,543 @@ export function stepExtendedObjectBehavior(params: {
         }
       }
       break;
+    }
+
+    // ================= SUPER BIBLIOTECA: RECURSOS, HERRAMIENTAS, VEHÍCULOS, SUPERVIVENCIA, RPG, RED =================
+    case 'world.resource_node': {
+      const cdKey = `res_cd:${obj.id}`;
+      const cd = state.runtimeTimers.get(cdKey) ?? 0;
+      if (cd > 0) {
+        const nextCd = Math.max(0, cd - dt);
+        state.runtimeTimers.set(cdKey, nextCd);
+        if (nextCd === 0) {
+          obj.opacity = 1;
+          obj.visible = true;
+        }
+        break;
+      }
+
+      const radius = Math.max(20, Number(cfg.interactRadius ?? 56));
+      const autoPickup = cfg.autoPickup !== false;
+      const interactPressed = hasKey('KeyE', input) && !wasKey('KeyE');
+      const nearPlayer = players.find(
+        (p) => Math.hypot(p.transform.x - obj.transform.x, p.transform.y - obj.transform.y) <= radius
+      );
+      if (nearPlayer && (autoPickup || interactPressed)) {
+        const itemId = String(cfg.itemId ?? 'crystal');
+        const amount = Math.max(1, Math.round(Number(cfg.amount ?? 1)));
+        const respawnSec = Math.max(0, Number(cfg.respawnSec ?? 20));
+        const bucket = Math.floor(state.elapsed * 2);
+        const actionId = `res_${obj.id}_${bucket}`;
+        const accepted =
+          state.wiringSys?.persistence.addItem(itemId, amount, actionId).accepted ?? true;
+        if (accepted) {
+          const invKey = `inv_${itemId}`;
+          state.variables.set(invKey, Number(state.variables.get(invKey) ?? 0) + amount);
+          state.variables.set('puntos', Number(state.variables.get('puntos') ?? 0) + amount * 5);
+          state.score = Number(state.variables.get('puntos') ?? state.score);
+          state.soundQueue.push({ kind: 'synth', preset: 'coin', channel: 'sfx', volume: 0.7 });
+          state.particles.push({
+            x: obj.transform.x,
+            y: obj.transform.y,
+            color: '#34d399',
+            count: 10,
+            age: 0,
+            duration: 0.35,
+          });
+          emitWiredSignal2D(state, obj.id, comp.type, 'onCollected', {
+            itemId,
+            amount,
+            collectorId: nearPlayer.id,
+            actionId,
+          });
+          if (respawnSec > 0) {
+            state.runtimeTimers.set(cdKey, respawnSec);
+            obj.opacity = 0.22;
+          } else {
+            obj.visible = false;
+          }
+        }
+      }
+      break;
+    }
+
+    case 'tool.equippable': {
+      const useKey = String(cfg.useKey ?? 'KeyF');
+      if (hasKey(useKey, input) && !wasKey(useKey)) {
+        const toolType = String(cfg.toolType ?? 'tool');
+        state.variables.set('equipped_tool', toolType);
+        emitWiredSignal2D(state, obj.id, comp.type, 'onToolUsed', {
+          toolType,
+          slot: String(cfg.slot ?? 'hand'),
+        });
+      }
+      break;
+    }
+
+    case 'tool.fishing_rod': {
+      const castKey = String(cfg.castKey ?? 'KeyF');
+      const waitKey = `fish_wait:${comp.id}`;
+      const wait = state.runtimeTimers.get(waitKey) ?? 0;
+      if (wait > 0) {
+        const nextWait = wait - dt;
+        if (nextWait <= 0) {
+          state.runtimeTimers.delete(waitKey);
+          const pool = String(cfg.fishPool ?? 'trucha,salmon,pez_dorado')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const fish = pool[Math.floor((state.elapsed * 13) % Math.max(1, pool.length))] ?? 'trucha';
+          const actionId = `fish_${comp.id}_${Math.floor(state.elapsed * 10)}`;
+          state.wiringSys?.persistence.addItem(fish, 1, actionId);
+          state.variables.set(`inv_${fish}`, Number(state.variables.get(`inv_${fish}`) ?? 0) + 1);
+          state.variables.set('puntos', Number(state.variables.get('puntos') ?? 0) + 15);
+          state.soundQueue.push({ kind: 'synth', preset: 'powerup', channel: 'sfx', volume: 0.8 });
+          if (!state.dynamicToasts) state.dynamicToasts = [];
+          state.dynamicToasts.push({ id: `t_${Date.now()}`, text: `Pescaste: ${fish}`, remaining: 2.2 });
+          emitWiredSignal2D(state, obj.id, comp.type, 'onFishCaught', {
+            itemId: fish,
+            amount: 1,
+            actionId,
+          });
+        } else {
+          state.runtimeTimers.set(waitKey, nextWait);
+        }
+      } else if (hasKey(castKey, input) && !wasKey(castKey)) {
+        const biteTime = Math.max(0.3, Number(cfg.biteTimeSec ?? 1.8));
+        state.runtimeTimers.set(waitKey, biteTime);
+        state.particles.push({
+          x: obj.transform.x + (obj.sprite?.flipX ? -48 : 48),
+          y: obj.transform.y + 12,
+          color: '#38bdf8',
+          count: 8,
+          age: 0,
+          duration: 0.4,
+        });
+      }
+      break;
+    }
+
+    case 'tool.capture_net': {
+      const cdKey = `net_cd:${comp.id}`;
+      const cd = Math.max(0, (state.runtimeTimers.get(cdKey) ?? 0) - dt);
+      state.runtimeTimers.set(cdKey, cd);
+      const swingKey = String(cfg.swingKey ?? 'KeyG');
+      if (cd <= 0 && hasKey(swingKey, input) && !wasKey(swingKey)) {
+        state.runtimeTimers.set(cdKey, Math.max(0.2, Number(cfg.cooldownSec ?? 1.0)));
+        const radius = Math.max(30, Number(cfg.radius ?? 110));
+        const maxTargets = Math.max(1, Math.round(Number(cfg.maxTargets ?? 5)));
+        const captured: Array<{ itemId: string; amount: number; actionId: string }> = [];
+        for (const cand of state.scene.objects) {
+          if (!cand.visible || cand.id === obj.id || captured.length >= maxTargets) continue;
+          const isCatchable =
+            cand.tags?.some((t) => ['collectible', 'creature', 'bug', 'recurso'].includes(t.toLowerCase())) ||
+            cand.components.some((c) => c.enabled && c.type === 'world.resource_node');
+          if (!isCatchable) continue;
+          const d = Math.hypot(cand.transform.x - obj.transform.x, cand.transform.y - obj.transform.y);
+          if (d <= radius) {
+            const resComp = cand.components.find((c) => c.type === 'world.resource_node');
+            const itemId = String(resComp?.config.itemId ?? (cand.name || 'captura'));
+            const actionId = `cap_${cand.id}_${Math.floor(state.elapsed * 10)}`;
+            captured.push({ itemId, amount: 1, actionId });
+            cand.visible = false;
+            state.wiringSys?.persistence.addItem(itemId, 1, actionId);
+            state.variables.set(`inv_${itemId}`, Number(state.variables.get(`inv_${itemId}`) ?? 0) + 1);
+          }
+        }
+        state.particles.push({
+          x: obj.transform.x,
+          y: obj.transform.y,
+          color: '#a78bfa',
+          count: 12,
+          age: 0,
+          duration: 0.35,
+        });
+        if (captured.length > 0) {
+          state.soundQueue.push({ kind: 'synth', preset: 'coin', channel: 'sfx', volume: 0.75 });
+          emitWiredSignal2D(state, obj.id, comp.type, 'onBatchCaptured', { items: captured });
+        }
+      }
+      break;
+    }
+
+    case 'tool.harvest': {
+      const cdKey = `harv_cd:${comp.id}`;
+      const cd = Math.max(0, (state.runtimeTimers.get(cdKey) ?? 0) - dt);
+      state.runtimeTimers.set(cdKey, cd);
+      const swingKey = String(cfg.swingKey ?? 'KeyE');
+      if (cd <= 0 && hasKey(swingKey, input) && !wasKey(swingKey)) {
+        state.runtimeTimers.set(cdKey, Math.max(0.15, Number(cfg.cooldownSec ?? 0.45)));
+        const range = Math.max(24, Number(cfg.range ?? 85));
+        const power = Math.max(1, Number(cfg.power ?? 1));
+        for (const cand of state.scene.objects) {
+          if (!cand.visible || cand.id === obj.id) continue;
+          const d = Math.hypot(cand.transform.x - obj.transform.x, cand.transform.y - obj.transform.y);
+          if (d > range) continue;
+          const resComp = cand.components.find((c) => c.enabled && c.type === 'world.resource_node');
+          if (resComp) {
+            const itemId = String(resComp.config.itemId ?? 'madera');
+            const actionId = `harv_${cand.id}_${Math.floor(state.elapsed * 10)}`;
+            state.wiringSys?.persistence.addItem(itemId, power, actionId);
+            state.variables.set(`inv_${itemId}`, Number(state.variables.get(`inv_${itemId}`) ?? 0) + power);
+            cand.opacity = 0.25;
+            state.runtimeTimers.set(`res_cd:${cand.id}`, Math.max(5, Number(resComp.config.respawnSec ?? 15)));
+            state.soundQueue.push({ kind: 'synth', preset: 'hit', channel: 'sfx', volume: 0.6 });
+            emitWiredSignal2D(state, obj.id, comp.type, 'onHarvested', { itemId, amount: power, actionId });
+            break;
+          }
+        }
+      }
+      break;
+    }
+
+    case 'physics.water_buoyancy': {
+      const waterLevel = Number(cfg.waterLevel ?? stage.height * 0.65);
+      const buoyancy = Number(cfg.buoyancy ?? 12);
+      const currentX = Number(cfg.currentX ?? 0);
+      if (obj.transform.y >= waterLevel) {
+        const depth = Math.min(80, obj.transform.y - waterLevel);
+        body.vy -= (buoyancy * 25 + depth * 6) * dt;
+        body.vy *= Math.max(0, 1 - 3.5 * dt);
+        obj.transform.x += currentX * dt;
+        obj.transform.y += body.vy * dt;
+      }
+      break;
+    }
+
+    case 'vehicle.watercraft':
+    case 'vehicle.mount': {
+      const boardKey = String(cfg.boardKey ?? 'KeyE');
+      const boardRadius = Number(cfg.boardRadius ?? cfg.followDistance ?? 85);
+      const maxSpd = Number(cfg.maxSpeed ?? cfg.followSpeed ?? 220);
+      const driverKey = `driver:${obj.id}`;
+      const isBoarded = (state.runtimeTimers.get(driverKey) ?? 0) > 0;
+      const nearPlayer = players.find(
+        (p) => Math.hypot(p.transform.x - obj.transform.x, p.transform.y - obj.transform.y) <= boardRadius
+      );
+      if (hasKey(boardKey, input) && !wasKey(boardKey) && (isBoarded || nearPlayer)) {
+        const nextBoarded = !isBoarded;
+        state.runtimeTimers.set(driverKey, nextBoarded ? 1 : 0);
+        const signalName = comp.type === 'vehicle.watercraft' ? 'onBoardStateChanged' : 'onMounted';
+        emitWiredSignal2D(state, obj.id, comp.type, signalName, {
+          boarded: nextBoarded,
+          targetId: nextBoarded ? obj.id : (nearPlayer?.id ?? players[0]?.id ?? null),
+        });
+      }
+      if (isBoarded) {
+        const mx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+        const my = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+        obj.transform.x += mx * maxSpd * dt;
+        if (comp.type === 'vehicle.watercraft') {
+          obj.transform.y += my * maxSpd * 0.65 * dt;
+        }
+        resolveHorizontal(obj);
+        if (players[0]) {
+          players[0].transform.x = obj.transform.x;
+          players[0].transform.y = obj.transform.y - 16;
+        }
+      }
+      break;
+    }
+
+    case 'survival.vitals': {
+      const hungerDrain =
+        cfg.hungerDrainPerMin !== undefined
+          ? Number(cfg.hungerDrainPerMin) / 60
+          : Number(cfg.hungerDrainPerSec ?? 0.6);
+      const thirstDrain =
+        cfg.thirstDrainPerMin !== undefined
+          ? Number(cfg.thirstDrainPerMin) / 60
+          : Number(cfg.thirstDrainPerSec ?? 0.9);
+      const curHunger = Math.max(0, Number(state.variables.get('hambre') ?? 100) - hungerDrain * dt);
+      const curThirst = Math.max(0, Number(state.variables.get('sed') ?? 100) - thirstDrain * dt);
+      state.variables.set('hambre', Number(curHunger.toFixed(4)));
+      state.variables.set('sed', Number(curThirst.toFixed(4)));
+      if ((curHunger <= 0 || curThirst <= 0) && body.health > 0) {
+        applyDamageToObject(state, obj, 4 * dt, 0);
+        if (body.health <= 0) {
+          emitWiredSignal2D(state, obj.id, comp.type, 'onVitalDepleted', { objectId: obj.id });
+        }
+      }
+      break;
+    }
+
+    case 'world.day_night_weather': {
+      const cycleSec = Math.max(10, Number(cfg.cycleDurationSec ?? 120));
+      const nextHour = ((state.elapsed / cycleSec) * 24 + 10) % 24;
+      state.variables.set('hora_juego', Math.round(nextHour * 10) / 10);
+      const lighting =
+        state.scene.lighting ??
+        (state.scene.lighting = {
+          ambientColor: '#090d1a',
+          ambientIntensity: 0.8,
+          skyColor: '#1e293b',
+          groundColor: '#0f172a',
+          sunColor: '#fffbeb',
+          sunIntensity: 1.0,
+          smartBounce: false,
+          bounceIntensity: 0.3,
+          fogEnabled: false,
+          fogColor: '#0f172a',
+          fogNear: 12,
+          fogFar: 60,
+        });
+      const dayLight = 0.25 + 0.72 * Math.max(0, Math.sin(((nextHour - 6) / 24) * Math.PI * 2));
+      lighting.ambientIntensity = Math.max(0.2, Math.min(1, dayLight));
+      const weather = String(cfg.weather ?? 'clear');
+      if (weather === 'rain' || weather === 'snow') {
+        const wKey = `weather_p:${comp.id}`;
+        const acc = (state.runtimeTimers.get(wKey) ?? 0) + dt;
+        if (acc >= 0.12) {
+          state.runtimeTimers.set(wKey, 0);
+          state.emitterParticles.push({
+            x: Math.random() * stage.width,
+            y: -10,
+            vx: weather === 'rain' ? -45 : (Math.random() - 0.5) * 30,
+            vy: weather === 'rain' ? 360 : 65,
+            gravity: 0,
+            sizeStart: weather === 'rain' ? 3 : 4,
+            sizeEnd: weather === 'rain' ? 2 : 3,
+            colorStart: weather === 'rain' ? '#60a5fa' : '#f8fafc',
+            colorEnd: '#93c5fd',
+            alpha: 0.75,
+            age: 0,
+            maxAge: 2.2,
+          });
+        } else {
+          state.runtimeTimers.set(wKey, acc);
+        }
+      }
+      break;
+    }
+
+    case 'world.crop_farm': {
+      const growKey = `crop_g:${obj.id}`;
+      const growSec = Math.max(1, Number(cfg.growthTimeSec ?? 12));
+      const elapsed = Math.min(growSec, (state.runtimeTimers.get(growKey) ?? 0) + dt);
+      state.runtimeTimers.set(growKey, elapsed);
+      const frac = elapsed / growSec;
+      obj.transform.scaleY = 0.5 + 0.5 * frac;
+      if (frac >= 1 && hasKey('KeyE', input) && !wasKey('KeyE') && players[0]) {
+        const d = Math.hypot(players[0].transform.x - obj.transform.x, players[0].transform.y - obj.transform.y);
+        if (d <= 64) {
+          const itemId = String(cfg.harvestItem ?? 'trigo');
+          const actionId = `crop_${obj.id}_${Math.floor(state.elapsed * 10)}`;
+          state.wiringSys?.persistence.addItem(itemId, 1, actionId);
+          state.variables.set(`inv_${itemId}`, Number(state.variables.get(`inv_${itemId}`) ?? 0) + 1);
+          state.runtimeTimers.set(growKey, 0);
+          emitWiredSignal2D(state, obj.id, comp.type, 'onHarvested', { itemId, amount: 1, actionId });
+        }
+      }
+      break;
+    }
+
+    case 'world.fire_status': {
+      const radius = Math.max(16, Number(cfg.radius ?? 48));
+      const dps = Math.max(0, Number(cfg.damagePerSec ?? 8));
+      for (const cand of state.scene.objects) {
+        if (!cand.visible || cand.id === obj.id) continue;
+        const cb = state.bodies.get(cand.id);
+        if (!cb) continue;
+        if (Math.hypot(cand.transform.x - obj.transform.x, cand.transform.y - obj.transform.y) <= radius) {
+          applyDamageToObject(state, cand, dps * dt, 0);
+        }
+      }
+      break;
+    }
+
+    case 'world.interactive_surface': {
+      const speedMult = Math.max(0.2, Number(cfg.speedMultiplier ?? 1));
+      const myCols = getWorldColliders(obj, objectMap);
+      for (const p of players) {
+        const pb = state.bodies.get(p.id);
+        if (!pb) continue;
+        const pCols = getWorldColliders(p, objectMap);
+        const hit = myCols.some((mc) =>
+          pCols.some((pc) => mc.left < pc.right && mc.right > pc.left && mc.top < pc.bottom && mc.bottom > pc.top)
+        );
+        if (hit && speedMult !== 1) {
+          pb.vx *= Math.min(1.15, speedMult);
+        }
+      }
+      break;
+    }
+
+    case 'rpg.crafting_station': {
+      const craftKey = String(cfg.craftKey ?? 'KeyC');
+      if (hasKey(craftKey, input) && !wasKey(craftKey) && players[0]) {
+        const d = Math.hypot(players[0].transform.x - obj.transform.x, players[0].transform.y - obj.transform.y);
+        if (d <= 90) {
+          const inItem = String(cfg.inputItem ?? 'crystal');
+          const req = Math.max(1, Math.round(Number(cfg.inputCount ?? 2)));
+          const outItem = String(cfg.outputItem ?? 'gem_amulet');
+          const curIn = Number(state.variables.get(`inv_${inItem}`) ?? 0);
+          if (curIn >= req) {
+            state.variables.set(`inv_${inItem}`, curIn - req);
+            state.variables.set(`inv_${outItem}`, Number(state.variables.get(`inv_${outItem}`) ?? 0) + 1);
+            state.soundQueue.push({ kind: 'synth', preset: 'powerup', channel: 'sfx', volume: 0.85 });
+            if (!state.dynamicToasts) state.dynamicToasts = [];
+            state.dynamicToasts.push({ id: `craft_${Date.now()}`, text: `Fabricado: ${outItem}`, remaining: 2.2 });
+            emitWiredSignal2D(state, obj.id, comp.type, 'onItemCrafted', { itemId: outItem, amount: 1 });
+          }
+        }
+      }
+      break;
+    }
+
+    case 'rpg.loot_drop': {
+      const droppedKey = `loot_done:${comp.id}`;
+      if (body.health <= 0 && !state.runtimeTimers.has(droppedKey)) {
+        state.runtimeTimers.set(droppedKey, 1);
+        const chance = Math.max(0, Math.min(1, Number(cfg.dropChance ?? 0.85)));
+        if (Math.random() <= chance) {
+          const itemId = String(cfg.itemId ?? 'gold_coin');
+          const minA = Math.max(1, Math.round(Number(cfg.minAmount ?? 1)));
+          const maxA = Math.max(minA, Math.round(Number(cfg.maxAmount ?? 3)));
+          const amount = minA + Math.floor(Math.random() * (maxA - minA + 1));
+          const actionId = `loot_${obj.id}_${Math.floor(state.elapsed * 10)}`;
+          state.wiringSys?.persistence.addItem(itemId, amount, actionId);
+          state.variables.set(`inv_${itemId}`, Number(state.variables.get(`inv_${itemId}`) ?? 0) + amount);
+          emitWiredSignal2D(state, obj.id, comp.type, 'onLootDropped', { itemId, amount, actionId });
+        }
+      }
+      break;
+    }
+
+    case 'rpg.quest_giver': {
+      const doneKey = `quest_done:${comp.id}`;
+      if (!state.runtimeTimers.has(doneKey) && players[0]) {
+        const d = Math.hypot(players[0].transform.x - obj.transform.x, players[0].transform.y - obj.transform.y);
+        if (d <= 85) {
+          const targetItem = String(cfg.targetItem ?? 'crystal');
+          const req = Math.max(1, Math.round(Number(cfg.requiredAmount ?? 3)));
+          const have = Number(state.variables.get(`inv_${targetItem}`) ?? 0);
+          if (have >= req) {
+            state.runtimeTimers.set(doneKey, 1);
+            const reward = Number(cfg.rewardPoints ?? 100);
+            state.variables.set('puntos', Number(state.variables.get('puntos') ?? 0) + reward);
+            state.score = Number(state.variables.get('puntos') ?? state.score);
+            state.soundQueue.push({ kind: 'synth', preset: 'win', channel: 'sfx', volume: 0.9 });
+            if (!state.dynamicToasts) state.dynamicToasts = [];
+            state.dynamicToasts.push({
+              id: `q_${Date.now()}`,
+              text: `Misión completada (+${reward} pts)`,
+              remaining: 3,
+            });
+            emitWiredSignal2D(state, obj.id, comp.type, 'onQuestCompleted', {
+              questId: String(cfg.questId ?? 'quest'),
+              rewardPoints: reward,
+            });
+          }
+        }
+      }
+      break;
+    }
+
+    case 'rpg.shop_vendor': {
+      const buyKey = String(cfg.buyKey ?? 'KeyE');
+      if (hasKey(buyKey, input) && !wasKey(buyKey) && players[0]) {
+        const d = Math.hypot(players[0].transform.x - obj.transform.x, players[0].transform.y - obj.transform.y);
+        if (d <= 85) {
+          const price = Math.max(1, Number(cfg.price ?? 25));
+          const itemId = String(cfg.itemId ?? 'potion');
+          const pts = Number(state.variables.get('puntos') ?? 0);
+          if (pts >= price) {
+            state.variables.set('puntos', pts - price);
+            state.variables.set(`inv_${itemId}`, Number(state.variables.get(`inv_${itemId}`) ?? 0) + 1);
+            state.score = Number(state.variables.get('puntos') ?? state.score);
+            state.soundQueue.push({ kind: 'synth', preset: 'coin', channel: 'sfx', volume: 0.85 });
+            emitWiredSignal2D(state, obj.id, comp.type, 'onPurchased', { itemId, price });
+          }
+        }
+      }
+      break;
+    }
+
+    case 'ai.stealth_sensor': {
+      const visionRange = Math.max(20, Number(cfg.visionRange ?? 240));
+      const noiseRadius = Math.max(10, Number(cfg.noiseRadius ?? 80));
+      const fovRad = ((Number(cfg.fovDeg ?? 75) * 0.5) * Math.PI) / 180;
+      const facingAngle = (obj.transform.rotation * Math.PI) / 180 + (obj.sprite?.flipX ? Math.PI : 0);
+      const spotted = players.some((p) => {
+        const dx = p.transform.x - obj.transform.x;
+        const dy = p.transform.y - obj.transform.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist <= noiseRadius) return true;
+        if (dist <= visionRange) {
+          const ang = Math.atan2(dy, dx);
+          const diff = Math.abs(Math.atan2(Math.sin(ang - facingAngle), Math.cos(ang - facingAngle)));
+          return diff <= fovRad;
+        }
+        return false;
+      });
+      if (spotted) {
+        const spotCd = `stealth_cd:${comp.id}`;
+        if ((state.runtimeTimers.get(spotCd) ?? 0) <= 0) {
+          state.runtimeTimers.set(spotCd, 1.5);
+          state.emittedEvents.push('player_spotted');
+          emitWiredSignal2D(state, obj.id, comp.type, 'onPlayerSpotted', { detectorId: obj.id });
+        } else {
+          state.runtimeTimers.set(spotCd, Math.max(0, (state.runtimeTimers.get(spotCd) ?? 0) - dt));
+        }
+      }
+      break;
+    }
+
+    case 'ui.menu_nav': {
+      const targetSceneId = String(cfg.targetSceneId ?? '');
+      const activate = clickedIds?.has(obj.id) || (hasKey('Enter', input) && !wasKey('Enter'));
+      if (activate && targetSceneId && !state.pendingSceneCommand) {
+        state.pendingSceneCommand = { kind: 'load', sceneId: targetSceneId, transition: 'fadeBlack' };
+        emitWiredSignal2D(state, obj.id, comp.type, 'onMenuSelected', { targetSceneId });
+      }
+      break;
+    }
+
+    case 'persistence.player_save': {
+      const interval = Math.max(3, Number(cfg.autoSaveSec ?? 15));
+      const accKey = `psave:${comp.id}`;
+      const acc = (state.runtimeTimers.get(accKey) ?? 0) + dt;
+      if (acc >= interval) {
+        state.runtimeTimers.set(accKey, 0);
+        state.wiringSys?.persistence.saveLocal();
+      } else {
+        state.runtimeTimers.set(accKey, acc);
+      }
+      break;
+    }
+  }
+}
+
+function emitWiredSignal2D(
+  state: SimulationState,
+  sourceObjectId: string,
+  sourceBehavior: string,
+  signal: string,
+  payload: Record<string, unknown>
+): void {
+  state.wiringSys?.emitBehaviorSignal(sourceObjectId, sourceBehavior, signal, payload);
+  const links = state.scene.wiringLinks ?? [];
+  for (const link of links) {
+    if (
+      link.sourceObjectId !== sourceObjectId ||
+      link.sourceBehavior !== sourceBehavior ||
+      link.signal !== signal
+    ) {
+      continue;
+    }
+    if (link.targetBehavior === 'juice.camera_follow' && link.action === 'setTarget') {
+      state.cameraFollowOverrideId =
+        typeof payload.targetId === 'string' ? payload.targetId : null;
+    } else if (
+      link.targetBehavior === 'inventory.backpack' &&
+      typeof payload.itemId === 'string'
+    ) {
+      const k = `inv_${payload.itemId}`;
+      // Si no se añadió ya por el nodo directo, se asegura consistencia de inventario
+      if (!state.variables.has(k)) {
+        state.variables.set(k, Number(payload.amount ?? 1));
+      }
     }
   }
 }

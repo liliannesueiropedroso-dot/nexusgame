@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   BookOpen,
+  Code2,
   Download,
   HelpCircle,
   Layers,
@@ -21,6 +22,7 @@ type HelpTabId =
   | 'scenes'
   | 'audio'
   | 'mechanics'
+  | 'pro'
   | 'effects'
   | 'export';
 
@@ -35,6 +37,7 @@ const HELP_TABS: HelpTabDef[] = [
   { id: 'scenes', label: 'Escenas y Sprites', icon: Layers },
   { id: 'audio', label: 'Música y Sonidos', icon: Music },
   { id: 'mechanics', label: 'Mecánicas y Lógica', icon: Workflow },
+  { id: 'pro', label: 'Scripts, UI y 3D', icon: Code2 },
   { id: 'effects', label: 'Efectos y Guardado', icon: Sparkles },
   { id: 'export', label: 'Exportar y Atajos', icon: Download },
 ];
@@ -201,12 +204,15 @@ export const HelpModal: React.FC<HelpModalProps> = ({ open, onClose }) => {
                 </div>
 
                 <div className="rounded-lg border border-blue-500/30 bg-blue-950/20 p-3.5">
-                  <h4 className="font-semibold text-blue-300">Ajuste de imagen en Sprites</h4>
+                  <h4 className="font-semibold text-blue-300">Ajuste de imagen en Sprites y Colisionadores Inteligentes</h4>
                   <p className="mt-1 text-zinc-300">
                     Al asignar una imagen a un Sprite, en el Inspector elige cómo se adapta al cuadro:
                     <strong> Contener (sin recortes)</strong> muestra toda la imagen completa,
                     <strong> Cubrir</strong> llena el cuadro manteniendo proporción,
                     <strong> Estirar</strong> ajusta al tamaño exacto y <strong>Mosaico</strong> repite la textura (ideal para fondos y suelos). Usa muestreo <strong>Pixel Art</strong> para sprites nítidos.
+                  </p>
+                  <p className="mt-2 text-zinc-300">
+                    <strong>Colisionadores Inteligentes:</strong> En 2D activa <em>Contorno PNG Inteligente (smart_alpha)</em> en el Collider para ajustar automáticamente las cajas físicas a los píxeles visibles ignorando la transparencia. En 3D elige <em>Malla Exacta Inteligente (mesh_exact)</em> para que arcos, túneles o modelos CSG/.GLB permitan pasar por debajo o por huecos reales sin bloquear al jugador.
                   </p>
                 </div>
               </div>
@@ -254,6 +260,13 @@ export const HelpModal: React.FC<HelpModalProps> = ({ open, onClose }) => {
                     <p className="mt-1">
                       Ajusta en vivo los canales <strong>Maestro</strong>, <strong>Música</strong>, <strong>SFX</strong> e <strong>Interfaz (UI)</strong>, o siléncialos por separado.
                       También puedes cambiar el volumen o detener la música desde reglas con <em>Reproducir música</em>, <em>Detener música</em> y <em>Detener todo el audio</em>.
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-purple-500/30 bg-purple-950/20 p-3.5">
+                    <h4 className="font-semibold text-purple-300">5. Sintetizador SFX (.WAV) integrado</h4>
+                    <p className="mt-1 text-zinc-300">
+                      En la pestaña inferior <strong>Audio</strong> abre el <strong>Sintetizador SFX (.WAV)</strong> para generar efectos retro o modernos al instante con presets (<em>Explosión</em>, <em>Láser</em>, <em>Salto</em>, <em>Moneda</em>, <em>Clic UI</em>) o fórmulas matemáticas seguras en modo <em>Personalizado</em>. Pulsa <strong>Preescuchar</strong> y luego <strong>Guardar WAV en Recursos</strong> para convertirlo en un archivo <code>.wav</code> real exportable con tu juego.
                     </p>
                   </div>
                 </div>
@@ -306,6 +319,51 @@ export const HelpModal: React.FC<HelpModalProps> = ({ open, onClose }) => {
               </div>
             )}
 
+            {activeTab === 'pro' && (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    Scripts JavaScript, Interfaces HTML/CSS/JS y Motor 3D Pro
+                  </h3>
+                  <p className="mt-1 text-zinc-400">
+                    Combina la velocidad visual No-Code con programación JavaScript real, interfaces animadas con CSS y construcción 3D con Three.js, CSG y NavMesh.
+                  </p>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-[#2c2c35] bg-[#1d1d23] p-3.5">
+                    <h4 className="font-semibold text-sky-300">Scripts JS (.js) por objeto o escena</h4>
+                    <ul className="mt-2 list-disc space-y-1.5 pl-4">
+                      <li>Abre la pestaña inferior <strong>Código e Interfaces</strong> para escribir lógica con <code>onStart(self, nexus)</code>, <code>onUpdate(self, dt, nexus)</code> y <code>onCollisionEnter(self, other, nexus)</code>.</li>
+                      <li>Declara parámetros con <code>// @param speed:number=5</code> y ajústalos visualmente desde el <strong>Inspector</strong>.</li>
+                      <li>Interactúa con cualquier objeto, variable o canal de audio vía <code>nexus.findByTag()</code>, <code>nexus.vars</code> y <code>nexus.audio.playSfx()</code>.</li>
+                    </ul>
+                  </div>
+
+                  <div className="rounded-lg border border-[#2c2c35] bg-[#1d1d23] p-3.5">
+                    <h4 className="font-semibold text-emerald-300">Interfaces HTML / CSS / JS en el Lienzo</h4>
+                    <ul className="mt-2 list-disc space-y-1.5 pl-4">
+                      <li>Crea paneles, inventarios o HUD animados en HTML+CSS+JS y pulsa <strong>Insertar en escena como gráfico seleccionable</strong>.</li>
+                      <li>Usa atributos reactivos como <code>data-nexus-var="puntos"</code>, <code>data-nexus-progress="salud/100"</code>, <code>data-nexus-action="audio.play"</code> o <code>data-nexus-audio-bus="music"</code>.</li>
+                      <li>Ábrelos o ciérralos desde reglas con <em>Abrir / Cerrar / Alternar Interfaz</em>.</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-purple-500/30 bg-purple-950/20 p-3.5">
+                  <h4 className="font-semibold text-purple-300">Motor 3D Pro: Terreno, Agua, Física Blanda, Vehículos e IA</h4>
+                  <ul className="mt-1.5 list-disc space-y-1.5 pl-4 text-zinc-300">
+                    <li><strong>Terreno Procedural y Pinceles 3D:</strong> Añade un terreno y esculpe en tiempo real con los pinceles <em>Elevar</em>, <em>Rebajar</em>, <em>Aplanar</em>, <em>Suavizar</em>, <em>Pintar Splat</em> (hierba, tierra, roca, arena), <em>Scatter</em> de vegetación y <em>Valla Magnética</em>.</li>
+                    <li><strong>Agua Reactiva, Hierba con Viento y Ciclo Día/Noche:</strong> El agua genera espuma alrededor de rocas y ondas al saltar el jugador; la hierba instanciada se mece con el viento y se aparta al paso del jugador; el domo de cielo cambia de amanecer a noche dinámicamente.</li>
+                    <li><strong>Constructor Modular + CSG + Soft-Body + Vehículos 4R:</strong> Une/resta mallas CSG, usa <em>Soft-Body</em> (cuerdas, puentes colgantes, gel o arena granular) y configura vehículos de 4 ruedas con suspensión real por muelle-amortiguador y giro Ackermann.</li>
+                    <li><strong>Visor 3D y Presupuesto Poligonal (.GLB):</strong> Haz doble clic en cualquier modelo <code>.glb/.gltf</code> en Recursos para inspeccionarlo, probar sus clips animados y optimizarlo por presupuesto poligonal (<em>Bajo / Medio / Alto / Original</em>).</li>
+                    <li><strong>Máquina de Animaciones (FSM) 2D/3D y NavMesh IA:</strong> Configura transiciones combinadas (<code>&&</code>, <code>||</code>, <code>keyHeld:ShiftLeft</code>, <code>speed &gt; 0.1</code>) con <em>crossFade</em> en 3D y cambio de spritesheet en 2D. Hornea el <em>NavMesh IA</em> para pathfinding A* evitando obstáculos.</li>
+                    <li><strong>Optimización Masiva:</strong> Activa <em>Frustum Culling</em>, distancia límite de <em>LOD</em> y <em>Desvanecimiento por distancia (Distance Fade)</em> por objeto para mantener 60 FPS en escenas grandes.</li>
+                  </ul>
+                </div>
+              </div>
+            )}
+
             {activeTab === 'effects' && (
               <div className="space-y-4">
                 <div>
@@ -328,9 +386,9 @@ export const HelpModal: React.FC<HelpModalProps> = ({ open, onClose }) => {
                   </div>
 
                   <div className="rounded-lg border border-[#2c2c35] bg-[#1d1d23] p-3.5">
-                    <h4 className="font-semibold text-zinc-100">Partículas, Variables y Ranking</h4>
+                    <h4 className="font-semibold text-zinc-100">Estudio VFX Multicapa, Variables y Ranking</h4>
                     <ul className="mt-2 list-disc space-y-1.5 pl-4">
-                      <li>Activa el emisor continuo (fuego, humo, chispas, lluvia, nieve, magia) directamente en el objeto.</li>
+                      <li>Usa el <strong>Estudio VFX</strong> (pestaña inferior <em>Partículas</em>) para combinar múltiples capas simultáneas (fuego + chispas + humo) con desplazamiento <em>offsetX/Y</em> y mezcla aditiva brillante.</li>
                       <li>Crea variables globales en <strong>Variables</strong>; marca <em>Persistente</em> para guardar récords entre sesiones.</li>
                       <li>Añade un objeto <strong>Ranking Top-10</strong> y usa la acción <em>Enviar a Ranking</em> para mostrar mejores puntuaciones.</li>
                     </ul>
@@ -338,9 +396,9 @@ export const HelpModal: React.FC<HelpModalProps> = ({ open, onClose }) => {
                 </div>
 
                 <div className="rounded-lg border border-[#2c2c35] bg-[#1d1d23] p-3.5">
-                  <h4 className="font-semibold text-emerald-300">Autoguardado local seguro</h4>
+                  <h4 className="font-semibold text-emerald-300">Autoguardado local seguro (IndexedDB + LocalStorage)</h4>
                   <p className="mt-1">
-                    Tus proyectos, escenas, audios e imágenes se guardan localmente en <strong>IndexedDB</strong> de forma automática para que puedas cerrar y retomar exactamente donde lo dejaste sin perder nada.
+                    Tus proyectos, escenas, audios, modelos 3D, scripts y variables persistentes se guardan localmente de forma automática en <strong>IndexedDB + LocalStorage</strong> para retomar exactamente donde lo dejaste sin perder nada.
                   </p>
                 </div>
               </div>
@@ -358,12 +416,19 @@ export const HelpModal: React.FC<HelpModalProps> = ({ open, onClose }) => {
                 </div>
 
                 <div className="rounded-lg border border-[#2c2c35] bg-[#1d1d23] p-3.5">
-                  <h4 className="font-semibold text-blue-300">Portales compatibles con SDK real</h4>
+                  <h4 className="font-semibold text-blue-300">Portales compatibles con SDK real (2D PixiJS y 3D Three.js)</h4>
                   <ul className="mt-2 list-disc space-y-1.5 pl-4">
-                    <li><strong>Web HTML5 estándar:</strong> Carpeta autocontenida con <code>index.html</code>, motor <code>nexus-runtime.js</code>, recursos gráficos y carpeta <code>assets/</code> con tus audios.</li>
+                    <li><strong>Web HTML5 estándar:</strong> Paquete autocontenido sin dependencias externas: incluye <code>index.html</code>, motor <code>nexus-runtime.js</code> (2D) o <code>nexus-3d-runtime.js</code> (3D), assets y audios offline en <code>assets/</code>.</li>
                     <li><strong>Playgama Bridge:</strong> Incluye <code>playgama-bridge.js</code>, <code>playgama-bridge-config.json</code> y ciclo real de anuncios y almacenamiento.</li>
                     <li><strong>Poki y CrazyGames:</strong> Inyecta automáticamente los SDK oficiales (<code>poki-sdk.js</code> / <code>crazygames-sdk-v3.js</code>) y eventos de gameplay.</li>
                   </ul>
+                </div>
+
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-3.5">
+                  <h4 className="font-semibold text-emerald-300">Joystick Táctil Analógico 360° y Mando (Gamepad)</h4>
+                  <p className="mt-1 text-zinc-300">
+                    Activa el botón <strong>Táctil</strong> en Vista Previa o en las opciones de Exportación (y configura modo <em>Fijo</em> o <em>Flotante</em>, zona muerta, tamaño y botones <strong>Saltar / Acción / Dash</strong>). Además, el motor 2D y 3D detecta automáticamente cualquier mando Bluetooth/USB vía <em>Gamepad API</em>.
+                  </p>
                 </div>
 
                 <div className="rounded-lg border border-[#2c2c35] bg-[#1d1d23] p-3.5">

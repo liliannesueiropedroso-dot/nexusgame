@@ -150,3 +150,33 @@ export function getObjectWorldCorners(
     y: world.y + (c.x * sin + c.y * cos),
   }));
 }
+
+/**
+ * Resuelve un SpriteImagePoint nombrado ("mano", "punta_arma", "pies", etc.)
+ * a coordenadas globales de escenario considerando flipX/flipY, rotación y escala.
+ */
+export function getSpriteImagePointWorld(
+  obj: GameObjectData,
+  pointName: string,
+  objectMap: Map<string, GameObjectData>
+): Vector2 {
+  const wt = getWorldTransform(obj, objectMap);
+  const pt = obj.sprite?.imagePoints?.find((p) => p.name === pointName);
+  if (!pt) return { x: wt.x, y: wt.y };
+
+  const w = obj.transform.width * wt.scaleX;
+  const h = obj.transform.height * wt.scaleY;
+  const nx = obj.sprite?.flipX ? 1 - pt.nx : pt.nx;
+  const ny = obj.sprite?.flipY ? 1 - pt.ny : pt.ny;
+  const lx = (nx - obj.transform.anchorX) * w;
+  const ly = (ny - obj.transform.anchorY) * h;
+
+  const rad = degToRad(wt.rotation);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    x: wt.x + (lx * cos - ly * sin),
+    y: wt.y + (lx * sin + ly * cos),
+  };
+}
+

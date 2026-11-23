@@ -1,4 +1,4 @@
-import type { PrefabDefinition } from '../../project/models/project';
+import type { NexusScriptAsset, PrefabDefinition } from '../../project/models/project';
 import type {
   ProjectVariable,
   SceneData,
@@ -25,6 +25,7 @@ export class RuntimeSceneManager {
   private scenes: SceneData[];
   private projectVariables: ProjectVariable[];
   private prefabs: PrefabDefinition[];
+  private scripts: NexusScriptAsset[];
   private stage: StageResolution;
   private storageAdapter?: StorageAdapter;
 
@@ -40,6 +41,7 @@ export class RuntimeSceneManager {
     initialSceneId?: string;
     variables?: ProjectVariable[];
     prefabs?: PrefabDefinition[];
+    scripts?: NexusScriptAsset[];
     stage: StageResolution;
     storageAdapter?: StorageAdapter;
     leaderboard?: LeaderboardEntry[];
@@ -47,6 +49,7 @@ export class RuntimeSceneManager {
     this.scenes = params.scenes;
     this.projectVariables = params.variables ?? [];
     this.prefabs = params.prefabs ?? [];
+    this.scripts = params.scripts ?? [];
     this.stage = params.stage;
     this.storageAdapter = params.storageAdapter;
 
@@ -65,6 +68,7 @@ export class RuntimeSceneManager {
 
     this.baseState = createSimulationState(startScene, this.projectVariables, {
       prefabs: this.prefabs,
+      scripts: this.scripts,
       stage: this.stage,
       preservedVariables: this.persistentVars,
       storageAdapter: this.storageAdapter,
@@ -131,6 +135,7 @@ export class RuntimeSceneManager {
     this.unlockedScenes.add(target.id);
     this.baseState = createSimulationState(target, this.projectVariables, {
       prefabs: this.prefabs,
+      scripts: this.scripts,
       stage: this.stage,
       preservedVariables: this.persistentVars,
       storageAdapter: this.storageAdapter,
@@ -152,6 +157,7 @@ export class RuntimeSceneManager {
     this.syncPersistentVarsFrom(this.activeTopState);
     const overlayState = createSimulationState(target, this.projectVariables, {
       prefabs: this.prefabs,
+      scripts: this.scripts,
       stage: this.stage,
       preservedVariables: this.persistentVars,
       storageAdapter: this.storageAdapter,

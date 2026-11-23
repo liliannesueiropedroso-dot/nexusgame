@@ -7,6 +7,7 @@ import {
   Package,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Square,
   Trash2,
@@ -14,12 +15,13 @@ import {
 } from 'lucide-react';
 import { findUnusedAssetIds } from '../../assets/library/assetUtils';
 import { sharedAudioEngine } from '../../engine/audio/audioEngine';
-import type { SceneData } from '../../engine/core/types';
+import type { GameObjectData, SceneData } from '../../engine/core/types';
 import type {
   PrefabDefinition,
   ProjectAssetMeta,
   ProjectFolder,
 } from '../../project/models/project';
+import { AssetViewerModal } from './AssetViewerModal';
 
 interface AssetsLibraryPanelProps {
   assets: ProjectAssetMeta[];
@@ -27,8 +29,10 @@ interface AssetsLibraryPanelProps {
   assetBlobs?: Map<string, Blob>;
   folders?: ProjectFolder[];
   prefabs?: PrefabDefinition[];
+  selectedObject?: GameObjectData | null;
   onImportFiles: (files: File[]) => void;
   onAddSpriteFromAsset: (assetId: string) => void;
+  onAssignAssetToSelected?: (assetId: string) => void;
   onDeleteAsset: (assetId: string) => void;
   onPurgeUnusedAssets: (unusedIds: string[]) => void;
   onCreateFolder?: (name: string) => void;
@@ -44,8 +48,10 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
   assetBlobs,
   folders = [],
   prefabs = [],
+  selectedObject = null,
   onImportFiles,
   onAddSpriteFromAsset,
+  onAssignAssetToSelected,
   onDeleteAsset,
   onPurgeUnusedAssets,
   onCreateFolder,
@@ -55,16 +61,21 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
   onDeletePrefab,
 }) => {
   const [query, setQuery] = useState('');
-  const [mediaFilter, setMediaFilter] = useState<'all' | 'image' | 'audio'>('all');
+  const [mediaFilter, setMediaFilter] = useState<'all' | 'image' | 'audio' | 'model3d'>('all');
   const [selectedFolderId, setSelectedFolderId] = useState<string>('__all__');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [viewingAssetId, setViewingAssetId] = useState<string | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(() =>
     sharedAudioEngine.getCurrentMusicAssetId()
   );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
+  const viewingAsset = useMemo(
+    () => (viewingAssetId ? assets.find((a) => a.id === viewingAssetId) ?? null : null),
+    [assets, viewingAssetId]
+  );
 
   useEffect(() => {
     return sharedAudioEngine.subscribe(() => {
@@ -78,9 +89,10 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
   const filteredAssets = useMemo(() => {
     const q = query.trim().toLowerCase();
     return assets.filter((a) => {
-      const isAudio = a.kind === 'audio';
-      if (mediaFilter === 'image' && isAudio) return false;
-      if (mediaFilter === 'audio' && !isAudio) return false;
+      const kind = a.kind ?? 'image';
+      if (mediaFilter === 'image' && kind !== 'image') return false;
+      if (mediaFilter === 'audio' && kind !== 'audio') return false;
+      if (mediaFilter === 'model3d' && kind !== 'model3d') return false;
       if (selectedFolderId === '__root__' && a.folderId) return false;
       if (
         selectedFolderId !== '__all__' &&
@@ -146,7 +158,7 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".png,.jpg,.jpeg,.webp,.svg,.wav,.mp3,.ogg,.m4a,.aac,.flac,.webm,image/*,audio/*"
+          accept=".png,.jpg,.jpeg,.webp,.svg,.wav,.mp3,.ogg,.m4a,.aac,.flac,.webm,.glb,.gltf,.fbx,image/*,audio/*"
           className="hidden"
           onChange={(e) => {
             const list = e.target.files ? Array.from(e.target.files) : [];
@@ -217,13 +229,17 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-3 gap-1 rounded bg-[#141416] p-0.5 text-[10px]">
+        <div className="grid grid-cols-4 gap-1 rounded bg-[#141416] p-0.5 text-[10px]">
           {(
             [
               { id: 'all', label: `Todos (${assets.length})` },
               {
                 id: 'image',
-                label: `Img (${assets.filter((a) => a.kind !== 'audio').length})`,
+                label: `Img (${assets.filter((a) => (a.kind ?? 'image') === 'image').length})`,
+              },
+              {
+                id: 'model3d',
+                label: `3D (${assets.filter((a) => a.kind === 'model3d').length})`,
               },
               {
                 id: 'audio',
@@ -408,17 +424,11 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
                     e.dataTransfer.setData('application/x-nexus-asset', asset.id);
                     e.dataTransfer.effectAllowed = 'copy';
                   }}
-                  onDoubleClick={() => {
-                    if (!isAudio) onAddSpriteFromAsset(asset.id);
-                    else {
-                      const blob = assetBlobs?.get(asset.id);
-                      if (blob) void sharedAudioEngine.playAssetBlob(asset.id, blob);
-                    }
-                  }}
+                  onDoubleClick={() => setViewingAssetId(asset.id)}
                   title={
                     isAudio
-                      ? `${asset.filename} — Audio local (clic en reproducir)`
-                      : `${asset.filename} (${asset.width}×${asset.height}) — Arrastra al escenario o doble clic para insertar`
+                      ? `${asset.filename} — Doble clic para abrir reproductor e inspector`
+                      : `${asset.filename} (${asset.kind === 'model3d' ? 'Modelo 3D' : `${asset.width}×${asset.height}`}) — Doble clic para inspeccionar, + para insertar`
                   }
                   className="group relative flex flex-col overflow-hidden rounded border border-[#303039] bg-[#212127] hover:border-blue-500/60"
                 >
@@ -467,15 +477,36 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
                           </button>
                         )
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => onAddSpriteFromAsset(asset.id)}
-                          title="Insertar en el escenario"
-                          aria-label={`Insertar ${asset.name} en el escenario`}
-                          className="rounded bg-blue-600 p-1 text-white shadow hover:bg-blue-500"
-                        >
-                          <Plus className="h-3 w-3" />
-                        </button>
+                        <>
+                          {onAssignAssetToSelected &&
+                            selectedObject &&
+                            ((asset.kind === 'model3d' &&
+                              (selectedObject.type === 'mesh_3d' ||
+                                selectedObject.type === 'container' ||
+                                selectedObject.type === 'sprite')) ||
+                              ((asset.kind ?? 'image') === 'image' &&
+                                (selectedObject.type === 'sprite' ||
+                                  selectedObject.type === 'mesh_3d'))) && (
+                              <button
+                                type="button"
+                                onClick={() => onAssignAssetToSelected(asset.id)}
+                                title={`Sustituir en "${selectedObject.name}" manteniendo posición y mecánicas`}
+                                aria-label={`Sustituir ${asset.name} en ${selectedObject.name}`}
+                                className="rounded bg-emerald-600 p-1 text-white shadow hover:bg-emerald-500"
+                              >
+                                <RefreshCw className="h-3 w-3" />
+                              </button>
+                            )}
+                          <button
+                            type="button"
+                            onClick={() => onAddSpriteFromAsset(asset.id)}
+                            title="Insertar como objeto nuevo en el escenario"
+                            aria-label={`Insertar ${asset.name} en el escenario`}
+                            className="rounded bg-blue-600 p-1 text-white shadow hover:bg-blue-500"
+                          >
+                            <Plus className="h-3 w-3" />
+                          </button>
+                        </>
                       )}
                       <button
                         type="button"
@@ -496,7 +527,7 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
                     <div className="mt-0.5 flex items-center justify-between text-[10px] text-zinc-400 font-mono tabular-nums">
                       <span>{asset.format.toUpperCase()}</span>
                       <span>
-                        {isAudio ? 'AUDIO' : `${asset.width}×${asset.height}`}
+                        {isAudio ? 'AUDIO' : asset.kind === 'model3d' ? 'MODELO 3D' : `${asset.width}×${asset.height}`}
                         {isUnused ? ' · libre' : ''}
                       </span>
                     </div>
@@ -524,6 +555,15 @@ export const AssetsLibraryPanel: React.FC<AssetsLibraryPanelProps> = ({
           </div>
         )}
       </div>
+
+      <AssetViewerModal
+        asset={viewingAsset}
+        blob={viewingAsset ? assetBlobs?.get(viewingAsset.id) ?? null : null}
+        selectedObject={selectedObject}
+        onClose={() => setViewingAssetId(null)}
+        onInsertToScene={onAddSpriteFromAsset}
+        onAssignToSelected={onAssignAssetToSelected}
+      />
     </div>
   );
 };

@@ -10,7 +10,8 @@ function escapeHtml(text: string): string {
 
 export function generateIndexHtml(
   gameTitle: string,
-  options: Html5CompileOptions
+  options: Html5CompileOptions,
+  projectMode: '2d' | '3d' = '2d'
 ): string {
   let sdkHeadScript = '';
   if (options.portal === 'poki') {
@@ -26,22 +27,32 @@ export function generateIndexHtml(
     sdkHeadScript = `  <script src="${escapeHtml(options.customSdkUrl.trim())}"></script>\n`;
   }
 
-  const touchControlsHtml = options.touchControls
-    ? `
-  <div id="nx-touch-controls" aria-label="Controles táctiles">
-    <div class="nx-dpad">
-      <button type="button" data-key="left" aria-label="Izquierda">&#9664;</button>
-      <button type="button" data-key="up" aria-label="Arriba">&#9650;</button>
-      <button type="button" data-key="down" aria-label="Abajo">&#9660;</button>
-      <button type="button" data-key="right" aria-label="Derecha">&#9654;</button>
+  const touchControlsHtml = `
+  <div id="nx-touch-controls" class="${options.touchControls ? '' : 'hidden'}" aria-label="Controles táctiles">
+    <div id="nx-joystick-zone">
+      <div id="nx-joystick-ring">
+        <div id="nx-joystick-knob"></div>
+      </div>
     </div>
-    <button type="button" class="nx-action-btn" data-key="jump" aria-label="Saltar">SALTAR</button>
-  </div>`
-    : '';
+    <div class="nx-touch-actions">
+      <button type="button" class="nx-action-btn nx-btn-dash" data-btn="dash" aria-label="Dash">DASH</button>
+      <button type="button" class="nx-action-btn nx-btn-act" data-btn="action" aria-label="Acción">ACCIÓN</button>
+      <button type="button" class="nx-action-btn nx-btn-jump" data-btn="jump" aria-label="Saltar">SALTAR</button>
+    </div>
+  </div>`;
 
   const fullscreenBtnHtml = options.showFullscreenButton
     ? '<button type="button" id="nx-fs-btn" title="Pantalla completa" aria-label="Pantalla completa">[ ]</button>'
     : '';
+
+  const runtimeScripts =
+    projectMode === '3d'
+      ? `  <script src="js/three.min.js"></script>
+  <script src="js/portal-sdk.js"></script>
+  <script src="js/nexus-3d-runtime.js"></script>`
+      : `  <script src="js/pixi.min.js"></script>
+  <script src="js/portal-sdk.js"></script>
+  <script src="js/nexus-runtime.js"></script>`;
 
   return `<!doctype html>
 <html lang="es">
@@ -70,9 +81,7 @@ ${sdkHeadScript}  <link rel="stylesheet" href="css/style.css" />
     ${touchControlsHtml}
   </div>
 
-  <script src="js/pixi.min.js"></script>
-  <script src="js/portal-sdk.js"></script>
-  <script src="js/nexus-runtime.js"></script>
+${runtimeScripts}
 </body>
 </html>
 `;
@@ -188,39 +197,73 @@ html, body, #nx-root {
 
 #nx-touch-controls {
   position: absolute;
-  bottom: 14px;
-  left: 14px;
-  right: 14px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
+  inset: 0;
   pointer-events: none;
   z-index: 15;
+  touch-action: none;
+  user-select: none;
 }
 
-.nx-dpad {
-  display: flex;
-  gap: 6px;
+#nx-joystick-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 55%;
+  width: 45%;
+  max-width: 340px;
   pointer-events: auto;
+  touch-action: none;
 }
 
-.nx-dpad button,
+#nx-joystick-ring {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  width: 112px;
+  height: 112px;
+  border-radius: 9999px;
+  border: 2px solid rgba(56, 189, 248, 0.55);
+  background: rgba(15, 23, 42, 0.68);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+#nx-joystick-knob {
+  width: 48px;
+  height: 48px;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: rgba(148, 163, 184, 0.72);
+  pointer-events: none;
+}
+
+.nx-touch-actions {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
 .nx-action-btn {
   pointer-events: auto;
-  min-width: 44px;
-  height: 44px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(24, 24, 27, 0.65);
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  background: rgba(24, 24, 27, 0.72);
   color: #ffffff;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
+  touch-action: none;
 }
 
-.nx-action-btn {
-  padding: 0 16px;
-}
+.nx-btn-dash { width: 48px; height: 48px; background: rgba(124, 58, 237, 0.78); border-color: rgba(167, 139, 250, 0.8); }
+.nx-btn-act { width: 56px; height: 56px; background: rgba(217, 119, 6, 0.8); border-color: rgba(251, 191, 36, 0.8); }
+.nx-btn-jump { width: 66px; height: 66px; background: rgba(5, 150, 105, 0.85); border-color: rgba(52, 211, 153, 0.85); }
 
 .hidden {
   display: none !important;
@@ -561,19 +604,262 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     }
     var out = [];
     cols.forEach(function (col) {
-      if (!col.enabled) return;
+      if (col.enabled === false) return;
+      if (col.shape === 'smart_alpha' && col.smartRects && col.smartRects.length > 0) {
+        var sw = Math.max(4, Math.abs(obj.transform.width * sx));
+        var sh = Math.max(4, Math.abs(obj.transform.height * sy));
+        var baseLeft = obj.transform.x - sw * obj.transform.anchorX;
+        var baseTop = obj.transform.y - sh * obj.transform.anchorY;
+        var flipX = Boolean(obj.sprite && obj.sprite.flipX);
+        var flipY = Boolean(obj.sprite && obj.sprite.flipY);
+        col.smartRects.forEach(function (sr) {
+          var rx = flipX ? Math.max(0, 1 - (sr.x + sr.w)) : sr.x;
+          var ry = flipY ? Math.max(0, 1 - (sr.y + sr.h)) : sr.y;
+          var rw = Math.max(2, sr.w * sw);
+          var rh = Math.max(2, sr.h * sh);
+          var sleft = baseLeft + rx * sw;
+          var stop = baseTop + ry * sh;
+          out.push({ kind: 'box', left: sleft, right: sleft + rw, top: stop, bottom: stop + rh, cx: sleft + rw * 0.5, cy: stop + rh * 0.5, radius: Math.max(rw, rh) * 0.5, isSensor: Boolean(col.isSensor), layer: col.layer || objLayer, mask: col.mask });
+        });
+        return;
+      }
       var cw = Math.max(1, col.width * sx);
       var ch = Math.max(1, col.height * sy);
       var cx = obj.transform.x + (0.5 - obj.transform.anchorX) * obj.transform.width * sx + (col.offsetX || 0) * sx;
       var cy = obj.transform.y + (0.5 - obj.transform.anchorY) * obj.transform.height * sy + (col.offsetY || 0) * sy;
       if (col.shape === 'circle') {
         var r = Math.max(1, (col.radius || Math.max(col.width, col.height) * 0.5) * Math.max(sx, sy));
-        out.push({ kind: 'circle', left: cx - r, right: cx + r, top: cy - r, bottom: cy + r, cx: cx, cy: cy, radius: r, isSensor: col.isSensor, layer: col.layer || objLayer, mask: col.mask });
+        out.push({ kind: 'circle', left: cx - r, right: cx + r, top: cy - r, bottom: cy + r, cx: cx, cy: cy, radius: r, isSensor: Boolean(col.isSensor), layer: col.layer || objLayer, mask: col.mask });
       } else {
-        out.push({ kind: 'box', left: cx - cw * 0.5, right: cx + cw * 0.5, top: cy - ch * 0.5, bottom: cy + ch * 0.5, cx: cx, cy: cy, radius: Math.max(cw, ch) * 0.5, isSensor: col.isSensor, layer: col.layer || objLayer, mask: col.mask });
+        out.push({ kind: 'box', left: cx - cw * 0.5, right: cx + cw * 0.5, top: cy - ch * 0.5, bottom: cy + ch * 0.5, cx: cx, cy: cy, radius: Math.max(cw, ch) * 0.5, isSensor: Boolean(col.isSensor), layer: col.layer || objLayer, mask: col.mask });
       }
     });
     return out;
+  }
+
+  function computeJoystickVector(dx, dy, maxRadius, deadzone) {
+    var rad = Math.max(8, maxRadius || 42);
+    var dz = Math.max(0, Math.min(0.6, deadzone !== undefined ? deadzone : 0.16));
+    var dist = Math.hypot(dx, dy);
+    if (dist <= 0.0001) return { x: 0, y: 0, magnitude: 0 };
+    var rawMag = Math.min(1, dist / rad);
+    if (rawMag <= dz) return { x: 0, y: 0, magnitude: 0 };
+    var rescaled = Math.min(1, (rawMag - dz) / Math.max(0.05, 1 - dz));
+    return { x: (dx / dist) * rescaled, y: (dy / dist) * rescaled, magnitude: rescaled };
+  }
+
+  function evalAnimAtomic(raw, ctx) {
+    var cond = String(raw || '').trim();
+    if (!cond || cond === 'manual') return false;
+    var low = cond.toLowerCase();
+    if (low === 'falling' || low === 'isfalling') {
+      return !ctx.isGrounded && Number(ctx.vy || 0) <= 0;
+    }
+    if (low === '!falling' || low === '!isfalling') {
+      return ctx.isGrounded || Number(ctx.vy || 0) > 0;
+    }
+    if (cond === 'animFinished' || cond === 'animFinished == true') {
+      return Boolean(ctx.animFinished || (ctx.animProgress !== undefined && ctx.animProgress >= 0.99));
+    }
+    if (cond === '!animFinished' || cond === 'animFinished == false') {
+      return !(ctx.animFinished || (ctx.animProgress !== undefined && ctx.animProgress >= 0.99));
+    }
+    if (cond === '!isGrounded') return !ctx.isGrounded;
+    if (cond === 'isGrounded') return Boolean(ctx.isGrounded);
+    if (cond.indexOf('!keyPressed:') === 0) {
+      var kp1 = cond.slice(12).trim();
+      return kp1 ? !(ctx.justPressedKeys && ctx.justPressedKeys.has(kp1)) : false;
+    }
+    if (cond.indexOf('keyPressed:') === 0) {
+      var kp2 = cond.slice(11).trim();
+      return kp2 ? Boolean(ctx.justPressedKeys && ctx.justPressedKeys.has(kp2)) : false;
+    }
+    if (cond.indexOf('!keyHeld:') === 0) {
+      var k1 = cond.slice(9).trim();
+      return k1 ? !ctx.heldKeys.has(k1) : false;
+    }
+    if (cond.indexOf('keyHeld:') === 0) {
+      var k2 = cond.slice(8).trim();
+      return k2 ? ctx.heldKeys.has(k2) : false;
+    }
+    var ms = cond.match(/^speed\\s*(>=|<=|>|<|==|!=)\\s*(-?\\d+(?:\\.\\d+)?)$/);
+    if (ms) {
+      var v1 = Number(ms[2]);
+      if (ms[1] === '>=') return ctx.speed >= v1;
+      if (ms[1] === '<=') return ctx.speed <= v1;
+      if (ms[1] === '>') return ctx.speed > v1;
+      if (ms[1] === '<') return ctx.speed < v1;
+      if (ms[1] === '!=') return ctx.speed !== v1;
+      return ctx.speed === v1;
+    }
+    var mvy = cond.match(/^vy\\s*(>=|<=|>|<|==|!=)\\s*(-?\\d+(?:\\.\\d+)?)$/);
+    if (mvy) {
+      var v2 = Number(mvy[2]);
+      if (mvy[1] === '>=') return ctx.vy >= v2;
+      if (mvy[1] === '<=') return ctx.vy <= v2;
+      if (mvy[1] === '>') return ctx.vy > v2;
+      if (mvy[1] === '<') return ctx.vy < v2;
+      if (mvy[1] === '!=') return ctx.vy !== v2;
+      return ctx.vy === v2;
+    }
+    var mg = cond.match(/^isGrounded\\s*(==|!=)\\s*(true|false)$/);
+    if (mg) return mg[1] === '!=' ? String(ctx.isGrounded) !== mg[2] : String(ctx.isGrounded) === mg[2];
+    if (cond.indexOf('var:') === 0) {
+      var mv = cond.slice(4).match(/^([a-zA-Z0-9_]+)\\s*(>=|<=|>|<|==|!=)\\s*(.+)$/);
+      if (mv) {
+        var lv = ctx.variables && ctx.variables.has(mv[1]) ? ctx.variables.get(mv[1]) : 0;
+        var rv = mv[3].trim();
+        var ln = Number(lv); var rn = Number(rv);
+        if (!isNaN(ln) && !isNaN(rn)) {
+          if (mv[2] === '>=') return ln >= rn;
+          if (mv[2] === '<=') return ln <= rn;
+          if (mv[2] === '>') return ln > rn;
+          if (mv[2] === '<') return ln < rn;
+          if (mv[2] === '!=') return ln !== rn;
+          return ln === rn;
+        }
+        return mv[2] === '!=' ? String(lv) !== rv : String(lv) === rv;
+      }
+    }
+    return false;
+  }
+
+  function evalAnimExpr2d(expr, ctx) {
+    var trimmed = String(expr || '').trim();
+    if (!trimmed || trimmed === 'manual') return false;
+    return trimmed.split('||').some(function (grp) {
+      var parts = grp.split('&&');
+      return parts.length > 0 && parts.every(function (p) { return evalAnimAtomic(p, ctx); });
+    });
+  }
+
+  function isTerminalNode2d(node) {
+    var lbl = ((node.name || '') + ' ' + (node.clipName || '')).toLowerCase();
+    var c = String(node.conditionExpr || '').toLowerCase();
+    return c.indexOf('var:') >= 0 || c.indexOf('death') >= 0 || lbl.indexOf('death') >= 0 || lbl.indexOf('morir') >= 0 || lbl.indexOf('dead') >= 0;
+  }
+
+  function isLocomotionNode2d(node, initialId) {
+    if (node.id === initialId) return true;
+    var lbl = ((node.name || '') + ' ' + (node.clipName || '')).toLowerCase();
+    return /(idle|reposo|quiet|stand|walk|camin|andar|run|corr|sprint|move|mover)/.test(lbl);
+  }
+
+  function nodeTriggerMatches2d(node, ctx) {
+    var key = String(node.triggerKey || '').trim();
+    var cond = String(node.conditionExpr || '').trim();
+    var hasCond = cond.length > 0 && cond !== 'manual';
+    if (!key && !hasCond) return false;
+    if (key) {
+      var mode = node.triggerKeyMode || 'pressed';
+      var okKey = mode === 'held' ? Boolean(ctx.heldKeys && ctx.heldKeys.has(key)) : Boolean(ctx.justPressedKeys && ctx.justPressedKeys.has(key));
+      if (!okKey) return false;
+    }
+    if (hasCond && !evalAnimExpr2d(cond, ctx)) return false;
+    return true;
+  }
+
+  function resolveSmartLocomotion2d(fsm, curNode, ctx) {
+    var others = (fsm.states || []).filter(function (s) { return s.id !== curNode.id; });
+    if (others.length === 0) return null;
+    function byPat(re) {
+      return others.find(function (s) { return re.test(((s.name || '') + ' ' + (s.clipName || '')).toLowerCase()); });
+    }
+    var idleN = byPat(/\\b(idle|reposo|quieto|quieta|stand|espera)\\b/) || others.find(function (s) { return s.id === fsm.initialStateId; }) || others[0];
+    var walkN = byPat(/\\b(walk|caminar|camina|andar|anda|trotar|move|mover)\\b/);
+    var runN = byPat(/\\b(run|correr|corre|sprint|dash_move)\\b/);
+    var runMatched = false;
+    if (runN) {
+      if (runN.triggerKey) {
+        var rm = runN.triggerKeyMode || 'held';
+        runMatched = rm === 'held' ? Boolean(ctx.heldKeys && ctx.heldKeys.has(runN.triggerKey)) : Boolean(ctx.justPressedKeys && ctx.justPressedKeys.has(runN.triggerKey));
+      }
+      if (!runMatched && runN.conditionExpr && runN.conditionExpr !== 'manual') runMatched = evalAnimExpr2d(runN.conditionExpr, ctx);
+      if (!runMatched) {
+        runMatched = (fsm.transitions || []).some(function (t) {
+          return t.toStateId === runN.id && t.conditionExpr && t.conditionExpr !== 'manual' && evalAnimExpr2d(t.conditionExpr, ctx);
+        });
+      }
+    }
+    var sprintHeld = Boolean(ctx.heldKeys && (ctx.heldKeys.has('ShiftLeft') || ctx.heldKeys.has('ShiftRight')));
+    if (!(ctx.speed > 0.1)) return idleN || null;
+    if (runN && (runMatched || sprintHeld || ctx.speed > 5.5 || !walkN)) return runN;
+    if (walkN) return walkN;
+    return runN || idleN || null;
+  }
+
+  function shouldAutoReturn2d(node, ctx) {
+    var mode = node.returnMode || 'none';
+    if (mode === 'none') return false;
+    var trigKey = String(node.triggerKey || '').trim();
+    if (trigKey && (node.triggerKeyMode || 'pressed') !== 'held' && ctx.justPressedKeys && ctx.justPressedKeys.has(trigKey)) return false;
+    var on = node.returnOn || 'auto';
+    if (on === 'auto') {
+      if (trigKey && node.triggerKeyMode === 'held') on = 'keyReleased';
+      else if (/jump|salt|fall|caer|aire|air/.test(((node.name || '') + ' ' + (node.clipName || '')).toLowerCase())) on = 'grounded';
+      else if (node.loopMode === 'LoopOnce' || trigKey) on = 'animFinished';
+      else return false;
+    }
+    if (on === 'grounded') return Boolean(ctx.isGrounded && Number(ctx.vy || 0) <= 0.15);
+    if (on === 'animFinished') return Boolean(ctx.animFinished || (ctx.animProgress !== undefined && ctx.animProgress >= 0.99));
+    if (on === 'keyReleased') return trigKey ? !(ctx.heldKeys && ctx.heldKeys.has(trigKey)) : false;
+    return false;
+  }
+
+  function stepAnimFsm2d(fsm, curState, ctx) {
+    if (!fsm || !fsm.states || fsm.states.length === 0) return null;
+    var cur = fsm.states.find(function (s) { return s.name === curState || s.id === curState; });
+    if (!cur) {
+      cur = fsm.states.find(function (s) { return s.id === fsm.initialStateId; }) || fsm.states[0];
+      return { changed: true, stateName: cur.name, clipName: cur.clipName, timeScale: cur.timeScale || 1, loopMode: cur.loopMode || 'LoopRepeat', node: cur };
+    }
+    function mkRes(nxt) {
+      return { changed: true, stateName: nxt.name, clipName: nxt.clipName, timeScale: nxt.timeScale || 1, loopMode: nxt.loopMode || 'LoopRepeat', node: nxt };
+    }
+    var trs = fsm.transitions || [];
+    var curTerm = isTerminalNode2d(cur);
+    function checkList(list) {
+      for (var i = 0; i < list.length; i++) {
+        var tr = list[i];
+        if (!evalAnimExpr2d(tr.conditionExpr, ctx)) continue;
+        var nxt = fsm.states.find(function (s) { return s.id === tr.toStateId; });
+        if (nxt && nxt.id !== cur.id) return mkRes(nxt);
+      }
+      return null;
+    }
+    var wTerm = trs.filter(function (t) { return t.fromStateId === '*' && (String(t.conditionExpr || '').indexOf('var:') >= 0 || String(t.conditionExpr || '').indexOf('<= 0') >= 0); });
+    var r1 = checkList(wTerm);
+    if (r1) return r1;
+    for (var ti = 0; ti < fsm.states.length; ti++) {
+      var stT = fsm.states[ti];
+      if (stT.id !== cur.id && stT.fromAnyState && isTerminalNode2d(stT) && nodeTriggerMatches2d(stT, ctx)) return mkRes(stT);
+    }
+    if (!curTerm) {
+      for (var ai = 0; ai < fsm.states.length; ai++) {
+        var stA = fsm.states[ai];
+        if (stA.id !== cur.id && stA.fromAnyState && !isTerminalNode2d(stA) && nodeTriggerMatches2d(stA, ctx)) return mkRes(stA);
+      }
+    }
+    var direct = trs.filter(function (t) { return t.fromStateId === cur.id; });
+    var r2 = checkList(direct);
+    if (r2) return r2;
+    if (!curTerm && isLocomotionNode2d(cur, fsm.initialStateId)) {
+      for (var li = 0; li < fsm.states.length; li++) {
+        var stL = fsm.states[li];
+        if (stL.id !== cur.id && !stL.fromAnyState && nodeTriggerMatches2d(stL, ctx)) return mkRes(stL);
+      }
+    }
+    var wGen = trs.filter(function (t) { return t.fromStateId === '*' && wTerm.indexOf(t) < 0; });
+    var r3 = checkList(wGen);
+    if (r3) return r3;
+    if (shouldAutoReturn2d(cur, ctx)) {
+      var ret = null;
+      if (cur.returnMode === 'state' && cur.returnStateId) ret = fsm.states.find(function (s) { return s.id === cur.returnStateId; }) || null;
+      else if (cur.returnMode === 'idle') ret = fsm.states.find(function (s) { return /\\b(idle|reposo|quieto|quieta|stand)\\b/i.test((s.name || '') + ' ' + (s.clipName || '')); }) || fsm.states.find(function (s) { return s.id === fsm.initialStateId; }) || fsm.states[0];
+      else if (cur.returnMode === 'smart_locomotion') ret = resolveSmartLocomotion2d(fsm, cur, ctx);
+      if (ret && ret.id !== cur.id) return mkRes(ret);
+    }
+    return { changed: false, stateName: cur.name, clipName: cur.clipName, timeScale: cur.timeScale || 1, loopMode: cur.loopMode || 'LoopRepeat', node: cur };
   }
 
   function canLayersCollide(aLayer, bLayer, aMask, bMask) {
@@ -637,16 +923,36 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     return pr;
   }
 
-  function startBufferedSound(buf, vol, pitchMul, ch, loop) {
+  function startBufferedSound(buf, vol, pitchMul, ch, loop, spatialX, spatialY, maxDist) {
     if (!audioCtx || !buf) return null;
     var src = audioCtx.createBufferSource();
     src.buffer = buf;
     src.loop = Boolean(loop);
     src.playbackRate.value = Math.max(0.25, Math.min(3, pitchMul || 1));
     var g = audioCtx.createGain();
-    g.gain.value = Math.max(0, Math.min(2, vol !== undefined ? vol : 1));
+    var clipVol = Math.max(0, Math.min(2, vol !== undefined ? vol : 1));
+    g.gain.value = clipVol;
     src.connect(g);
-    g.connect(getBusNode(ch || 'sfx'));
+    var destBus = getBusNode(ch || 'sfx');
+    if (spatialX !== undefined && spatialY !== undefined && typeof activeSim !== 'undefined' && activeSim) {
+      var maxD = Math.max(120, maxDist || 720);
+      var lX = (activeSim.cameraPos ? activeSim.cameraPos.x : 0) + (typeof stageW !== 'undefined' ? stageW * 0.5 : 640);
+      var lY = (activeSim.cameraPos ? activeSim.cameraPos.y : 0) + (typeof stageH !== 'undefined' ? stageH * 0.5 : 360);
+      var dx = Number(spatialX) - lX;
+      var dy = Number(spatialY) - lY;
+      var dist = Math.hypot(dx, dy);
+      g.gain.value = clipVol * Math.max(0, 1 - dist / maxD);
+      if (typeof audioCtx.createStereoPanner === 'function') {
+        var panner = audioCtx.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, dx / (maxD * 0.6)));
+        g.connect(panner);
+        panner.connect(destBus);
+      } else {
+        g.connect(destBus);
+      }
+    } else {
+      g.connect(destBus);
+    }
     activeSfxSources.add(src);
     src.onended = function () { activeSfxSources.delete(src); };
     src.start(0);
@@ -680,22 +986,47 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     if (!assetId) return;
     var safeVol = Math.max(0, Math.min(1.5, vol !== undefined ? vol : 0.8));
     if (keepIfSame !== false && currentMusicAssetId === assetId && currentMusicSource) {
-      if (currentMusicGain && audioCtx) currentMusicGain.gain.setValueAtTime(safeVol, audioCtx.currentTime);
+      if (currentMusicGain && audioCtx) currentMusicGain.gain.setTargetAtTime(safeVol, audioCtx.currentTime, 0.04);
       return;
     }
-    stopMusic();
-    var cmd = { assetId: assetId, volume: safeVol, loop: loop !== false, keepIfSame: keepIfSame !== false };
+    var fadeSec = 1.5;
+    var prevSrc = currentMusicSource;
+    var prevGain = currentMusicGain;
+    var hadPrev = Boolean(prevSrc && prevGain && audioCtx);
+    if (hadPrev) {
+      try {
+        var nowFade = audioCtx.currentTime;
+        prevGain.gain.cancelScheduledValues(nowFade);
+        prevGain.gain.setValueAtTime(Math.max(0.001, prevGain.gain.value), nowFade);
+        prevGain.gain.linearRampToValueAtTime(0.0001, nowFade + fadeSec);
+        prevSrc.onended = null;
+        prevSrc.stop(nowFade + fadeSec + 0.04);
+      } catch (_) {}
+      currentMusicSource = null;
+      currentMusicGain = null;
+      currentMusicAssetId = null;
+    } else {
+      stopMusic();
+    }
+    var cmd = { assetId: assetId, volume: safeVol, loop: loop !== false, keepIfSame: keepIfSame !== false, crossfade: hadPrev };
     pendingMusicCmd = cmd;
     var ctx = ensureAudio();
     if (!ctx || ctx.state !== 'running') return;
     function startBuf(buf) {
       if (!buf || !pendingMusicCmd || pendingMusicCmd.assetId !== assetId || !audioCtx || audioCtx.state !== 'running') return;
+      var doFade = pendingMusicCmd.crossfade;
       pendingMusicCmd = null;
       var src = audioCtx.createBufferSource();
       src.buffer = buf;
       src.loop = cmd.loop;
       var g = audioCtx.createGain();
-      g.gain.value = cmd.volume;
+      var nowM = audioCtx.currentTime;
+      if (doFade) {
+        g.gain.setValueAtTime(0.001, nowM);
+        g.gain.linearRampToValueAtTime(Math.max(0.001, cmd.volume), nowM + fadeSec);
+      } else {
+        g.gain.value = cmd.volume;
+      }
       src.connect(g);
       g.connect(getBusNode('music'));
       currentMusicSource = src;
@@ -777,7 +1108,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     }
   }
 
-  function playAudioAsset(assetId, volume, pitchMul, ch, loop) {
+  function playAudioAsset(assetId, volume, pitchMul, ch, loop, spatialX, spatialY, maxDist) {
     if (!assetId) return;
     var chName = ch || 'sfx';
     if (chName === 'music') {
@@ -787,10 +1118,10 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     var ctx = ensureAudio();
     if (!ctx || getChannelGain(chName) <= 0.001) return;
     if (audioBuffers.has(assetId)) {
-      startBufferedSound(audioBuffers.get(assetId), volume, pitchMul, chName, loop);
+      startBufferedSound(audioBuffers.get(assetId), volume, pitchMul, chName, loop, spatialX, spatialY, maxDist);
     } else {
       decodeAssetIfNeeded(assetId).then(function (buf) {
-        if (buf) startBufferedSound(buf, volume, pitchMul, chName, loop);
+        if (buf) startBufferedSound(buf, volume, pitchMul, chName, loop, spatialX, spatialY, maxDist);
       });
     }
   }
@@ -827,9 +1158,32 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       dust: { rate: 14, maxParticles: 60, speedMin: 15, speedMax: 45, angleDeg: 180, spreadDeg: 60, gravity: 25, sizeStart: 5, sizeEnd: 2, lifetime: 0.55, colorStart: '#d6d3d1', colorEnd: '#78716c', blendAlpha: 0.6 },
       rain: { rate: 45, maxParticles: 160, speedMin: 260, speedMax: 340, angleDeg: 95, spreadDeg: 8, gravity: 160, sizeStart: 3, sizeEnd: 3, lifetime: 1.1, colorStart: '#60a5fa', colorEnd: '#3b82f6', blendAlpha: 0.7 },
       snow: { rate: 20, maxParticles: 120, speedMin: 25, speedMax: 55, angleDeg: 90, spreadDeg: 30, gravity: 12, sizeStart: 4, sizeEnd: 3, lifetime: 2.4, colorStart: '#ffffff', colorEnd: '#cbd5e1', blendAlpha: 0.85 },
-      explosion: { rate: 60, maxParticles: 140, speedMin: 90, speedMax: 280, angleDeg: 0, spreadDeg: 360, gravity: 120, sizeStart: 7, sizeEnd: 1, lifetime: 0.45, colorStart: '#fde047', colorEnd: '#dc2626', blendAlpha: 1 }
+      explosion: { rate: 60, maxParticles: 140, speedMin: 90, speedMax: 280, angleDeg: 0, spreadDeg: 360, gravity: 120, sizeStart: 7, sizeEnd: 1, lifetime: 0.45, colorStart: '#fde047', colorEnd: '#dc2626', blendAlpha: 1 },
+      liquid: { rate: 36, maxParticles: 140, speedMin: 60, speedMax: 150, angleDeg: -85, spreadDeg: 40, gravity: 360, sizeStart: 8, sizeEnd: 5, lifetime: 0.9, colorStart: '#7dd3fc', colorEnd: '#0284c7', blendAlpha: 0.88, particleShape: 'liquid', emitterShape: 'cone', drag: 0.25 },
+      waterfall: { rate: 55, maxParticles: 180, speedMin: 90, speedMax: 180, angleDeg: 90, spreadDeg: 18, gravity: 420, sizeStart: 10, sizeEnd: 14, lifetime: 1.1, colorStart: '#bae6fd', colorEnd: '#0369a1', blendAlpha: 0.78, particleShape: 'liquid', emitterShape: 'box', emitterRadius: 24, turbulence: 22 },
+      ripple: { rate: 12, maxParticles: 40, speedMin: 0, speedMax: 8, angleDeg: 0, spreadDeg: 360, gravity: 0, sizeStart: 4, sizeEnd: 26, lifetime: 0.85, colorStart: '#e0f2fe', colorEnd: '#38bdf8', blendAlpha: 0.75, particleShape: 'ring', emitterShape: 'ring', sizeCurve: [0.3, 0.75, 1, 1.1], alphaCurve: [0.9, 0.65, 0.25, 0] }
     };
     return map[preset] || map.explosion;
+  }
+
+  function sampleVfxCurve2D(curve, t, fallbackStart, fallbackEnd) {
+    var cl = Math.max(0, Math.min(1, t));
+    if (curve && curve.length >= 2) {
+      var sc = cl * (curve.length - 1);
+      var i0 = Math.min(curve.length - 2, Math.floor(sc));
+      var f = sc - i0;
+      var v0 = curve[i0] !== undefined ? curve[i0] : 1;
+      var v1 = curve[i0 + 1] !== undefined ? curve[i0 + 1] : v0;
+      return fallbackStart * (v0 + (v1 - v0) * f);
+    }
+    return fallbackStart + (fallbackEnd - fallbackStart) * cl;
+  }
+
+  function getMaxDpr2D(sc) {
+    var perf = sc && sc.renderQuality ? sc.renderQuality.performanceMode : 'balanced_60fps';
+    if (perf === 'ultra_fast') return 1;
+    if (perf === 'high_quality') return 2;
+    return 1.5;
   }
 
   function applyObjectTweens(obj, dt, tweenStates) {
@@ -887,7 +1241,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       height: window.innerHeight,
       backgroundColor: parseColor(gameData.settings.backgroundColor, 0x131b2e),
       antialias: true,
-      resolution: Math.min(window.devicePixelRatio || 1, 2),
+      resolution: Math.min(window.devicePixelRatio || 1, 1.5),
       autoDensity: true,
       preference: ['webgl', 'canvas']
     });
@@ -920,13 +1274,111 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     var world = new PIXI.Container();
     var bgRect = new PIXI.Graphics();
     var sceneRoot = new PIXI.Container();
+    var lightCanvas = document.createElement('canvas');
+    lightCanvas.width = Math.max(64, stageW);
+    lightCanvas.height = Math.max(64, stageH);
+    var lightCtx = lightCanvas.getContext('2d');
+    var lightTexture = PIXI.Texture.from(lightCanvas);
+    var lightSprite = new PIXI.Sprite(lightTexture);
+    lightSprite.blendMode = 'add';
+    lightSprite.visible = false;
+    var singleLightCanvas = document.createElement('canvas');
     var fxGraphics = new PIXI.Graphics();
     var transitionGraphics = new PIXI.Graphics();
     world.addChild(bgRect);
     world.addChild(sceneRoot);
+    world.addChild(lightSprite);
     world.addChild(fxGraphics);
     world.addChild(transitionGraphics);
     app.stage.addChild(world);
+
+    function renderLighting2DExport(sim) {
+      var lights = (sim.scene.objects || []).filter(function (o) { return o.visible && o.type === 'light_2d' && o.light2d; });
+      if (lights.length === 0 || !lightCtx) {
+        lightSprite.visible = false;
+        return;
+      }
+      lightSprite.visible = true;
+      lightCtx.globalCompositeOperation = 'source-over';
+      lightCtx.clearRect(0, 0, lightCanvas.width, lightCanvas.height);
+      var occluders = (sim.scene.objects || []).filter(function (o) {
+        return o.visible && o.type !== 'light_2d' && ((o.colliders && o.colliders.some(function (c) { return !c.isTrigger; })) || (o.components && o.components.some(function (c) { return c.enabled && c.type === 'solid'; })));
+      });
+      var sCtx = singleLightCanvas.getContext('2d');
+      lights.forEach(function (lObj) {
+        var cfg = lObj.light2d;
+        var radius = Math.max(10, Number(cfg.radius || 220));
+        var intensity = Math.max(0, Math.min(3, Number(cfg.intensity !== undefined ? cfg.intensity : 1)));
+        var softness = Math.max(0, Math.min(1, Number(cfg.softness !== undefined ? cfg.softness : 0.7)));
+        if (intensity <= 0.001) return;
+        var hex = String(cfg.color || '#fef08a').replace('#', '');
+        var fullHex = hex.length === 3 ? hex.split('').map(function (c) { return c + c; }).join('') : hex;
+        var nHex = parseInt(fullHex, 16) || 0xfef08a;
+        var cr = (nHex >> 16) & 255, cg = (nHex >> 8) & 255, cb = nHex & 255;
+        var cx = lObj.transform.x - sim.cameraPos.x, cy = lObj.transform.y - sim.cameraPos.y;
+        var dia = Math.ceil(radius * 2) + 4;
+        if (singleLightCanvas.width !== dia || singleLightCanvas.height !== dia) {
+          singleLightCanvas.width = dia; singleLightCanvas.height = dia;
+        } else if (sCtx) {
+          sCtx.globalCompositeOperation = 'source-over';
+          sCtx.clearRect(0, 0, dia, dia);
+        }
+        if (!sCtx) return;
+        var lc = dia * 0.5;
+        sCtx.save();
+        if (cfg.kind === 'spot') {
+          var dirRad = ((Number(cfg.directionDeg || 0)) * Math.PI) / 180;
+          var coneRad = Math.max(0.15, ((Number(cfg.coneAngleDeg || 60) * 0.5) * Math.PI) / 180);
+          sCtx.beginPath(); sCtx.moveTo(lc, lc);
+          sCtx.arc(lc, lc, radius, dirRad - coneRad, dirRad + coneRad);
+          sCtx.closePath(); sCtx.clip();
+        }
+        var grad = sCtx.createRadialGradient(lc, lc, 0, lc, lc, radius);
+        var coreStop = Math.max(0.02, Math.min(0.95, 1 - softness));
+        var midStop = Math.max(coreStop + 0.01, Math.min(0.98, coreStop + (1 - coreStop) * 0.55));
+        var maxAlpha = Math.min(0.88, intensity * 0.48);
+        grad.addColorStop(0, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + maxAlpha + ')');
+        grad.addColorStop(coreStop, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (maxAlpha * 0.85) + ')');
+        grad.addColorStop(midStop, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (maxAlpha * 0.35) + ')');
+        grad.addColorStop(1, 'rgba(' + cr + ',' + cg + ',' + cb + ',0)');
+        sCtx.fillStyle = grad;
+        sCtx.fillRect(0, 0, dia, dia);
+        sCtx.restore();
+        if (cfg.castShadows) {
+          sCtx.save();
+          sCtx.globalCompositeOperation = 'destination-out';
+          sCtx.fillStyle = 'rgba(0,0,0,0.92)';
+          occluders.forEach(function (occ) {
+            var ow = Math.abs(occ.transform.width * occ.transform.scaleX), oh = Math.abs(occ.transform.height * occ.transform.scaleY);
+            var ox = occ.transform.x - ow * (occ.transform.anchorX || 0.5) - sim.cameraPos.x;
+            var oy = occ.transform.y - oh * (occ.transform.anchorY || 0.5) - sim.cameraPos.y;
+            var corners = [[ox, oy], [ox + ow, oy], [ox + ow, oy + oh], [ox, oy + oh]];
+            var minA = Infinity, maxA = -Infinity, cP1 = corners[0], cP2 = corners[0];
+            var refA = Math.atan2(oy + oh * 0.5 - cy, ox + ow * 0.5 - cx);
+            corners.forEach(function (pt) {
+              var a = Math.atan2(Math.sin(Math.atan2(pt[1] - cy, pt[0] - cx) - refA), Math.cos(Math.atan2(pt[1] - cy, pt[0] - cx) - refA));
+              if (a < minA) { minA = a; cP1 = pt; }
+              if (a > maxA) { maxA = a; cP2 = pt; }
+            });
+            if (Math.hypot(ox + ow * 0.5 - cx, oy + oh * 0.5 - cy) <= radius * 1.15) {
+              var ext = radius * 2;
+              var l1x = cP1[0] - cx + lc, l1y = cP1[1] - cy + lc, l2x = cP2[0] - cx + lc, l2y = cP2[1] - cy + lc;
+              var ang1 = refA + minA, ang2 = refA + maxA;
+              sCtx.beginPath();
+              sCtx.moveTo(l1x, l1y);
+              sCtx.lineTo(l1x + Math.cos(ang1) * ext, l1y + Math.sin(ang1) * ext);
+              sCtx.lineTo(l2x + Math.cos(ang2) * ext, l2y + Math.sin(ang2) * ext);
+              sCtx.lineTo(l2x, l2y);
+              sCtx.closePath();
+              sCtx.fill();
+            }
+          });
+          sCtx.restore();
+        }
+        lightCtx.drawImage(singleLightCanvas, cx - lc, cy - lc);
+      });
+      lightTexture.source.update();
+    }
 
     var baseWorldPos = { x: 0, y: 0 };
     var currentScale = 1;
@@ -1042,8 +1494,19 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
         screenFlash: null,
         flashTimers: new Map(),
         visualSquash: new Map(),
+        scriptObjectData: new Map(),
+        startedScriptBindings: new Set(),
+        scriptActivePairs: new Set(),
+        scriptTweens: [],
+        dynamicWidgets: [],
+        dynamicToasts: [],
         shakeRemaining: 0,
-        shakeIntensity: 0
+        shakeIntensity: 0,
+        mpSocket: null,
+        mpRemotes: new Map(),
+        mpRoomId: (sc.multiplayer && sc.multiplayer.roomId) || 'sala_global',
+        mpPlayerId: 'p2d_' + Math.random().toString(36).slice(2, 9),
+        mpLastSend: 0
       };
     }
 
@@ -1055,17 +1518,25 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       var node;
 
       if (obj.type === 'sprite') {
-        var baseTex = obj.sprite && obj.sprite.assetId ? textures.get(obj.sprite.assetId) : null;
+        var fsmSt = obj.sprite && obj.sprite.animation ? obj.sprite.animation.fsmActiveState : null;
+        var resolvedAid = (fsmSt && fsmSt.assetId) || (obj.sprite && obj.sprite.assetId);
+        var baseTex = resolvedAid ? textures.get(resolvedAid) : null;
         if (baseTex) {
           baseTex.source.scaleMode = obj.sprite.sampling === 'nearest' ? 'nearest' : 'linear';
           var anim = obj.sprite.animation;
           var activeTex = baseTex;
-          if (anim && anim.enabled) {
-            var cols = Math.max(1, anim.cols || 1);
-            var rows = Math.max(1, anim.rows || 1);
-            var total = Math.max(1, Math.min(anim.frameCount || cols * rows, cols * rows));
+          if ((anim && anim.enabled) || fsmSt) {
+            var cols = Math.max(1, (fsmSt && fsmSt.cols) || (anim && anim.cols) || 1);
+            var rows = Math.max(1, (fsmSt && fsmSt.rows) || (anim && anim.rows) || 1);
+            var startF = fsmSt ? Math.max(0, fsmSt.startFrame || 0) : 0;
+            var total = fsmSt
+              ? Math.max(1, Math.min(fsmSt.frameCount || 1, cols * rows - startF))
+              : Math.max(1, Math.min((anim && anim.frameCount) || cols * rows, cols * rows));
             var frames = [];
-            for (var f = 0; f < total; f++) frames.push(sliceSubTexture(baseTex, f % cols, Math.floor(f / cols), cols, rows));
+            for (var f = 0; f < total; f++) {
+              var fi = Math.min(cols * rows - 1, startF + f);
+              frames.push(sliceSubTexture(baseTex, fi % cols, Math.floor(fi / cols), cols, rows));
+            }
             var animSprite = new PIXI.AnimatedSprite(frames);
             var layA = computeSpriteLayout(w, h, ax, ay, frames[0].width, frames[0].height, obj.sprite.fitMode || 'contain', obj.sprite.cropRect);
             animSprite.anchor.set(ax, ay);
@@ -1073,9 +1544,11 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             animSprite.width = Math.max(1, layA.drawWidth);
             animSprite.height = Math.max(1, layA.drawHeight);
             animSprite.tint = parseColor(obj.sprite.tint, 0xffffff);
-            animSprite.animationSpeed = Math.max(0.01, (anim.fps || 8) / 60);
-            animSprite.loop = anim.loop !== false;
-            if (anim.playing !== false) animSprite.play();
+            var aFps = (fsmSt && fsmSt.fps) || (anim && anim.fps) || 8;
+            var aLoop = fsmSt ? fsmSt.loop !== false : (!anim || anim.loop !== false);
+            animSprite.animationSpeed = Math.max(0.01, aFps / 60);
+            animSprite.loop = aLoop;
+            if (!anim || anim.playing !== false) animSprite.play();
             sim.animatedSprites.push(animSprite);
             var wrapA = new PIXI.Container();
             wrapA.addChild(animSprite);
@@ -1086,13 +1559,31 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
               wrapA.addChild(maskA);
               animSprite.mask = maskA;
             }
+            wrapA.__fsmKey = (resolvedAid || '') + ':' + cols + ':' + rows + ':' + startF + ':' + total + ':' + aFps + ':' + aLoop;
+            wrapA.__animSprite = animSprite;
             node = wrapA;
           } else {
             var lay = computeSpriteLayout(w, h, ax, ay, activeTex.width, activeTex.height, obj.sprite.fitMode || 'contain', obj.sprite.cropRect);
             if (lay.sourceCrop) {
               activeTex = new PIXI.Texture({ source: activeTex.source, frame: new PIXI.Rectangle(lay.sourceCrop.x, lay.sourceCrop.y, lay.sourceCrop.width, lay.sourceCrop.height) });
             }
-            if (lay.tiled) {
+            if (obj.sprite.fitMode === 'nine_slice') {
+              var ns = obj.sprite.nineSlice || { left: 16, right: 16, top: 16, bottom: 16 };
+              var wrapNs = new PIXI.Container();
+              var nsSpr = new PIXI.NineSliceSprite({
+                texture: activeTex,
+                leftWidth: Math.max(1, Number(ns.left || 16)),
+                topHeight: Math.max(1, Number(ns.top || 16)),
+                rightWidth: Math.max(1, Number(ns.right || 16)),
+                bottomHeight: Math.max(1, Number(ns.bottom || 16)),
+                width: Math.max(1, w),
+                height: Math.max(1, h)
+              });
+              nsSpr.position.set(-w * ax, -h * ay);
+              nsSpr.tint = parseColor(obj.sprite.tint, 0xffffff);
+              wrapNs.addChild(nsSpr);
+              node = wrapNs;
+            } else if (lay.tiled) {
               var tileSpr = new PIXI.TilingSprite({ texture: activeTex, width: lay.drawWidth, height: lay.drawHeight });
               tileSpr.anchor.set(ax, ay);
               tileSpr.tint = parseColor(obj.sprite.tint, 0xffffff);
@@ -1305,14 +1796,880 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       }
     }
 
+    var uiOverlay = document.createElement('div');
+    uiOverlay.id = 'nx-ui-widgets-layer';
+    uiOverlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:15;overflow:hidden;';
+    var widgetsHost2D = document.createElement('div');
+    widgetsHost2D.style.cssText = 'position:absolute;inset:0;pointer-events:none;';
+    var dynWidgetsHost2D = document.createElement('div');
+    dynWidgetsHost2D.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:35;';
+    var toastHost2D = document.createElement('div');
+    toastHost2D.style.cssText = 'position:absolute;top:16px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;z-index:45;';
+    var dialogueHost2D = document.createElement('div');
+    dialogueHost2D.style.cssText = 'position:absolute;left:50%;bottom:24px;transform:translateX(-50%);width:min(680px,92%);pointer-events:auto;z-index:55;display:none;';
+    uiOverlay.appendChild(widgetsHost2D);
+    uiOverlay.appendChild(dynWidgetsHost2D);
+    uiOverlay.appendChild(toastHost2D);
+    uiOverlay.appendChild(dialogueHost2D);
+    document.getElementById('nx-root').appendChild(uiOverlay);
+
+    var assetPathMap2D = new Map();
+    (gameData.assets || []).forEach(function (a) { assetPathMap2D.set(a.id, a.path); });
+    var i18nCfg2D = gameData.i18n || { defaultLocale: 'es', autoDetectBrowser: true, entries: {} };
+    var activeLocale2D = i18nCfg2D.defaultLocale || 'es';
+    if (i18nCfg2D.autoDetectBrowser && typeof navigator !== 'undefined') {
+      var navLang2D = String(navigator.language || '').toLowerCase().slice(0, 2);
+      if (navLang2D === 'es' || navLang2D === 'en' || navLang2D === 'pt') activeLocale2D = navLang2D;
+    }
+    var dataTables2D = gameData.dataTables || [];
+    var dialogues2D = gameData.dialogues || [];
+    var activeDialogue2D = null;
+
+    function t2D(key) {
+      var ent = i18nCfg2D && i18nCfg2D.entries ? i18nCfg2D.entries[key] : null;
+      if (!ent) return key;
+      return ent[activeLocale2D] || ent[i18nCfg2D.defaultLocale || 'es'] || ent.es || ent.en || ent.pt || key;
+    }
+    function queryDataTable2D(tableRef, rowKey) {
+      var tbl = dataTables2D.find(function (tb) { return tb.id === tableRef || String(tb.name || '').toLowerCase() === String(tableRef || '').toLowerCase(); });
+      if (!tbl) return null;
+      if (rowKey === undefined || rowKey === null || rowKey === '') return tbl.rows || [];
+      if (typeof rowKey === 'number') return (tbl.rows && tbl.rows[rowKey]) || null;
+      var m = (tbl.rows || []).find(function (r) { return String(r.id || '') === String(rowKey) || String(r.name || '') === String(rowKey); });
+      if (m) return m;
+      var num = Number(rowKey);
+      return !isNaN(num) && tbl.rows ? (tbl.rows[num] || null) : null;
+    }
+    function evalDialogueCond2D(expr, sim) {
+      var raw = String(expr || '').trim();
+      if (!raw) return true;
+      var m = raw.match(/^([a-zA-Z0-9_.-]+)\\s*(==|!=|>=|<=|>|<)\\s*(.+)$/);
+      if (!m) return Boolean(sim && sim.variables.get(raw));
+      var lhs = sim ? sim.variables.get(m[1]) : undefined;
+      var rhs = m[3].trim();
+      if ((rhs[0] === '"' && rhs[rhs.length - 1] === '"') || (rhs[0] === "'" && rhs[rhs.length - 1] === "'")) rhs = rhs.slice(1, -1);
+      else if (rhs === 'true') rhs = true;
+      else if (rhs === 'false') rhs = false;
+      else if (!isNaN(Number(rhs))) rhs = Number(rhs);
+      var ln = Number(lhs), rn = Number(rhs);
+      var bothN = typeof lhs === 'number' || (typeof rhs === 'number' && !isNaN(ln) && String(lhs || '') !== '');
+      if (m[2] === '==') return bothN ? ln === rn : String(lhs || '') === String(rhs || '');
+      if (m[2] === '!=') return bothN ? ln !== rn : String(lhs || '') !== String(rhs || '');
+      if (m[2] === '>') return ln > rn;
+      if (m[2] === '>=') return ln >= rn;
+      if (m[2] === '<') return ln < rn;
+      if (m[2] === '<=') return ln <= rn;
+      return true;
+    }
+    function interpDialogueStr2D(txt, sim) {
+      var out = String(txt || '').replace(/@t\\(([^)]+)\\)/g, function (_m, k) { return t2D(String(k).trim()); });
+      return out.replace(/\\{\\{([a-zA-Z0-9_.-]+)\\}\\}/g, function (_m, k) {
+        var v = sim && sim.variables ? sim.variables.get(k) : '';
+        return v === undefined || v === null ? '' : String(v);
+      });
+    }
+    function renderDialogueOverlay2D() {
+      if (!activeDialogue2D || !activeSim) {
+        dialogueHost2D.style.display = 'none';
+        dialogueHost2D.innerHTML = '';
+        return;
+      }
+      dialogueHost2D.style.display = 'block';
+      var st = activeDialogue2D;
+      var portraitUrl = st.portraitAssetId ? assetPathMap2D.get(st.portraitAssetId) : null;
+      var shown = st.fullText.slice(0, Math.floor(st.revealedChars));
+      dialogueHost2D.innerHTML = '';
+      var box = document.createElement('div');
+      box.style.cssText = 'background:rgba(15,23,42,0.96);border:2px solid rgba(56,189,248,0.55);border-radius:14px;padding:14px 16px;box-shadow:0 12px 32px rgba(0,0,0,0.6);display:flex;gap:14px;align-items:flex-start;font-family:sans-serif;color:#f8fafc;';
+      if (portraitUrl) {
+        var img = document.createElement('img');
+        img.src = portraitUrl;
+        img.style.cssText = 'width:68px;height:68px;border-radius:10px;object-fit:cover;border:1px solid rgba(148,163,184,0.4);flex-shrink:0;';
+        box.appendChild(img);
+      }
+      var col = document.createElement('div');
+      col.style.cssText = 'flex:1;min-width:0;';
+      var spk = document.createElement('div');
+      spk.style.cssText = 'font-size:12px;font-weight:700;color:#38bdf8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;';
+      spk.textContent = st.speaker || 'NPC';
+      var body = document.createElement('div');
+      body.style.cssText = 'font-size:14px;line-height:1.45;min-height:40px;color:#e2e8f0;';
+      body.textContent = shown;
+      col.appendChild(spk);
+      col.appendChild(body);
+      var btns = document.createElement('div');
+      btns.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;justify-content:flex-end;';
+      if (!st.finishedTyping) {
+        var skipB = document.createElement('button');
+        skipB.textContent = 'Continuar';
+        skipB.style.cssText = 'background:#334155;color:#f8fafc;border:1px solid #475569;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;';
+        skipB.onclick = function () { advanceDialogue2D(null); };
+        btns.appendChild(skipB);
+      } else if (st.choices && st.choices.length > 0) {
+        st.choices.forEach(function (ch, idx) {
+          var cb = document.createElement('button');
+          cb.textContent = ch.text;
+          cb.style.cssText = 'background:#0284c7;color:#ffffff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;';
+          cb.onclick = function () { advanceDialogue2D(idx); };
+          btns.appendChild(cb);
+        });
+      } else {
+        var nextB = document.createElement('button');
+        nextB.textContent = st.nextNodeId ? 'Siguiente' : 'Cerrar';
+        nextB.style.cssText = 'background:#0284c7;color:#ffffff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;';
+        nextB.onclick = function () { advanceDialogue2D(null); };
+        btns.appendChild(nextB);
+      }
+      col.appendChild(btns);
+      box.appendChild(col);
+      dialogueHost2D.appendChild(box);
+    }
+    function openDialogueNode2D(graph, nodeId) {
+      if (!graph || !graph.nodes || graph.nodes.length === 0 || !activeSim) { activeDialogue2D = null; renderDialogueOverlay2D(); return; }
+      var node = graph.nodes.find(function (n) { return n.id === nodeId; }) || graph.nodes.find(function (n) { return n.id === graph.startNodeId; }) || graph.nodes[0];
+      if (!node) { activeDialogue2D = null; renderDialogueOverlay2D(); return; }
+      var ft = interpDialogueStr2D(node.text, activeSim);
+      var visChoices = (node.choices || []).filter(function (c) { return evalDialogueCond2D(c.conditionExpr, activeSim); }).map(function (c) {
+        return Object.assign({}, c, { text: interpDialogueStr2D(c.text, activeSim) });
+      });
+      activeDialogue2D = {
+        graphId: graph.id, nodeId: node.id, speaker: interpDialogueStr2D(node.speaker, activeSim),
+        portraitAssetId: node.portraitAssetId || null, fullText: ft,
+        revealedChars: ft.length <= 1 ? ft.length : 1, typewriterSpeed: Math.max(5, Math.min(200, node.typewriterSpeed || 45)),
+        finishedTyping: ft.length <= 1, choices: visChoices, nextNodeId: node.nextNodeId || null
+      };
+      renderDialogueOverlay2D();
+    }
+    function startDialogue2D(idOrName) {
+      var g = dialogues2D.find(function (d) { return d.id === idOrName || d.name === idOrName; });
+      if (g) openDialogueNode2D(g, g.startNodeId);
+    }
+    function advanceDialogue2D(choiceIdx) {
+      if (!activeDialogue2D || !activeSim) return;
+      if (!activeDialogue2D.finishedTyping) {
+        activeDialogue2D.revealedChars = activeDialogue2D.fullText.length;
+        activeDialogue2D.finishedTyping = true;
+        renderDialogueOverlay2D();
+        return;
+      }
+      var g = dialogues2D.find(function (d) { return d.id === activeDialogue2D.graphId; });
+      var nextId = activeDialogue2D.nextNodeId;
+      if (choiceIdx !== null && choiceIdx >= 0 && activeDialogue2D.choices[choiceIdx]) {
+        var ch = activeDialogue2D.choices[choiceIdx];
+        if (ch.actionVar) {
+          if (ch.actionOp === 'add') activeSim.variables.set(ch.actionVar, Number(activeSim.variables.get(ch.actionVar) || 0) + Number(ch.actionValue || 0));
+          else activeSim.variables.set(ch.actionVar, ch.actionValue !== undefined ? ch.actionValue : true);
+        }
+        if (ch.actionEvent) activeSim.emittedEvents.push(ch.actionEvent);
+        nextId = ch.nextNodeId || null;
+      } else if (activeDialogue2D.choices && activeDialogue2D.choices.length > 0) {
+        return;
+      }
+      if (!g || !nextId) { activeDialogue2D = null; renderDialogueOverlay2D(); return; }
+      openDialogueNode2D(g, nextId);
+    }
+
+    function compileUserScript2D(sc) {
+      if (!sc || sc.kind !== 'script') return null;
+      var raw = String(sc.code || '');
+      var commentParams = {};
+      var pmRe = /\\/\\/\\s*@param\\s+([a-zA-Z0-9_]+)\\s*:\\s*(number|boolean|string)\\s*=\\s*([^\\r\\n]+)/g;
+      var pm;
+      while ((pm = pmRe.exec(raw)) !== null) {
+        var pk = pm[1], pt = pm[2], pv = pm[3].trim();
+        commentParams[pk] = pt === 'number' ? (Number(pv) || 0) : pt === 'boolean' ? pv === 'true' : pv.replace(/^['"]|['"]$/g, '');
+      }
+      var cleaned = raw
+        .replace(/^\\s*import\\s+[\\s\\S]*?\\s+from\\s+['"][^'"]+['"];?\\s*$/gm, '')
+        .replace(/^\\s*import\\s+['"][^'"]+['"];?\\s*$/gm, '')
+        .replace(/^\\s*export\\s*\\{[^}]*\\};?\\s*$/gm, '')
+        .replace(/^\\s*export\\s+default\\s+/gm, 'var __nexusDefaultExport = ')
+        .replace(/^\\s*export\\s+(async\\s+)?function\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/gm, function (_m, ak, fnN) { return (ak ? 'async ' : '') + 'function ' + fnN; })
+        .replace(/^\\s*export\\s+class\\s+/gm, 'class ')
+        .replace(/^\\s*export\\s+(const|let|var)\\s+/gm, '$1 ');
+      var fnNames = new Set(['onStart', 'onUpdate', 'onCollisionEnter', 'onClick', 'onDestroy']);
+      var fnRe = /(?:export\\s+)?(?:async\\s+)?function\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(/g;
+      var mFn;
+      while ((mFn = fnRe.exec(raw)) !== null) fnNames.add(mFn[1]);
+      var vrRe = /(?:^|\\n)\\s*(?:export\\s+)?(?:const|let|var)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=/g;
+      while ((mFn = vrRe.exec(raw)) !== null) {
+        if (mFn[1] !== 'params' && mFn[1] !== '__nexusDefaultExport') fnNames.add(mFn[1]);
+      }
+      var autoExpose = Array.from(fnNames).map(function (n) {
+        return 'try { if (typeof ' + n + ' === "function" && typeof result[' + JSON.stringify(n) + '] !== "function") result[' + JSON.stringify(n) + '] = ' + n + '; } catch (_) {}';
+      }).join('\\n');
+      var wrapped = '"use strict";\\nvar exports = {};\\nvar module = { exports: exports };\\nvar __nexusDefaultExport = undefined;\\n' + cleaned +
+        '\\nvar result = {};' +
+        '\\nif (typeof __nexusDefaultExport === "object" && __nexusDefaultExport !== null) { Object.assign(result, __nexusDefaultExport); }' +
+        '\\nelse if (typeof __nexusDefaultExport === "function") {' +
+        '\\n  var _pr = __nexusDefaultExport.prototype;' +
+        '\\n  if (_pr && (typeof _pr.onStart === "function" || typeof _pr.onUpdate === "function" || typeof _pr.onCollisionEnter === "function")) {' +
+        '\\n    try { var _ins = new __nexusDefaultExport(); if (_ins && typeof _ins === "object") { Object.assign(result, _ins); Object.getOwnPropertyNames(_pr).forEach(function (_k) { if (_k !== "constructor" && typeof _pr[_k] === "function" && !result[_k]) result[_k] = _pr[_k].bind(_ins); }); } } catch (_) {}' +
+        '\\n  } else { result.onUpdate = __nexusDefaultExport; }' +
+        '\\n}' +
+        '\\nif (module.exports && typeof module.exports === "object" && Object.keys(module.exports).length > 0) Object.assign(result, module.exports);' +
+        '\\ntry { if (typeof params === "object" && params !== null && !result.params) result.params = params; } catch (_) {}' +
+        '\\n' + autoExpose + '\\nreturn result;';
+      try {
+        var hooks = new Function(wrapped)() || {};
+        if (Object.keys(commentParams).length > 0) {
+          hooks.params = Object.assign({}, commentParams, hooks.params && typeof hooks.params === 'object' ? hooks.params : {});
+        }
+        return { id: sc.id, name: sc.name, hooks: hooks };
+      } catch (e) {
+        console.warn('[NEXUS Script Error]', sc.name, e);
+        return { id: sc.id, name: sc.name, hooks: Object.keys(commentParams).length > 0 ? { params: commentParams } : {}, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
+    var compiledScripts2D = new Map();
+    (gameData.scripts || []).forEach(function (sc) {
+      var resC = compileUserScript2D(sc);
+      if (resC) compiledScripts2D.set(sc.id, resC);
+    });
+
+    function makeScriptHandle2D(obj, sim, objMap, params) {
+      var body = sim.bodies.get(obj.id);
+      if (!sim.scriptObjectData) sim.scriptObjectData = new Map();
+      var data = sim.scriptObjectData.get(obj.id);
+      if (!data) { data = {}; sim.scriptObjectData.set(obj.id, data); }
+      return {
+        get id() { return obj.id; },
+        get name() { return obj.name; },
+        get type() { return obj.type; },
+        get tags() { return obj.tags || []; },
+        get x() { return obj.transform.x; },
+        set x(v) { if (Number.isFinite(v)) obj.transform.x = v; },
+        get y() { return obj.transform.y; },
+        set y(v) { if (Number.isFinite(v)) obj.transform.y = v; },
+        get z() { return 0; },
+        set z(_v) {},
+        get rx() { return 0; },
+        set rx(_v) {},
+        get ry() { return 0; },
+        set ry(_v) {},
+        get rz() { return obj.transform.rotation; },
+        set rz(v) { if (Number.isFinite(v)) obj.transform.rotation = v; },
+        get rotation() { return obj.transform.rotation; },
+        set rotation(v) { if (Number.isFinite(v)) obj.transform.rotation = v; },
+        get vx() { return body ? body.vx : 0; },
+        set vx(v) { if (body && Number.isFinite(v)) { body.vx = v; body.scriptVelocityDriven = true; } },
+        get vy() { return body ? body.vy : 0; },
+        set vy(v) { if (body && Number.isFinite(v)) { body.vy = v; body.scriptVelocityDriven = true; } },
+        get vz() { return 0; },
+        set vz(_v) {},
+        get scaleX() { return obj.transform.scaleX; },
+        set scaleX(v) { if (Number.isFinite(v)) obj.transform.scaleX = v; },
+        get scaleY() { return obj.transform.scaleY; },
+        set scaleY(v) { if (Number.isFinite(v)) obj.transform.scaleY = v; },
+        get scaleZ() { return 1; },
+        set scaleZ(_v) {},
+        get opacity() { return obj.opacity; },
+        set opacity(v) { if (Number.isFinite(v)) obj.opacity = v; },
+        get visible() { return obj.visible; },
+        set visible(v) { obj.visible = Boolean(v); },
+        get isGrounded() { return Boolean(body && body.grounded); },
+        get speed() { return body ? Math.hypot(body.vx, body.vy) : 0; },
+        data: data,
+        params: params || {},
+        hasTag: function (tag) { return Array.isArray(obj.tags) && obj.tags.indexOf(tag) >= 0; },
+        addTag: function (tag) { if (!Array.isArray(obj.tags)) obj.tags = []; if (tag && obj.tags.indexOf(tag) < 0) obj.tags.push(tag); },
+        removeTag: function (tag) { if (Array.isArray(obj.tags)) obj.tags = obj.tags.filter(function (t) { return t !== tag; }); },
+        moveTowards: function (targetOrX, speedOrY, dtOrMaxStep, maybeDt) {
+          var tx = obj.transform.x, ty = obj.transform.y, maxStep = 0;
+          if (typeof targetOrX === 'object' && targetOrX !== null) {
+            tx = Number(targetOrX.x !== undefined ? targetOrX.x : obj.transform.x);
+            ty = Number(targetOrX.y !== undefined ? targetOrX.y : obj.transform.y);
+            maxStep = Number(speedOrY || 0) * Number(dtOrMaxStep || 0);
+          } else {
+            tx = Number(targetOrX); ty = Number(speedOrY);
+            maxStep = maybeDt !== undefined ? Number(dtOrMaxStep || 0) * Number(maybeDt || 0) : Number(dtOrMaxStep || 0);
+          }
+          if (!Number.isFinite(tx) || !Number.isFinite(ty) || maxStep <= 0) return;
+          var dx = tx - obj.transform.x, dy = ty - obj.transform.y, d = Math.hypot(dx, dy);
+          if (d > 0.001) { var s = Math.min(d, maxStep); obj.transform.x += (dx / d) * s; obj.transform.y += (dy / d) * s; }
+        },
+        applyImpulse: function (ix, iy) { if (body) { body.vx += Number(ix || 0); body.vy += Number(iy || 0); body.scriptVelocityDriven = true; } },
+        setVelocity: function (vx, vy) { if (body) { body.vx = Number(vx || 0); body.vy = Number(vy || 0); body.scriptVelocityDriven = true; } },
+        playAnim: function (clipName) { if (obj.sprite && obj.sprite.animation) { obj.sprite.animation.activeClip = clipName; obj.sprite.animation.playing = true; } },
+        setAnimState: function (stateName) {
+          var stList = obj.animStateMachine && obj.animStateMachine.states ? obj.animStateMachine.states : [];
+          var matched = stList.find(function (s) { return s.name === stateName || s.id === stateName; });
+          var resolvedName = matched ? matched.name : stateName;
+          obj.stateMachine = { currentState: resolvedName, states: stList.map(function (s) { return s.name; }) };
+          if (obj.sprite) {
+            if (!obj.sprite.animation) {
+              obj.sprite.animation = { enabled: true, cols: (matched && matched.cols) || 4, rows: (matched && matched.rows) || 1, frameCount: (matched && matched.frameCount) || 4, fps: 8, loop: true, playing: true };
+            }
+            var a2 = obj.sprite.animation;
+            a2.enabled = true;
+            a2.playing = true;
+            a2.activeClip = matched ? matched.clipName : stateName;
+            if (matched) {
+              a2.fsmActiveState = {
+                stateName: matched.name,
+                assetId: matched.assetId || obj.sprite.assetId,
+                cols: matched.cols || a2.cols || 4,
+                rows: matched.rows || a2.rows || 1,
+                startFrame: matched.startFrame || 0,
+                frameCount: matched.frameCount || a2.frameCount || 4,
+                fps: Math.max(1, (a2.fps || 8) * Math.max(0.1, matched.timeScale || 1)),
+                loop: matched.loopMode !== 'LoopOnce'
+              };
+            }
+          }
+        },
+        playState: function (stateName) { this.setAnimState(stateName); },
+        call: function (methodName) {
+          var extraArgs = Array.prototype.slice.call(arguments, 1);
+          var list = obj.scriptBindings || [];
+          for (var i = 0; i < list.length; i++) {
+            var b = list[i]; if (!b.enabled) continue;
+            var e = compiledScripts2D.get(b.scriptId);
+            if (e && e.hooks && typeof e.hooks[methodName] === 'function') {
+              var mPrm = Object.assign({}, e.hooks.params || {}, b.params || {});
+              var fnArgs = [makeScriptHandle2D(obj, sim, objMap, mPrm)].concat(extraArgs).concat([makeScriptApi2D(sim, objMap, 0)]);
+              return e.hooks[methodName].apply(e.hooks, fnArgs);
+            }
+          }
+          return undefined;
+        },
+        destroy: function () { obj.visible = false; }
+      };
+    }
+
+    function makeSceneScriptHandle2D(sid, sim, objMap, params) {
+      if (!sim.scriptObjectData) sim.scriptObjectData = new Map();
+      var key = '__scene__:' + sim.scene.id + ':' + sid;
+      var data = sim.scriptObjectData.get(key);
+      if (!data) { data = {}; sim.scriptObjectData.set(key, data); }
+      return {
+        id: sim.scene.id, name: sim.scene.name, type: 'scene', tags: ['scene'],
+        x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, rotation: 0, vx: 0, vy: 0, vz: 0,
+        scaleX: 1, scaleY: 1, scaleZ: 1, opacity: 1, visible: true, isGrounded: false, speed: 0,
+        data: data, params: params || {},
+        hasTag: function (t) { return t === 'scene'; }, addTag: function () {}, removeTag: function () {},
+        moveTowards: function () {}, applyImpulse: function () {}, setVelocity: function () {},
+        playAnim: function () {}, setAnimState: function () {}, playState: function () {},
+        call: function (methodName) {
+          var extraArgs = Array.prototype.slice.call(arguments, 1);
+          var e = compiledScripts2D.get(sid);
+          if (e && e.hooks && typeof e.hooks[methodName] === 'function') {
+            var fnArgs = [makeSceneScriptHandle2D(sid, sim, objMap, Object.assign({}, e.hooks.params || {}))].concat(extraArgs).concat([makeScriptApi2D(sim, objMap, 0)]);
+            return e.hooks[methodName].apply(e.hooks, fnArgs);
+          }
+          return undefined;
+        },
+        destroy: function () {}
+      };
+    }
+
+    function makeScriptApi2D(sim, objMap, dt) {
+      var playSfx2D = function (id, v) {
+        var vol = v !== undefined ? Number(v) : 0.85;
+        if (rawAudioData && rawAudioData.has(id)) playAudioAsset(id, vol, 1, 'sfx', false);
+        else playSynth(id || 'coin', vol, 1, 'sfx');
+      };
+      return {
+        dt: dt,
+        time: sim.elapsed,
+        findByName: function (name) {
+          var f = sim.scene.objects.find(function (o) { return o.visible && o.name === name; });
+          return f ? makeScriptHandle2D(f, sim, objMap, {}) : null;
+        },
+        findById: function (id) {
+          var f = objMap.get(id);
+          return f && f.visible ? makeScriptHandle2D(f, sim, objMap, {}) : null;
+        },
+        findByTag: function (tag) {
+          return sim.scene.objects.filter(function (o) { return o.visible && o.tags && o.tags.indexOf(tag) >= 0; }).map(function (o) { return makeScriptHandle2D(o, sim, objMap, {}); });
+        },
+        getAll: function () {
+          return sim.scene.objects.filter(function (o) { return o.visible; }).map(function (o) { return makeScriptHandle2D(o, sim, objMap, {}); });
+        },
+        spawnPrefab: function (nameOrId, x, y) {
+          var sx = x !== undefined ? x : stageW * 0.5, sy = y !== undefined ? y : stageH * 0.5;
+          var pfFound = null;
+          prefabMap.forEach(function (pf) { if (!pfFound && (pf.id === nameOrId || pf.name === nameOrId)) pfFound = pf; });
+          if (pfFound && pfFound.objects && pfFound.objects.length > 0) {
+            var rootOrig = pfFound.objects.find(function (o) { return o.id === pfFound.rootObjectId; }) || pfFound.objects[0];
+            var bx = rootOrig ? rootOrig.transform.x : 0, by = rootOrig ? rootOrig.transform.y : 0;
+            var spawnedFirst = null;
+            pfFound.objects.forEach(function (orig, idx) {
+              var copy = cloneData(orig);
+              copy.id = 'inst_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '_' + idx;
+              copy.parentId = null; copy.visible = true;
+              copy.transform.x = sx + (orig.transform.x - bx); copy.transform.y = sy + (orig.transform.y - by);
+              sim.scene.objects.push(copy); sim.bodies.set(copy.id, createBodyForObj(copy)); objMap.set(copy.id, copy);
+              var dn = createDisplayForObject(copy, sim); sim.nodeMap.set(copy.id, dn); sceneRoot.addChild(dn);
+              if (!spawnedFirst) spawnedFirst = copy;
+            });
+            return spawnedFirst ? makeScriptHandle2D(spawnedFirst, sim, objMap, {}) : null;
+          }
+          var tplO = sim.scene.objects.find(function (o) { return o.id === nameOrId || o.name === nameOrId; });
+          if (tplO) {
+            var cloned = cloneIntoScene(sim, objMap, tplO, sx, sy);
+            return makeScriptHandle2D(cloned, sim, objMap, {});
+          }
+          return null;
+        },
+        destroyById: function (id) { var f = objMap.get(id); if (f) f.visible = false; },
+        emitEvent: function (evn) { if (evn) sim.emittedEvents.push(evn); },
+        log: function (m) { console.log('[NEXUS Script]', m); },
+        vars: {
+          get: function (n) { return sim.variables.get(n); },
+          set: function (n, val) {
+            sim.variables.set(n, val);
+            if (sim.persistentVarNames.has(n)) writeStoredVar(n, val);
+            if ((n === 'puntos' || n === 'score') && scoreSpan) scoreSpan.textContent = String(val);
+          },
+          add: function (n, d) {
+            var nv = (Number(sim.variables.get(n) || 0) || 0) + Number(d || 0);
+            sim.variables.set(n, nv);
+            if (sim.persistentVarNames.has(n)) writeStoredVar(n, nv);
+            if ((n === 'puntos' || n === 'score') && scoreSpan) scoreSpan.textContent = String(nv);
+            return nv;
+          }
+        },
+        audio: {
+          play: playSfx2D,
+          playSfx: playSfx2D,
+          playMusic: function (id, vol) { playMusicAsset(id, vol !== undefined ? vol : 0.8, true, true); },
+          stopMusic: function () { stopMusic(); },
+          setBusVolume: function (bus, vol) { buses[bus] = Math.max(0, Math.min(1, Number(vol || 0.8))); syncBusGains(); },
+          setBusMuted: function (bus, muted) { buses.muted = buses.muted || {}; buses.muted[bus] = Boolean(muted); syncBusGains(); }
+        },
+        particles: {
+          burst: function (x, y, presetOrColor, countOrPreset, maybeCount) {
+            var cnt = typeof countOrPreset === 'number' ? countOrPreset : (typeof maybeCount === 'number' ? maybeCount : 16);
+            var rawSt = typeof presetOrColor === 'string' ? presetOrColor : (typeof countOrPreset === 'string' ? countOrPreset : '#fde047');
+            var colHex = rawSt.indexOf('#') === 0 ? rawSt : '#fde047';
+            sim.particles.push({ x: Number(x || 0), y: Number(y || 0), color: parseColor(colHex, 0xfde047), count: Math.max(4, Math.min(40, Number(cnt) || 14)), age: 0, duration: 0.45 });
+          }
+        },
+        vfx: {
+          emit: function (opts) {
+            if (!opts) return;
+            var tgt = typeof opts.target === 'string'
+              ? sim.scene.objects.find(function (o) { return o.id === opts.target || o.name === opts.target; })
+              : (opts.target && opts.target.id ? objMap.get(opts.target.id) : null);
+            var x = opts.x !== undefined ? Number(opts.x) : (tgt ? tgt.transform.x : stageW * 0.5);
+            var y = opts.y !== undefined ? Number(opts.y) : (tgt ? tgt.transform.y : stageH * 0.5);
+            var presetId = opts.preset || 'sparks';
+            var defs = getParticleDefaults(presetId);
+            emitBurstFromConfig(sim, x, y, Object.assign({}, defs, { preset: presetId, colorStart: opts.color || defs.colorStart }), Math.max(4, Math.min(60, Number(opts.count !== undefined ? opts.count : 20))));
+          },
+          spawnBurst: function (x, y, zOrPreset, presetOrColor, count) {
+            var rawSt = typeof zOrPreset === 'string' ? zOrPreset : (presetOrColor || 'sparks');
+            var isHex = rawSt.indexOf('#') === 0;
+            var presetId = !isHex ? rawSt : 'sparks';
+            var defs = getParticleDefaults(presetId);
+            emitBurstFromConfig(sim, Number(x || 0), Number(y || 0), Object.assign({}, defs, { preset: presetId, colorStart: isHex ? rawSt : defs.colorStart }), Math.max(4, Math.min(60, Number(count !== undefined ? count : 20))));
+          }
+        },
+        tween: function (target, props, durationSec) {
+          var tid = typeof target === 'string' ? target : (target && target.id);
+          var twO = sim.scene.objects.find(function (o) { return o.id === tid || o.name === tid; });
+          if (!twO || !props) return;
+          var from = {}, to = {};
+          Object.keys(props).forEach(function (k) {
+            var v = props[k];
+            if (typeof v !== 'number' || !isFinite(v)) return;
+            to[k] = v;
+            if (k === 'x') from[k] = twO.transform.x;
+            else if (k === 'y') from[k] = twO.transform.y;
+            else if (k === 'rotation' || k === 'rz') from[k] = twO.transform.rotation;
+            else if (k === 'scaleX') from[k] = twO.transform.scaleX;
+            else if (k === 'scaleY') from[k] = twO.transform.scaleY;
+            else if (k === 'opacity') from[k] = twO.opacity;
+          });
+          if (!sim.scriptTweens) sim.scriptTweens = [];
+          sim.scriptTweens.push({ targetId: twO.id, elapsed: 0, duration: Math.max(0.02, durationSec || 0.35), from: from, to: to });
+        },
+        camera: {
+          shake: function (i, d) { sim.shakeIntensity = Math.max(sim.shakeIntensity, Number(i || 8)); sim.shakeRemaining = Math.max(sim.shakeRemaining, Number(d || 0.25)); },
+          switchCamera: function (ref) {
+            var f = sim.scene.objects.find(function (o) { return o.id === ref || o.name === ref; });
+            if (f) { sim.scene.cameraConfig = sim.scene.cameraConfig || {}; sim.scene.cameraConfig.followObjectId = f.id; }
+          },
+          getForward: function () { return { x: 1, y: 0, z: 0 }; },
+          getRight: function () { return { x: 1, y: 0, z: 0 }; },
+          setPosition: function (x, y) {
+            if (Number.isFinite(x)) sim.cameraPos.x = x;
+            if (Number.isFinite(y)) sim.cameraPos.y = y;
+          },
+          lookAt: function (x, y) {
+            if (Number.isFinite(x)) sim.cameraPos.x = x - stageW * 0.5;
+            if (Number.isFinite(y)) sim.cameraPos.y = y - stageH * 0.5;
+          },
+          blendTo: function (opts) {
+            if (!opts) return;
+            if (opts.x !== undefined && Number.isFinite(opts.x)) sim.cameraPos.x = opts.x;
+            if (opts.y !== undefined && Number.isFinite(opts.y)) sim.cameraPos.y = opts.y;
+          }
+        },
+        scene: {
+          load: function (ref) { var t = scenes.find(function (s) { return s.id === ref || s.name === ref; }); sim.pendingSceneCommand = { kind: 'load', sceneId: t ? t.id : String(ref), transition: 'fadeBlack' }; },
+          restart: function () { sim.pendingSceneCommand = { kind: 'restart', transition: 'fadeBlack' }; },
+          nextLevel: function () { sim.pendingSceneCommand = { kind: 'nextLevel', sceneId: sim.scene.nextSceneId, transition: 'fadeBlack' }; }
+        },
+        dialogue: {
+          start: function (idOrName) { startDialogue2D(String(idOrName || '')); },
+          close: function () { activeDialogue2D = null; renderDialogueOverlay2D(); },
+          isOpen: function () { return Boolean(activeDialogue2D); }
+        },
+        data: {
+          get: function (tableNameOrId, rowKeyOrIdx) { return queryDataTable2D(tableNameOrId, rowKeyOrIdx); },
+          listTables: function () { return dataTables2D.map(function (t) { return t.name; }); }
+        },
+        i18n: {
+          t: function (key) { return t2D(String(key || '')); },
+          getLocale: function () { return activeLocale2D; },
+          setLocale: function (loc) { if (loc === 'es' || loc === 'en' || loc === 'pt') { activeLocale2D = loc; syncWidgetsDom2D(sim); } }
+        },
+        ui: {
+          open: function (t) { setWidgetDisplay(t, 'open'); },
+          close: function (t) { setWidgetDisplay(t, 'close'); },
+          toggle: function (t) { setWidgetDisplay(t, 'toggle'); },
+          showToast: function (text, durationSec) {
+            if (!sim.dynamicToasts) sim.dynamicToasts = [];
+            var clean = String(text || '').trim();
+            if (!clean) return;
+            sim.dynamicToasts.push({ id: 'toast_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), text: clean, remaining: Math.max(0.4, Number(durationSec !== undefined ? durationSec : 2.5)) });
+            if (sim.dynamicToasts.length > 5) sim.dynamicToasts.shift();
+            syncWidgetsDom2D(sim);
+          },
+          createWidget: function (id, html, opts) {
+            if (!sim.dynamicWidgets) sim.dynamicWidgets = [];
+            var cid = String(id || '').trim();
+            if (!cid) return;
+            var idx = sim.dynamicWidgets.findIndex(function (w) { return w.id === cid; });
+            var ent = { id: cid, html: String(html || ''), x: opts && opts.x !== undefined ? opts.x : 24, y: opts && opts.y !== undefined ? opts.y : 24, css: opts && opts.css, visible: true };
+            if (idx >= 0) sim.dynamicWidgets[idx] = ent;
+            else sim.dynamicWidgets.push(ent);
+            syncWidgetsDom2D(sim);
+          },
+          updateWidget: function (id, patch) {
+            if (!sim.dynamicWidgets || !patch) return;
+            var w = sim.dynamicWidgets.find(function (item) { return item.id === id; });
+            if (!w) return;
+            if (patch.html !== undefined) w.html = patch.html;
+            if (patch.text !== undefined) w.html = patch.text;
+            if (patch.visible !== undefined) w.visible = Boolean(patch.visible);
+            syncWidgetsDom2D(sim);
+          },
+          removeWidget: function (id) {
+            if (!sim.dynamicWidgets) return;
+            var idx = sim.dynamicWidgets.findIndex(function (item) { return item.id === id; });
+            if (idx >= 0) { sim.dynamicWidgets.splice(idx, 1); syncWidgetsDom2D(sim); }
+          },
+          clearWidgets: function () {
+            if (!sim.dynamicWidgets) return;
+            sim.dynamicWidgets.length = 0;
+            syncWidgetsDom2D(sim);
+          }
+        },
+        spawn: {
+          clone: function (nameOrId, x, y) {
+            var tpl = sim.scene.objects.find(function (o) { return o.id === nameOrId || o.name === nameOrId; });
+            if (tpl) {
+              var sp = cloneIntoScene(sim, objMap, tpl, x !== undefined ? x : stageW * 0.5, y !== undefined ? y : stageH * 0.5);
+              return makeScriptHandle2D(sp, sim, objMap, {});
+            }
+            return makeScriptApi2D(sim, objMap, dt).spawnPrefab(nameOrId, x, y);
+          },
+          primitive: function (shape, opts) {
+            var o = opts || {};
+            var id = 'prim2d_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+            var size = Math.max(16, Number(o.sx !== undefined ? o.sx : 1) * 48);
+            var hSize = Math.max(16, Number(o.sy !== undefined ? o.sy : 1) * 48);
+            var pObj = {
+              id: id,
+              name: o.name || ('Forma_' + (sim.scene.objects.length + 1)),
+              type: shape === 'sphere' ? 'circle' : 'rectangle',
+              parentId: null, visible: true, locked: false, opacity: 1, layer: 'World', tags: ['spawned'],
+              transform: { x: Number(o.x !== undefined ? o.x : stageW * 0.5), y: Number(o.y !== undefined ? o.y : stageH * 0.5), rotation: 0, scaleX: 1, scaleY: 1, width: size, height: hSize, anchorX: 0.5, anchorY: 0.5 },
+              rectangle: shape !== 'sphere' ? { fillColor: o.color || '#38bdf8', strokeColor: '#ffffff', strokeWidth: 0, cornerRadius: 4 } : undefined,
+              circle: shape === 'sphere' ? { fillColor: o.color || '#38bdf8', strokeColor: '#ffffff', strokeWidth: 0, radius: size * 0.5 } : undefined,
+              components: o.physics === false ? [] : [{ id: id + '_c', type: o.dynamic ? 'rigidbody_box' : 'solid', enabled: true, config: {} }]
+            };
+            sim.scene.objects.push(pObj);
+            objMap.set(id, pObj);
+            sim.bodies.set(id, createBodyForObj(pObj));
+            var dn = createDisplayForObject(pObj, sim);
+            sim.nodeMap.set(id, dn);
+            sceneRoot.addChild(dn);
+            return makeScriptHandle2D(pObj, sim, objMap, {});
+          }
+        },
+        world: {
+          raycast: function (ox, oy, _oz, dx, dy, _dz, maxDist) {
+            var md = maxDist !== undefined ? Number(maxDist) : 800;
+            var dLen = Math.hypot(dx, dy) || 1;
+            var ndx = dx / dLen, ndy = dy / dLen;
+            var steps = 32;
+            for (var s = 1; s <= steps; s++) {
+              var dist = (md * s) / steps;
+              var px = ox + ndx * dist, py = oy + ndy * dist;
+              for (var ci = 0; ci < sim.scene.objects.length; ci++) {
+                var cand = sim.scene.objects[ci];
+                if (!cand.visible) continue;
+                var cols = getWorldColliders(cand);
+                if (cols.some(function (c) { return px >= c.left && px <= c.right && py >= c.top && py <= c.bottom; })) {
+                  return { hit: true, objectId: cand.id, objectName: cand.name, distance: dist, x: px, y: py, z: 0 };
+                }
+              }
+            }
+            return { hit: false, distance: md, x: ox + ndx * md, y: oy + ndy * md, z: 0 };
+          },
+          getTerrainHeight: function () { return 0; }
+        },
+        lights: {
+          setSun: function (opts) {
+            if (!opts || !sim.scene.lighting) return;
+            if (opts.intensity !== undefined) sim.scene.lighting.ambientIntensity = Number(opts.intensity);
+            if (opts.color !== undefined) sim.scene.lighting.ambientColor = String(opts.color);
+          },
+          setLight: function (nameOrId, opts) {
+            if (!opts) return;
+            var lObj = sim.scene.objects.find(function (o) { return o.id === nameOrId || o.name === nameOrId; });
+            if (!lObj || !lObj.light2d) return;
+            if (opts.intensity !== undefined) lObj.light2d.intensity = Number(opts.intensity);
+            if (opts.color !== undefined) lObj.light2d.color = String(opts.color);
+            if (opts.distance !== undefined) lObj.light2d.radius = Number(opts.distance);
+            if (opts.visible !== undefined) lObj.visible = Boolean(opts.visible);
+          }
+        },
+        input: {
+          isHeld: function (k) { return keyMatch(k, input); },
+          justPressed: function (k) { return keyMatch(k, input) && !keyMatch(k, sim.prevInput); },
+          getAxis: function () {
+            var kx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+            var ky = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+            return { x: Math.abs(input.axisX || 0) > 0.05 ? input.axisX : kx, y: Math.abs(input.axisY || 0) > 0.05 ? input.axisY : ky };
+          }
+        },
+        multiplayer: {
+          isConnected: function () { return Boolean(sim.mpSocket && sim.mpSocket.readyState === 1); },
+          getRemotePlayers: function () { return sim.mpRemotes ? Array.from(sim.mpRemotes.values()) : []; },
+          broadcast: function (evName, payload) {
+            if (sim.mpSocket && sim.mpSocket.readyState === 1) {
+              try { sim.mpSocket.send(JSON.stringify({ type: 'custom_event', roomId: sim.mpRoomId || 'sala_global', playerId: sim.mpPlayerId, event: String(evName || ''), data: payload || {} })); } catch (_) {}
+            }
+          }
+        }
+      };
+    }
+
+    function scopeCss2D(rawCss, scopeAttr) {
+      if (!rawCss || !rawCss.trim()) return '';
+      var prefix = '[data-nx-widget="' + scopeAttr + '"]';
+      return rawCss.replace(/(^|\\})\\s*([^{}@]+)\\{/g, function (_, brace, sel) {
+        var tr = sel.trim();
+        if (!tr) return brace + ' {';
+        if (/^(from|to|\\d+%)$/.test(tr)) return brace + '\\n' + tr + ' {';
+        var pts = tr.split(',').map(function (s) {
+          var p = s.trim();
+          if (!p) return '';
+          if (p === ':host' || p === ':root' || p === 'body') return prefix;
+          return p.indexOf(prefix) >= 0 ? p : prefix + ' ' + p;
+        }).filter(Boolean).join(', ');
+        return brace + '\\n' + pts + ' {';
+      });
+    }
+
+    function applyRepeatsAndI18n2D(container) {
+      if (!container) return;
+      container.querySelectorAll('[data-nexus-i18n]').forEach(function (el) {
+        var k = el.getAttribute('data-nexus-i18n');
+        if (k) el.textContent = t2D(k);
+      });
+      container.querySelectorAll('[data-nexus-repeat]').forEach(function (el) {
+        var tRef = el.getAttribute('data-nexus-repeat');
+        var rows = queryDataTable2D(tRef);
+        if (!Array.isArray(rows)) return;
+        if (!el.__nxTplHtml) {
+          var rowEl = el.querySelector('[data-nexus-row]') || el.firstElementChild;
+          el.__nxTplHtml = rowEl ? rowEl.outerHTML : '<div>{{name}}</div>';
+        }
+        var sig = activeLocale2D + ':' + JSON.stringify(rows);
+        if (el.__nxLastSig === sig) return;
+        el.__nxLastSig = sig;
+        el.innerHTML = rows.map(function (r) {
+          return el.__nxTplHtml.replace(/@t\\(([^)]+)\\)/g, function (_m, k) { return t2D(String(k).trim()); })
+            .replace(/\\{\\{([a-zA-Z0-9_.-]+)\\}\\}/g, function (_m, c) { return r[c] !== undefined && r[c] !== null ? String(r[c]) : ''; });
+        }).join('');
+      });
+    }
+
+    function syncWidgetsDom2D(sim) {
+      if (!sim) return;
+      applyRepeatsAndI18n2D(widgetsHost2D);
+      applyRepeatsAndI18n2D(dynWidgetsHost2D);
+      widgetsHost2D.querySelectorAll('[data-nexus-var], [data-nexus-progress]').forEach(function (el) {
+        var vn = el.getAttribute('data-nexus-var');
+        if (vn && sim.variables.has(vn)) el.textContent = String(sim.variables.get(vn));
+        var pg = el.getAttribute('data-nexus-progress');
+        if (pg) {
+          var ps = pg.split('/');
+          var v = Number(sim.variables.get(ps[0]) || 0);
+          var m = Math.max(1, Number(ps[1] || 100));
+          el.style.width = Math.max(0, Math.min(100, (v / m) * 100)) + '%';
+        }
+      });
+      var dynArr = sim.dynamicWidgets || [];
+      var dynKey = dynArr.map(function (w) { return w.id + '|' + w.visible + '|' + w.x + '|' + w.y + '|' + w.html; }).join(';;');
+      if (dynWidgetsHost2D.__lastKey !== dynKey) {
+        dynWidgetsHost2D.__lastKey = dynKey;
+        dynWidgetsHost2D.innerHTML = '';
+        var dynCss = '';
+        dynArr.forEach(function (dw) {
+          if (!dw.visible) return;
+          if (dw.css) dynCss += scopeCss2D(dw.css, dw.id) + '\\n';
+          var dEl = document.createElement('div');
+          dEl.setAttribute('data-nx-widget', dw.id);
+          dEl.style.cssText = 'position:absolute;left:' + (dw.x || 24) + 'px;top:' + (dw.y || 24) + 'px;pointer-events:auto;z-index:35;';
+          dEl.innerHTML = String(dw.html || '').replace(/@t\\(([^)]+)\\)/g, function (_m, k) { return t2D(String(k).trim()); });
+          dynWidgetsHost2D.appendChild(dEl);
+        });
+        var dynStyle = document.getElementById('nx-dyn-widgets-style-2d');
+        if (dynCss) {
+          if (!dynStyle) {
+            dynStyle = document.createElement('style');
+            dynStyle.id = 'nx-dyn-widgets-style-2d';
+            document.head.appendChild(dynStyle);
+          }
+          dynStyle.textContent = dynCss;
+        } else if (dynStyle) {
+          dynStyle.textContent = '';
+        }
+      }
+      var toasts = sim.dynamicToasts || [];
+      var tKey = toasts.map(function (t) { return t.id + ':' + t.text; }).join('|');
+      if (toastHost2D.__lastKey !== tKey) {
+        toastHost2D.__lastKey = tKey;
+        toastHost2D.innerHTML = '';
+        toasts.forEach(function (t) {
+          var badge = document.createElement('div');
+          badge.style.cssText = 'background:rgba(15,23,42,0.92);color:#f8fafc;border:1px solid rgba(56,189,248,0.45);border-radius:10px;padding:7px 14px;font:600 13px/1.3 sans-serif;box-shadow:0 6px 20px rgba(0,0,0,0.45);';
+          badge.textContent = t.text;
+          toastHost2D.appendChild(badge);
+        });
+      }
+    }
+
+    function mountWidgetsForSim(sim) {
+      widgetsHost2D.innerHTML = '';
+      dynWidgetsHost2D.innerHTML = '';
+      dynWidgetsHost2D.__lastKey = '';
+      toastHost2D.innerHTML = '';
+      toastHost2D.__lastKey = '';
+      var oldStyle = document.getElementById('nx-widgets-style-2d');
+      if (oldStyle) oldStyle.remove();
+      var st = document.createElement('style');
+      st.id = 'nx-widgets-style-2d';
+      var cssTxt = '';
+      (sim.scene.objects || []).forEach(function (o) {
+        if (o.type !== 'ui_widget' || !o.uiWidget) return;
+        var w = o.uiWidget;
+        cssTxt += scopeCss2D(w.css || '', o.id) + '\\n';
+        var el = document.createElement('div');
+        el.setAttribute('data-nx-widget', o.id);
+        el.style.cssText = 'position:absolute;left:' + o.transform.x + 'px;top:' + o.transform.y + 'px;width:' + o.transform.width + 'px;height:' + o.transform.height + 'px;pointer-events:' + (w.interactive !== false ? 'auto' : 'none') + ';z-index:' + (w.zIndex || 25) + ';display:' + (o.visible && w.visibleAtStart !== false ? 'block' : 'none') + ';';
+        el.innerHTML = String(w.html || '').replace(/@t\\(([^)]+)\\)/g, function (_m, k) { return t2D(String(k).trim()); });
+        el.addEventListener('click', function (ev) {
+          var tgt = ev.target && ev.target.closest ? ev.target.closest('[data-nexus-action]') : null;
+          if (!tgt) return;
+          var act = tgt.getAttribute('data-nexus-action') || '';
+          var prm = tgt.getAttribute('data-nexus-param') || '';
+          var val = tgt.getAttribute('data-nexus-value') || '';
+          if (act === 'pause.toggle') setPaused(!paused);
+          else if (act === 'ui.closeSelf') el.style.display = 'none';
+          else if (act === 'scene.restart') loadSceneById(sim.scene.id, 'none');
+          else if (act === 'scene.load') loadSceneById(prm, 'fadeBlack');
+          else if (act === 'audio.play') playSynth(prm || 'coin', Number(val || 0.8), 1, 'ui');
+          else if (act === 'var.add') sim.variables.set(prm, Number(sim.variables.get(prm) || 0) + Number(val || 1));
+          else if (act === 'var.set') sim.variables.set(prm, isNaN(Number(val)) ? val : Number(val));
+          else if (act === 'event.emit') sim.emittedEvents.push(prm);
+          else if (act === 'dialogue.start') startDialogue2D(prm);
+        });
+        widgetsHost2D.appendChild(el);
+      });
+      st.textContent = cssTxt;
+      document.head.appendChild(st);
+      syncWidgetsDom2D(sim);
+    }
+
+    function setWidgetDisplay(targetIdOrName, op) {
+      var targetEl = widgetsHost2D.querySelector('[data-nx-widget="' + targetIdOrName + '"]') || dynWidgetsHost2D.querySelector('[data-nx-widget="' + targetIdOrName + '"]');
+      if (!targetEl && activeSim) {
+        var found = activeSim.scene.objects.find(function (o) { return o.type === 'ui_widget' && o.name === targetIdOrName; });
+        if (found) targetEl = widgetsHost2D.querySelector('[data-nx-widget="' + found.id + '"]');
+      }
+      if (!targetEl) return;
+      if (op === 'open') targetEl.style.display = 'block';
+      else if (op === 'close') targetEl.style.display = 'none';
+      else targetEl.style.display = targetEl.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function connectMultiplayer2D(sim) {
+      if (!sim || !sim.scene || !sim.scene.multiplayer || !sim.scene.multiplayer.enabled) return;
+      if (typeof WebSocket === 'undefined' || typeof location === 'undefined') return;
+      var mp = sim.scene.multiplayer;
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var wsUrl = mp.serverUrl || (proto + '//' + location.host + '/ws/multiplayer');
+      try {
+        var ws = new WebSocket(wsUrl);
+        sim.mpSocket = ws;
+        ws.addEventListener('open', function () {
+          try {
+            ws.send(JSON.stringify({
+              type: 'join',
+              roomId: sim.mpRoomId || 'sala_global',
+              playerId: sim.mpPlayerId,
+              name: sim.mpPlayerId,
+              mode: '2d',
+              sceneId: sim.scene.id,
+              maxPlayers: mp.maxPlayers || 16
+            }));
+          } catch (_) {}
+        });
+        ws.addEventListener('message', function (ev) {
+          try {
+            var msg = JSON.parse(String(ev.data));
+            if (msg.type === 'room_snapshot' && msg.snapshot) {
+              sim.mpRoomId = msg.snapshot.roomId || sim.mpRoomId;
+              sim.mpRemotes.clear();
+              (msg.snapshot.players || []).forEach(function (pl) {
+                if (pl && pl.playerId !== sim.mpPlayerId) sim.mpRemotes.set(pl.playerId, pl);
+              });
+            } else if ((msg.type === 'player_joined' || msg.type === 'player_state') && msg.player) {
+              if (msg.player.playerId !== sim.mpPlayerId) sim.mpRemotes.set(msg.player.playerId, msg.player);
+            } else if (msg.type === 'player_left' && msg.playerId) {
+              sim.mpRemotes.delete(String(msg.playerId));
+            }
+          } catch (_) {}
+        });
+      } catch (_) {}
+    }
+
     function loadSceneById(sceneId, transition) {
       var target = scenes.find(function (s) { return s.id === sceneId; });
       if (!target) return false;
-      if (activeSim) syncPersistentFrom(activeSim);
+      if (activeSim) {
+        syncPersistentFrom(activeSim);
+        if (activeSim.mpSocket) { try { activeSim.mpSocket.close(); } catch (_) {} activeSim.mpSocket = null; }
+      }
       sceneStack = [];
       activeSim = buildSimState(target);
+      if (app.renderer) {
+        app.renderer.resolution = Math.min(window.devicePixelRatio || 1, getMaxDpr2D(activeSim.scene));
+        resizeWorld();
+      }
       mountActiveScene(activeSim);
+      mountWidgetsForSim(activeSim);
       queueSceneMusic(activeSim, false);
+      connectMultiplayer2D(activeSim);
       if (transition && transition !== 'none') transitionEffect = { type: transition, progress: 0, duration: 0.3 };
       return true;
     }
@@ -1358,32 +2715,77 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     var startScene = scenes.find(function (s) { return s.id === (gameData.initialSceneId || gameData.activeSceneId); }) || scenes[0];
     loadSceneById(startScene.id, 'none');
 
-    // Entradas universales (KeyboardEvent.code) y puntero/táctil
+    // Entradas universales (KeyboardEvent.code), Joystick Analógico 360°, Gamepad y Puntero
     var pressedKeys = new Set();
+    var justPressedKeys2d = new Set();
     var swipeStart = null;
+    var touchCfg = gameData.settings && gameData.settings.touchControls ? gameData.settings.touchControls : {};
+    var touchOverlayEl = document.getElementById('nx-touch-controls');
+    if (touchOverlayEl && (touchCfg.enabledByDefault || ${JSON.stringify(Boolean(options.touchControls))})) {
+      touchOverlayEl.classList.remove('hidden');
+      touchOverlayEl.style.opacity = String(Math.max(0.25, Math.min(1, touchCfg.opacity || 0.85)));
+    }
+    var touchAxis = { x: 0, y: 0 };
+    var touchBtns = { jump: false, action: false, dash: false };
     var input = {
       left: false, right: false, up: false, down: false, jump: false, action1: false, action2: false,
+      axisX: 0, axisY: 0,
       pointerX: undefined, pointerY: undefined, pointerDown: false, pointerJustPressed: false, pointerJustReleased: false, swipeDir: null, pressedKeys: []
     };
+    function pollGamepadState() {
+      if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return null;
+      var pads = navigator.getGamepads();
+      if (!pads) return null;
+      for (var i = 0; i < pads.length; i++) {
+        var pd = pads[i];
+        if (!pd || !pd.connected) continue;
+        var rx = pd.axes[0] || 0;
+        var ry = pd.axes[1] || 0;
+        var dl = pd.buttons[14] && pd.buttons[14].pressed ? -1 : 0;
+        var dr = pd.buttons[15] && pd.buttons[15].pressed ? 1 : 0;
+        var du = pd.buttons[12] && pd.buttons[12].pressed ? -1 : 0;
+        var dd = pd.buttons[13] && pd.buttons[13].pressed ? 1 : 0;
+        var v = computeJoystickVector(Math.abs(rx) > 0.18 ? rx : dl + dr, Math.abs(ry) > 0.18 ? ry : du + dd, 1, 0.18);
+        return {
+          x: v.x, y: v.y,
+          jump: Boolean(pd.buttons[0] && pd.buttons[0].pressed),
+          action: Boolean((pd.buttons[2] && pd.buttons[2].pressed) || (pd.buttons[1] && pd.buttons[1].pressed)),
+          dash: Boolean((pd.buttons[3] && pd.buttons[3].pressed) || (pd.buttons[5] && pd.buttons[5].pressed) || (pd.buttons[7] && pd.buttons[7].pressed))
+        };
+      }
+      return null;
+    }
     function syncLegacyKeys() {
-      input.left = pressedKeys.has('ArrowLeft') || pressedKeys.has('KeyA');
-      input.right = pressedKeys.has('ArrowRight') || pressedKeys.has('KeyD');
-      input.up = pressedKeys.has('ArrowUp') || pressedKeys.has('KeyW');
-      input.down = pressedKeys.has('ArrowDown') || pressedKeys.has('KeyS');
-      input.jump = pressedKeys.has('Space');
-      input.action1 = pressedKeys.has('KeyE') || pressedKeys.has('KeyJ') || pressedKeys.has('KeyZ');
-      input.action2 = pressedKeys.has('KeyK') || pressedKeys.has('KeyX') || pressedKeys.has('ShiftLeft');
+      var gp = pollGamepadState();
+      var kX = (pressedKeys.has('ArrowRight') || pressedKeys.has('KeyD') ? 1 : 0) - (pressedKeys.has('ArrowLeft') || pressedKeys.has('KeyA') ? 1 : 0);
+      var kY = (pressedKeys.has('ArrowDown') || pressedKeys.has('KeyS') ? 1 : 0) - (pressedKeys.has('ArrowUp') || pressedKeys.has('KeyW') ? 1 : 0);
+      var ax = kX !== 0 ? kX : (Math.abs(touchAxis.x) > 0.05 ? touchAxis.x : (gp ? gp.x : 0));
+      var ay = kY !== 0 ? kY : (Math.abs(touchAxis.y) > 0.05 ? touchAxis.y : (gp ? gp.y : 0));
+      input.axisX = ax;
+      input.axisY = ay;
+      input.left = pressedKeys.has('ArrowLeft') || pressedKeys.has('KeyA') || ax < -0.22;
+      input.right = pressedKeys.has('ArrowRight') || pressedKeys.has('KeyD') || ax > 0.22;
+      input.up = pressedKeys.has('ArrowUp') || pressedKeys.has('KeyW') || ay < -0.22;
+      input.down = pressedKeys.has('ArrowDown') || pressedKeys.has('KeyS') || ay > 0.22;
+      input.jump = pressedKeys.has('Space') || touchBtns.jump || Boolean(gp && gp.jump);
+      input.action1 = pressedKeys.has('KeyE') || pressedKeys.has('KeyJ') || pressedKeys.has('KeyZ') || touchBtns.action || Boolean(gp && gp.action);
+      input.action2 = pressedKeys.has('KeyK') || pressedKeys.has('KeyX') || pressedKeys.has('ShiftLeft') || touchBtns.dash || Boolean(gp && gp.dash);
       input.pressedKeys = Array.from(pressedKeys);
     }
     function clearAllInput() {
       pressedKeys.clear();
+      touchAxis.x = 0; touchAxis.y = 0;
+      touchBtns.jump = false; touchBtns.action = false; touchBtns.dash = false;
       syncLegacyKeys();
       input.pointerDown = false;
     }
     window.addEventListener('keydown', function (e) {
       ensureAudio();
       var code = e.code || e.key;
-      if (code) pressedKeys.add(code);
+      if (code) {
+        if (!pressedKeys.has(code)) justPressedKeys2d.add(code);
+        pressedKeys.add(code);
+      }
       syncLegacyKeys();
     });
     window.addEventListener('keyup', function (e) {
@@ -1419,7 +2821,8 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
         var o = objs[i];
         if (!o.visible) continue;
         var hasClickTrigger = !uiOnly && o.components && o.components.some(function (c) { return c.enabled && c.type === 'audio.sound_trigger' && c.config && c.config.event === 'onClick'; });
-        if (o.type !== 'ui_button' && !hasClickTrigger) continue;
+        var hasScriptClick = !uiOnly && o.scriptBindings && o.scriptBindings.some(function (b) { var ce = b.enabled && compiledScripts2D.get(b.scriptId); return ce && ce.hooks && typeof ce.hooks.onClick === 'function'; });
+        if (o.type !== 'ui_button' && !hasClickTrigger && !hasScriptClick) continue;
         var w = Math.abs(o.transform.width * o.transform.scaleX);
         var h = Math.abs(o.transform.height * o.transform.scaleY);
         var l = o.transform.x - w * o.transform.anchorX;
@@ -1458,12 +2861,76 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       }
     });
 
-    document.querySelectorAll('[data-key]').forEach(function (btn) {
-      var k = btn.getAttribute('data-key');
-      btn.addEventListener('pointerdown', function () { ensureAudio(); input[k] = true; });
-      btn.addEventListener('pointerup', function () { input[k] = false; });
-      btn.addEventListener('pointercancel', function () { input[k] = false; });
-      btn.addEventListener('pointerleave', function () { input[k] = false; });
+    var joyZone = document.getElementById('nx-joystick-zone');
+    var joyRing = document.getElementById('nx-joystick-ring');
+    var joyKnob = document.getElementById('nx-joystick-knob');
+    var joyPid = null;
+    var joyOrig = { x: 0, y: 0 };
+    var joySize = Math.max(84, Math.min(180, touchCfg.joystickSize || 112));
+    var joyMaxTravel = Math.round(joySize * 0.38);
+    if (joyRing && joyKnob) {
+      joyRing.style.width = joySize + 'px';
+      joyRing.style.height = joySize + 'px';
+      joyKnob.style.width = Math.round(joySize * 0.44) + 'px';
+      joyKnob.style.height = Math.round(joySize * 0.44) + 'px';
+    }
+    if (joyZone && joyRing && joyKnob) {
+      joyZone.addEventListener('pointerdown', function (e) {
+        if (joyPid !== null) return;
+        ensureAudio();
+        e.stopPropagation();
+        try { joyZone.setPointerCapture(e.pointerId); } catch (_) {}
+        joyPid = e.pointerId;
+        if (touchCfg.mode === 'floating') {
+          var zr = joyZone.getBoundingClientRect();
+          var lx = Math.max(8, Math.min(zr.width - joySize - 8, e.clientX - zr.left - joySize * 0.5));
+          var ly = Math.max(8, Math.min(zr.height - joySize - 8, e.clientY - zr.top - joySize * 0.5));
+          joyRing.style.left = lx + 'px'; joyRing.style.top = ly + 'px'; joyRing.style.bottom = 'auto';
+          joyOrig = { x: e.clientX, y: e.clientY };
+        } else {
+          var rr = joyRing.getBoundingClientRect();
+          joyOrig = { x: rr.left + rr.width * 0.5, y: rr.top + rr.height * 0.5 };
+        }
+        var dx0 = e.clientX - joyOrig.x; var dy0 = e.clientY - joyOrig.y;
+        var d0 = Math.hypot(dx0, dy0); var c0 = Math.min(joyMaxTravel, d0);
+        joyKnob.style.transform = 'translate3d(' + (d0 > 0.01 ? (dx0 / d0) * c0 : 0).toFixed(1) + 'px,' + (d0 > 0.01 ? (dy0 / d0) * c0 : 0).toFixed(1) + 'px,0)';
+        var v0 = computeJoystickVector(dx0, dy0, joyMaxTravel, touchCfg.deadzone);
+        touchAxis.x = v0.x; touchAxis.y = v0.y;
+        syncLegacyKeys();
+      });
+      joyZone.addEventListener('pointermove', function (e) {
+        if (joyPid !== e.pointerId) return;
+        e.stopPropagation();
+        var dx1 = e.clientX - joyOrig.x; var dy1 = e.clientY - joyOrig.y;
+        var d1 = Math.hypot(dx1, dy1); var c1 = Math.min(joyMaxTravel, d1);
+        joyKnob.style.transform = 'translate3d(' + (d1 > 0.01 ? (dx1 / d1) * c1 : 0).toFixed(1) + 'px,' + (d1 > 0.01 ? (dy1 / d1) * c1 : 0).toFixed(1) + 'px,0)';
+        var v1 = computeJoystickVector(dx1, dy1, joyMaxTravel, touchCfg.deadzone);
+        touchAxis.x = v1.x; touchAxis.y = v1.y;
+        syncLegacyKeys();
+      });
+      function resetTouchStick(e) {
+        if (joyPid !== e.pointerId) return;
+        joyPid = null;
+        joyKnob.style.transform = 'translate3d(0px,0px,0)';
+        if (touchCfg.mode === 'floating') {
+          joyRing.style.left = '22px'; joyRing.style.bottom = '22px'; joyRing.style.top = 'auto';
+        }
+        touchAxis.x = 0; touchAxis.y = 0;
+        syncLegacyKeys();
+      }
+      joyZone.addEventListener('pointerup', resetTouchStick);
+      joyZone.addEventListener('pointercancel', resetTouchStick);
+    }
+    document.querySelectorAll('[data-btn]').forEach(function (btn) {
+      var bName = btn.getAttribute('data-btn');
+      btn.addEventListener('pointerdown', function (e) {
+        ensureAudio(); e.stopPropagation();
+        touchBtns[bName] = true; syncLegacyKeys();
+      });
+      function upBtn(e) { e.stopPropagation(); touchBtns[bName] = false; syncLegacyKeys(); }
+      btn.addEventListener('pointerup', upBtn);
+      btn.addEventListener('pointercancel', upBtn);
+      btn.addEventListener('pointerleave', upBtn);
     });
 
     var paused = false;
@@ -1492,7 +2959,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       });
     }
 
-    function collectSolids(sim) {
+    function collectSolids(sim, damageZones) {
       var boxes = [];
       sim.scene.objects.forEach(function (obj) {
         if (!obj.visible) return;
@@ -1506,10 +2973,18 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           var ox = obj.transform.x - tm.cols * tw * obj.transform.anchorX;
           var oy = obj.transform.y - tm.rows * th * obj.transform.anchorY;
           Object.keys(tm.cells || {}).forEach(function (key) {
+            var tileIdx = Number(tm.cells[key]);
+            var tMeta = tm.tileTypes && tm.tileTypes[String(tileIdx)] ? tm.tileTypes[String(tileIdx)] : { collision: 'solid' };
+            var cKind = tMeta.collision || 'solid';
+            if (cKind === 'none') return;
             var p = key.split(',');
             var l = ox + Number(p[0]) * tw;
             var t = oy + Number(p[1]) * th;
-            boxes.push({ left: l, right: l + tw, top: t, bottom: t + th, layer: obj.layer || 'Ground', mask: undefined });
+            if (cKind === 'damage') {
+              if (damageZones) damageZones.push({ left: l, right: l + tw, top: t, bottom: t + th, dps: Math.max(1, Number(tMeta.damagePerSec !== undefined ? tMeta.damagePerSec : 15)) });
+              return;
+            }
+            boxes.push({ left: l, right: l + tw, top: t, bottom: t + th, layer: obj.layer || 'Ground', mask: undefined, oneWay: cKind === 'one_way' });
           });
         } else {
           getWorldColliders(obj).forEach(function (c) {
@@ -1525,6 +3000,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       for (var i = 0; i < cols.length; i++) {
         for (var j = 0; j < solids.length; j++) {
           var c = cols[i]; var s = solids[j];
+          if (s.oneWay) continue;
           if (!canLayersCollide(c.layer, s.layer, c.mask, s.mask)) continue;
           if (colsOverlap(c, s)) {
             if (body.vx > 0) obj.transform.x -= c.right - s.left;
@@ -1545,6 +3021,13 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           var c = cols[i]; var s = solids[j];
           if (!canLayersCollide(c.layer, s.layer, c.mask, s.mask)) continue;
           if (colsOverlap(c, s)) {
+            if (s.oneWay) {
+              var prevBot = c.bottom - body.vy * FIXED_DT;
+              if (body.vy >= 0 && prevBot <= s.top + 8) {
+                obj.transform.y -= c.bottom - s.top; body.vy = 0; body.grounded = true;
+              }
+              continue;
+            }
             if (body.vy > 0) { obj.transform.y -= c.bottom - s.top; body.vy = 0; body.grounded = true; }
             else if (body.vy < 0) { obj.transform.y += s.bottom - c.top; body.vy = 0; }
           }
@@ -1666,19 +3149,44 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
     }
 
     function emitBurstFromConfig(sim, x, y, cfg, count) {
-      if (sim.emitterParticles.length >= 420) return;
+      if (sim.emitterParticles.length >= 480) return;
       var angB = ((cfg.angleDeg || 0) * Math.PI) / 180;
       var sprR = ((cfg.spreadDeg || 360) * Math.PI) / 180;
       var sMin = Math.min(cfg.speedMin || 40, cfg.speedMax || 120);
       var sMax = Math.max(cfg.speedMin || 40, cfg.speedMax || 120);
+      var ox = x + (cfg.offsetX || 0);
+      var oy = y + (cfg.offsetY || 0);
+      var eShape = cfg.emitterShape || 'point';
+      var eRad = Math.max(0, cfg.emitterRadius !== undefined ? cfg.emitterRadius : 18);
+      var pShape = cfg.particleShape || ((cfg.preset === 'liquid' || cfg.preset === 'waterfall') ? 'liquid' : (cfg.preset === 'ripple' ? 'ring' : 'circle'));
       for (var i = 0; i < count; i++) {
         var a = angB + (Math.random() - 0.5) * sprR;
         var s = sMin + Math.random() * (sMax - sMin);
+        var sxO = 0, syO = 0;
+        if (eShape === 'ring') {
+          var ra = Math.random() * Math.PI * 2;
+          sxO = Math.cos(ra) * eRad; syO = Math.sin(ra) * eRad;
+        } else if (eShape === 'sphere') {
+          var sa = Math.random() * Math.PI * 2;
+          var sr = Math.sqrt(Math.random()) * eRad;
+          sxO = Math.cos(sa) * sr; syO = Math.sin(sa) * sr;
+        } else if (eShape === 'box') {
+          sxO = (Math.random() - 0.5) * eRad * 2;
+          syO = (Math.random() - 0.5) * eRad * 2;
+        }
         sim.emitterParticles.push({
-          x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, gravity: cfg.gravity || 0,
+          x: ox + sxO, y: oy + syO, vx: Math.cos(a) * s, vy: Math.sin(a) * s, gravity: cfg.gravity || 0,
+          drag: Math.max(0, cfg.drag || 0),
+          turbulence: Math.max(0, cfg.turbulence || 0),
+          particleShape: pShape,
+          sizeCurve: cfg.sizeCurve,
+          alphaCurve: cfg.alphaCurve,
+          speedCurve: cfg.speedCurve,
           sizeStart: cfg.sizeStart || 5, sizeEnd: cfg.sizeEnd !== undefined ? cfg.sizeEnd : 1,
           colorStart: cfg.colorStart || '#fde047', colorEnd: cfg.colorEnd || '#ef4444',
-          alpha: cfg.blendAlpha !== undefined ? cfg.blendAlpha : 0.9,
+          alpha: cfg.alphaStart !== undefined ? cfg.alphaStart : (cfg.blendAlpha !== undefined ? cfg.blendAlpha : 0.9),
+          alphaEnd: cfg.alphaEnd !== undefined ? cfg.alphaEnd : 0,
+          additive: Boolean(cfg.additive),
           age: 0, maxAge: Math.max(0.08, (cfg.lifetime || 0.6) * (0.85 + Math.random() * 0.3))
         });
       }
@@ -1717,13 +3225,40 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       sceneRoot.addChild(dn);
     }
 
-    function runActionList(actions, mechId, sim, objMap) {
+    function hasAiLos2D(ax, ay, bx, by, solids) {
+      var d = Math.hypot(bx - ax, by - ay);
+      var steps = Math.max(2, Math.ceil(d / 16));
+      for (var s = 1; s < steps; s++) {
+        var t = s / steps;
+        var px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
+        for (var j = 0; j < solids.length; j++) {
+          var sc = solids[j];
+          if (!sc.isSensor && px >= sc.left && px <= sc.right && py >= sc.top && py <= sc.bottom) return false;
+        }
+      }
+      return true;
+    }
+
+    function resolveActionTarget2D(ref, objMap, ctx) {
+      if (!ref) return undefined;
+      var s = String(ref).trim();
+      if (!s) return undefined;
+      if (s === '$self' || s === 'self') return ctx && ctx.owner ? ctx.owner : undefined;
+      if (s === '$other' || s === 'other') return ctx && ctx.other ? ctx.other : undefined;
+      var direct = objMap.get(s);
+      if (direct) return direct;
+      var found;
+      objMap.forEach(function (o) { if (!found && o.name === s) found = o; });
+      return found;
+    }
+
+    function runActionList(actions, mechId, sim, objMap, ctx) {
       for (var i = 0; i < actions.length; i++) {
         var act = actions[i];
         var p = act.parameters || {};
         if (act.type === 'wait') {
           var rem = actions.slice(i + 1);
-          if (rem.length > 0) sim.pendingWaits.push({ remainingSec: Math.max(0.01, Number(p.seconds || p.duration || 0.5)), actions: rem, mechId: mechId });
+          if (rem.length > 0) sim.pendingWaits.push({ remainingSec: Math.max(0.01, Number(p.seconds || p.duration || 0.5)), actions: rem, mechId: mechId, ctx: ctx });
           break;
         }
         if (act.type === 'variable.add') {
@@ -1759,7 +3294,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           buses[ch] = Math.max(0, Math.min(1, Number(p.volume !== undefined ? p.volume : 0.8)));
           syncBusGains();
         } else if (act.type === 'object.destroy' || act.type === 'object.hide') {
-          var to = objMap.get(p.target);
+          var to = resolveActionTarget2D(p.target, objMap, ctx);
           if (to && to.visible) {
             to.visible = false;
             (to.components || []).forEach(function (c) {
@@ -1774,24 +3309,24 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             });
           }
         } else if (act.type === 'object.show') {
-          var ts = objMap.get(p.target); if (ts) ts.visible = true;
+          var ts = resolveActionTarget2D(p.target, objMap, ctx); if (ts) ts.visible = true;
         } else if (act.type === 'object.move') {
-          var tm = objMap.get(p.target); if (tm) { tm.transform.x += Number(p.dx || 0); tm.transform.y += Number(p.dy || 0); }
+          var tm = resolveActionTarget2D(p.target, objMap, ctx); if (tm) { tm.transform.x += Number(p.dx || 0); tm.transform.y += Number(p.dy || 0); }
         } else if (act.type === 'object.teleport') {
-          var tt = objMap.get(p.target);
+          var tt = resolveActionTarget2D(p.target, objMap, ctx);
           if (tt) {
             if (p.toCheckpoint && sim.checkpoint) { tt.transform.x = sim.checkpoint.x; tt.transform.y = sim.checkpoint.y; }
             else { if (p.x !== undefined) tt.transform.x = Number(p.x); if (p.y !== undefined) tt.transform.y = Number(p.y); }
             var tb = sim.bodies.get(tt.id); if (tb) { tb.vx = 0; tb.vy = 0; }
           }
         } else if (act.type === 'object.spawn') {
-          var tplO = objMap.get(p.target);
+          var tplO = resolveActionTarget2D(p.target, objMap, ctx);
           if (tplO) {
-            var ancS = p.atObjectId ? objMap.get(p.atObjectId) : null;
+            var ancS = p.atObjectId ? resolveActionTarget2D(p.atObjectId, objMap, ctx) : null;
             cloneIntoScene(sim, objMap, tplO, ancS ? ancS.transform.x + Number(p.offsetX || 0) : Number(p.x !== undefined ? p.x : tplO.transform.x), ancS ? ancS.transform.y + Number(p.offsetY || 0) : Number(p.y !== undefined ? p.y : tplO.transform.y));
           }
         } else if (act.type === 'object.setProperty') {
-          var spO = objMap.get(p.target);
+          var spO = resolveActionTarget2D(p.target, objMap, ctx);
           if (spO) {
             var pr = String(p.property || 'opacity'); var pv = Number(p.value || 0);
             if (pr === 'x') spO.transform.x = pv;
@@ -1804,46 +3339,50 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             else if (pr === 'text' && spO.text) spO.text.text = String(p.value || '');
           }
         } else if (act.type === 'object.rotateToward') {
-          var rtO = objMap.get(p.target); var lkO = objMap.get(p.lookAtTarget);
+          var rtO = resolveActionTarget2D(p.target, objMap, ctx); var lkO = resolveActionTarget2D(p.lookAtTarget, objMap, ctx);
           if (rtO && lkO) rtO.transform.rotation = (Math.atan2(lkO.transform.y - rtO.transform.y, lkO.transform.x - rtO.transform.x) * 180) / Math.PI;
         } else if (act.type === 'object.flash') {
-          var flO = objMap.get(p.target); var flC = String(p.color || '#ffffff'); var flD = Math.max(0.05, Number(p.duration || 0.18));
+          var flO = resolveActionTarget2D(p.target, objMap, ctx); var flC = String(p.color || '#ffffff'); var flD = Math.max(0.05, Number(p.duration || 0.18));
           if (flO) sim.flashTimers.set(flO.id, { color: flC, remaining: flD });
           else sim.screenFlash = { color: flC, alpha: 0.7, duration: flD, age: 0 };
         } else if (act.type === 'component.toggle') {
-          var ctO = objMap.get(p.target);
+          var ctO = resolveActionTarget2D(p.target, objMap, ctx);
           if (ctO && p.componentType) (ctO.components || []).forEach(function (c) { if (c.type === p.componentType) c.enabled = p.enabled === 'toggle' ? !c.enabled : Boolean(p.enabled !== false); });
         } else if (act.type === 'physics.impulse') {
-          var ib = sim.bodies.get(p.target); if (ib) { ib.vx += Number(p.ix || 0); ib.vy += Number(p.iy || 0); }
+          var io = resolveActionTarget2D(p.target, objMap, ctx);
+          var ib = io ? sim.bodies.get(io.id) : null; if (ib) { ib.vx += Number(p.ix || 0); ib.vy += Number(p.iy || 0); }
         } else if (act.type === 'physics.force') {
-          var fb = sim.bodies.get(p.target); if (fb) { fb.ax += Number(p.fx || 0); fb.ay += Number(p.fy || 0); }
+          var fo2 = resolveActionTarget2D(p.target, objMap, ctx);
+          var fb = fo2 ? sim.bodies.get(fo2.id) : null; if (fb) { fb.ax += Number(p.fx || 0); fb.ay += Number(p.fy || 0); }
         } else if (act.type === 'physics.setVelocity') {
-          var vb = sim.bodies.get(p.target);
+          var vo = resolveActionTarget2D(p.target, objMap, ctx);
+          var vb = vo ? sim.bodies.get(vo.id) : null;
           if (vb) { if (p.vx !== undefined && p.vx !== '') vb.vx = Number(p.vx); if (p.vy !== undefined && p.vy !== '') vb.vy = Number(p.vy); }
         } else if (act.type === 'health.damage') {
-          var ho = objMap.get(p.target);
+          var ho = resolveActionTarget2D(p.target, objMap, ctx);
           if (ho) applyDamage(sim, ho, Math.max(0, Number(p.amount || 10)), Number(p.invulnerability !== undefined ? p.invulnerability : 0.35));
         } else if (act.type === 'health.heal') {
-          var hbo = sim.bodies.get(p.target);
+          var hho = resolveActionTarget2D(p.target, objMap, ctx);
+          var hbo = hho ? sim.bodies.get(hho.id) : null;
           if (hbo) { hbo.health = Math.min(hbo.maxHealth, hbo.health + Math.max(0, Number(p.amount || 20))); sim.variables.set('salud', hbo.health); }
         } else if (act.type === 'animation.play') {
-          var anO = objMap.get(p.target);
+          var anO = resolveActionTarget2D(p.target, objMap, ctx);
           if (anO && anO.sprite && anO.sprite.animation) {
             anO.sprite.animation.enabled = true; anO.sprite.animation.playing = true;
             if (p.clip) anO.sprite.animation.activeClip = String(p.clip);
           }
         } else if (act.type === 'tween.play') {
-          var twO = objMap.get(p.target); var tName = String(p.trackName || '').trim();
+          var twO = resolveActionTarget2D(p.target, objMap, ctx); var tName = String(p.trackName || '').trim();
           if (twO && twO.tweens) {
             twO.tweens.forEach(function (tr) {
               if (!tName || tr.name === tName || tr.id === tName) sim.tweenStates.set(twO.id + ':' + tr.id, { elapsed: 0, playing: true });
             });
           }
         } else if (act.type === 'state.set') {
-          var stObj = objMap.get(p.target);
+          var stObj = resolveActionTarget2D(p.target, objMap, ctx);
           if (stObj) stObj.stateMachine = { currentState: String(p.state || 'idle'), states: (stObj.stateMachine && stObj.stateMachine.states) || [] };
         } else if (act.type === 'checkpoint.save') {
-          var cpo = objMap.get(p.target); if (cpo) sim.checkpoint = { x: cpo.transform.x, y: cpo.transform.y };
+          var cpo = resolveActionTarget2D(p.target, objMap, ctx); if (cpo) sim.checkpoint = { x: cpo.transform.x, y: cpo.transform.y };
         } else if (act.type === 'scene.load' && p.sceneId) {
           sim.pendingSceneCommand = { kind: 'load', sceneId: String(p.sceneId), transition: p.transition || 'fadeBlack' };
         } else if (act.type === 'scene.overlay' && p.sceneId) {
@@ -1858,7 +3397,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           setPaused(!paused);
         } else if (act.type === 'prefab.spawn' && prefabMap.has(p.prefabId)) {
           var pf = prefabMap.get(p.prefabId);
-          var anc = p.atObjectId ? objMap.get(p.atObjectId) : null;
+          var anc = p.atObjectId ? resolveActionTarget2D(p.atObjectId, objMap, ctx) : null;
           var sx = anc ? anc.transform.x + Number(p.offsetX || 0) : Number(p.x || 640);
           var sy = anc ? anc.transform.y + Number(p.offsetY || 0) : Number(p.y || 360);
           var rootOrig = pf.objects.find(function (o) { return o.id === pf.rootObjectId; }) || pf.objects[0];
@@ -1880,10 +3419,10 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           sim.shakeIntensity = Math.max(sim.shakeIntensity, Number(p.intensity || 8));
           sim.shakeRemaining = Math.max(sim.shakeRemaining, Number(p.duration || 0.25));
         } else if (act.type === 'particles.burst') {
-          var ptObj = objMap.get(p.target);
+          var ptObj = resolveActionTarget2D(p.target, objMap, ctx);
           sim.particles.push({ x: ptObj ? ptObj.transform.x : stageW / 2, y: ptObj ? ptObj.transform.y : stageH / 2, color: parseColor(p.color, 0x34d399), count: Math.min(24, Number(p.count || 12)), age: 0, duration: 0.45 });
         } else if (act.type === 'particles.emit') {
-          var peObj = objMap.get(p.target);
+          var peObj = resolveActionTarget2D(p.target, objMap, ctx);
           var defs = getParticleDefaults(p.preset || 'explosion');
           emitBurstFromConfig(sim, peObj ? peObj.transform.x : Number(p.x || stageW / 2), peObj ? peObj.transform.y : Number(p.y || stageH / 2), Object.assign({}, defs, { colorStart: p.color || defs.colorStart }), Math.max(4, Math.min(48, Number(p.count || 18))));
         } else if (act.type === 'storage.save') {
@@ -1909,6 +3448,46 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           sim.leaderboardDirty = true;
         } else if (act.type === 'event.emit' && p.eventName) {
           sim.emittedEvents.push(String(p.eventName));
+        } else if (act.type === 'ui.openInterface' && p.target) {
+          setWidgetDisplay(String(p.target), 'open');
+        } else if (act.type === 'ui.closeInterface' && p.target) {
+          setWidgetDisplay(String(p.target), 'close');
+        } else if (act.type === 'ui.toggleInterface' && p.target) {
+          setWidgetDisplay(String(p.target), 'toggle');
+        } else if (act.type === 'dialogue.start') {
+          startDialogue2D(String(p.dialogueId || p.target || ''));
+        } else if (act.type === 'script.call' && p.methodName) {
+          var mName = String(p.methodName).trim();
+          var argArr = p.arg !== undefined && p.arg !== '' ? [p.arg] : null;
+          var targetO = p.target ? resolveActionTarget2D(String(p.target), objMap, ctx) : null;
+          if (targetO) {
+            try {
+              var th = makeScriptHandle2D(targetO, sim, objMap, {});
+              if (argArr) th.call(mName, argArr[0]);
+              else th.call(mName);
+            } catch (err) { console.warn('[NEXUS script.call]', err); }
+          } else if (p.scriptId) {
+            var scE = compiledScripts2D.get(String(p.scriptId));
+            if (scE && scE.hooks && typeof scE.hooks[mName] === 'function') {
+              var mFn = scE.hooks[mName];
+              var apiCall = makeScriptApi2D(sim, objMap, 0);
+              var calledObj = false;
+              sim.scene.objects.forEach(function (so) {
+                var sb = (so.scriptBindings || []).find(function (b) { return b.enabled && b.scriptId === String(p.scriptId); });
+                if (sb) {
+                  calledObj = true;
+                  var sh = makeScriptHandle2D(so, sim, objMap, Object.assign({}, scE.hooks.params || {}, sb.params || {}));
+                  var fArgs = argArr ? [sh, argArr[0], apiCall] : (mFn.length >= 3 ? [sh, undefined, apiCall] : [sh, apiCall]);
+                  try { mFn.apply(scE.hooks, fArgs); } catch (err) { console.warn('[NEXUS script.call]', scE.name, err); }
+                }
+              });
+              if (!calledObj) {
+                var scH = makeSceneScriptHandle2D(String(p.scriptId), sim, objMap, Object.assign({}, scE.hooks.params || {}));
+                var sArgs = argArr ? [scH, argArr[0], apiCall] : (mFn.length >= 3 ? [scH, undefined, apiCall] : [scH, apiCall]);
+                try { mFn.apply(scE.hooks, sArgs); } catch (err) { console.warn('[NEXUS script.call]', scE.name, err); }
+              }
+            }
+          }
         }
       }
     }
@@ -2058,14 +3637,26 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           }
         });
       } else if (c.type === 'ai.enemy_chaser' && players.length > 0) {
-        var et = players[0]; var edx = et.transform.x - obj.transform.x; var edy = et.transform.y - obj.transform.y; var ed = Math.hypot(edx, edy);
-        if (ed <= Number(cfg.detectRadius || 480) && ed > 4) {
-          var es = Number(cfg.speed || 145); body.vx = (edx / ed) * es; body.vy = (edy / ed) * es;
+        var et = players[0]; var etB = sim.bodies.get(et.id);
+        var edx = et.transform.x - obj.transform.x; var edy = et.transform.y - obj.transform.y; var ed = Math.hypot(edx, edy);
+        var ecFlee = Number(cfg.fleeHealthRatio !== undefined ? cfg.fleeHealthRatio : (obj.aiAgent && obj.aiAgent.fleeHealthRatio !== undefined ? obj.aiAgent.fleeHealthRatio : 0.25));
+        var ecInsist = Number(cfg.insistDamageRatio !== undefined ? cfg.insistDamageRatio : (obj.aiAgent && obj.aiAgent.insistDamageRatio !== undefined ? obj.aiAgent.insistDamageRatio : 0.45));
+        var ecFleeing = (body.maxHealth > 0 ? body.health / body.maxHealth : 1) <= ecFlee;
+        var ecInsisting = !ecFleeing && (etB && etB.maxHealth > 0 ? etB.health / etB.maxHealth : 1) <= ecInsist;
+        var ecFov = Number(cfg.visionFovDeg !== undefined ? cfg.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 140));
+        var ecFace = obj.sprite && obj.sprite.flipX ? -1 : 1;
+        var ecInCone = ecFov >= 359 || (ed > 0.001 ? (edx / ed) * ecFace : 1) >= Math.cos(((Math.min(360, ecFov) * 0.5) * Math.PI) / 180) || ed <= 96;
+        var ecLos = cfg.requireLineOfSight !== true || hasAiLos2D(obj.transform.x, obj.transform.y, et.transform.x, et.transform.y, solids);
+        if ((ecFleeing || (ecInCone && ecLos)) && ed <= Number(cfg.detectRadius || 480) && (ecFleeing || ed > 4) && ed > 0.001) {
+          var ecDirX = ecFleeing ? -edx : edx; var ecDirY = ecFleeing ? -edy : edy;
+          var ecLen = Math.hypot(ecDirX, ecDirY) || 1;
+          var es = Number(cfg.speed || 145) * (ecFleeing ? 1.12 : ecInsisting ? 1.25 : 1);
+          body.vx = (ecDirX / ecLen) * es; body.vy = (ecDirY / ecLen) * es;
           obj.transform.x += body.vx * dt; if (cfg.respectSolids !== false) resolveH(obj, body, solids);
           obj.transform.y += body.vy * dt; if (cfg.respectSolids !== false) resolveV(obj, body, solids);
-          if (obj.sprite) obj.sprite.flipX = edx < 0;
-        }
-        if (Number(cfg.contactDamage || 15) > 0 && ed < (obj.transform.width + et.transform.width) * 0.45) applyDamage(sim, et, Number(cfg.contactDamage || 15), 0.5);
+          if (obj.sprite) obj.sprite.flipX = body.vx < 0;
+        } else { body.vx = 0; body.vy = 0; }
+        if (!ecFleeing && Number(cfg.contactDamage || 15) > 0 && ed < (obj.transform.width + et.transform.width) * 0.45) applyDamage(sim, et, Number(cfg.contactDamage || 15), 0.5);
       } else if (c.type === 'ai.turret_shooter' && players.length > 0) {
         var tt = players[0]; var tdx = tt.transform.x - obj.transform.x; var tdy = tt.transform.y - obj.transform.y; var td = Math.hypot(tdx, tdy);
         var tk = 'turret:' + obj.id; var tcd = Math.max(0, (sim.runtimeTimers.get(tk) || 0) - dt); sim.runtimeTimers.set(tk, tcd);
@@ -2349,23 +3940,163 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             }
           }
         }
+      } else if (c.type === 'world.resource_node') {
+        var rKey = 'res_resp:' + obj.id;
+        var rRem = sim.runtimeTimers.get(rKey) || 0;
+        if (rRem > 0) {
+          var nRem = Math.max(0, rRem - dt);
+          sim.runtimeTimers.set(rKey, nRem);
+          if (nRem <= 0) obj.visible = true;
+        } else if (players[0] && players[0].id !== obj.id) {
+          var rRad = Math.max(24, Number(cfg.interactRadius || 56));
+          var rD = Math.hypot(players[0].transform.x - obj.transform.x, players[0].transform.y - obj.transform.y);
+          var rTrig = rD <= rRad && (cfg.autoPickup !== false || (keyMatch('KeyE', input) && !wasK('KeyE')));
+          if (rTrig) {
+            var itemId = String(cfg.itemId || 'crystal');
+            var amt = Math.max(1, Math.round(Number(cfg.amount || 1)));
+            var ik = 'inv_' + itemId;
+            sim.variables.set(ik, (Number(sim.variables.get(ik) || 0) || 0) + amt);
+            sim.variables.set('puntos', (Number(sim.variables.get('puntos') || 0) || 0) + amt * 10);
+            playSynth('coin', 0.85, 1, 'sfx');
+            var respS = Number(cfg.respawnSec || 20);
+            obj.visible = false;
+            if (respS > 0) sim.runtimeTimers.set(rKey, respS);
+          }
+        }
+      } else if (c.type === 'tool.fishing_rod') {
+        var cKey = String(cfg.castKey || 'KeyF');
+        var rodK = 'rod_cd:' + c.id;
+        var rodRem = sim.runtimeTimers.get(rodK) || 0;
+        if (rodRem > 0) {
+          var rodNext = Math.max(0, rodRem - dt);
+          sim.runtimeTimers.set(rodK, rodNext);
+          if (rodNext <= 0) {
+            var pool = String(cfg.fishPool || 'trucha,salmon,pez_dorado').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+            var fish = pool[Math.floor(Math.random() * Math.max(1, pool.length))] || 'trucha';
+            sim.variables.set('inv_' + fish, (Number(sim.variables.get('inv_' + fish) || 0) || 0) + 1);
+            playSynth('coin', 0.85, 1.15, 'sfx');
+          }
+        } else if (keyMatch(cKey, input) && !wasK(cKey)) {
+          sim.runtimeTimers.set(rodK, Math.max(0.4, Number(cfg.biteTimeSec || 1.8)));
+        }
+      } else if (c.type === 'tool.capture_net') {
+        var netKey = String(cfg.swingKey || 'KeyG');
+        var netK = 'net_cd:' + c.id;
+        var netCd = Math.max(0, (sim.runtimeTimers.get(netK) || 0) - dt);
+        sim.runtimeTimers.set(netK, netCd);
+        if (netCd <= 0 && keyMatch(netKey, input) && !wasK(netKey)) {
+          sim.runtimeTimers.set(netK, Math.max(0.25, Number(cfg.cooldownSec || 1.0)));
+          var nRad = Math.max(24, Number(cfg.radius || 110));
+          sim.scene.objects.forEach(function (cand) {
+            if (!cand.visible || cand.id === obj.id) return;
+            var rn = (cand.components || []).find(function (cc) { return cc.enabled && cc.type === 'world.resource_node'; });
+            if (rn && Math.hypot(cand.transform.x - obj.transform.x, cand.transform.y - obj.transform.y) <= nRad) {
+              var iId = String(rn.config.itemId || 'crystal');
+              sim.variables.set('inv_' + iId, (Number(sim.variables.get('inv_' + iId) || 0) || 0) + 1);
+              cand.visible = false;
+            }
+          });
+        }
+      } else if (c.type === 'tool.harvest') {
+        var hKey = String(cfg.swingKey || 'KeyE');
+        var harvK = 'harv_cd:' + c.id;
+        var harvCd = Math.max(0, (sim.runtimeTimers.get(harvK) || 0) - dt);
+        sim.runtimeTimers.set(harvK, harvCd);
+        if (harvCd <= 0 && keyMatch(hKey, input) && !wasK(hKey)) {
+          sim.runtimeTimers.set(harvK, Math.max(0.2, Number(cfg.cooldownSec || 0.45)));
+          var hRng = Math.max(24, Number(cfg.range || 85));
+          for (var hi = 0; hi < sim.scene.objects.length; hi++) {
+            var hc = sim.scene.objects[hi];
+            if (!hc.visible || hc.id === obj.id) continue;
+            var hNode = (hc.components || []).find(function (cc) { return cc.enabled && (cc.type === 'world.resource_node' || cc.type === 'world.crop_farm'); });
+            if (hNode && Math.hypot(hc.transform.x - obj.transform.x, hc.transform.y - obj.transform.y) <= hRng) {
+              var hItem = String(hNode.config.itemId || hNode.config.harvestItem || 'recurso');
+              sim.variables.set('inv_' + hItem, (Number(sim.variables.get('inv_' + hItem) || 0) || 0) + 1);
+              hc.visible = false;
+              playSynth('hit', 0.65, 1, 'sfx');
+              break;
+            }
+          }
+        }
+      } else if (c.type === 'physics.water_buoyancy') {
+        var wLvl = Number(cfg.waterLevel !== undefined ? cfg.waterLevel : stageH * 0.65);
+        if (obj.transform.y > wLvl) {
+          body.vy += (wLvl - obj.transform.y) * Number(cfg.buoyancy || 12) * dt;
+          body.vy *= Math.max(0, 1 - 4 * dt);
+        }
+      } else if (c.type === 'vehicle.watercraft' || c.type === 'vehicle.mount') {
+        var bKey = String(cfg.boardKey || 'KeyE');
+        var bsK = 'boarded:' + obj.id;
+        var boarded = sim.runtimeTimers.get(bsK) === 1;
+        if (players[0] && players[0].id !== obj.id) {
+          var bDist = Math.hypot(players[0].transform.x - obj.transform.x, players[0].transform.y - obj.transform.y);
+          if (keyMatch(bKey, input) && !wasK(bKey) && (boarded || bDist <= 90)) {
+            boarded = !boarded;
+            sim.runtimeTimers.set(bsK, boarded ? 1 : 0);
+            var links = sim.scene.wiringLinks || [];
+            links.forEach(function (lk) {
+              if (lk.sourceObjectId === obj.id && lk.targetBehavior === 'juice.camera_follow' && lk.action === 'setTarget') {
+                sim.cameraFollowOverrideId = boarded ? obj.id : players[0].id;
+              }
+            });
+          }
+          if (boarded) {
+            var vSpd = Number(cfg.maxSpeed || 220);
+            var vx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+            var vy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+            body.vx = vx * vSpd; body.vy = vy * vSpd;
+            obj.transform.x += body.vx * dt; obj.transform.y += body.vy * dt;
+            players[0].transform.x = obj.transform.x; players[0].transform.y = obj.transform.y;
+          }
+        }
+      } else if (c.type === 'survival.vitals') {
+        var hDrain = Number(cfg.hungerDrainPerMin || 3) / 60;
+        var tDrain = Number(cfg.thirstDrainPerMin || 4) / 60;
+        sim.variables.set('hambre', Math.max(0, (Number(sim.variables.get('hambre') !== undefined ? sim.variables.get('hambre') : 100)) - hDrain * dt));
+        sim.variables.set('sed', Math.max(0, (Number(sim.variables.get('sed') !== undefined ? sim.variables.get('sed') : 100)) - tDrain * dt));
+      } else if (c.type === 'rpg.loot_drop') {
+        var lkDone = 'loot_done:' + c.id;
+        if (body.health <= 0 && !sim.runtimeTimers.has(lkDone)) {
+          sim.runtimeTimers.set(lkDone, 1);
+          var lItem = String(cfg.itemId || 'gold_coin');
+          var lAmt = Math.max(1, Math.round(Number(cfg.minAmount || 1)));
+          sim.variables.set('inv_' + lItem, (Number(sim.variables.get('inv_' + lItem) || 0) || 0) + lAmt);
+        }
+      } else if (c.type === 'ui.menu_nav') {
+        var tsId = String(cfg.targetSceneId || '');
+        if ((clickedSet.has(obj.id) || (keyMatch('Enter', input) && !wasK('Enter'))) && tsId && !sim.pendingSceneCommand) {
+          sim.pendingSceneCommand = { kind: 'load', sceneId: tsId, transition: 'fadeBlack' };
+        }
       }
     }
 
     function stepFixedSim(sim, dt) {
       sim.elapsed += dt;
+      if (sim.dynamicToasts && sim.dynamicToasts.length > 0) {
+        for (var dti = sim.dynamicToasts.length - 1; dti >= 0; dti--) {
+          sim.dynamicToasts[dti].remaining -= dt;
+          if (sim.dynamicToasts[dti].remaining <= 0) sim.dynamicToasts.splice(dti, 1);
+        }
+      }
       if (sim.screenFlash) { sim.screenFlash.age += dt; if (sim.screenFlash.age >= sim.screenFlash.duration) sim.screenFlash = null; }
       sim.flashTimers.forEach(function (fl, id) { fl.remaining -= dt; if (fl.remaining <= 0) sim.flashTimers.delete(id); });
 
+      if (activeDialogue2D && !activeDialogue2D.finishedTyping) {
+        activeDialogue2D.revealedChars = Math.min(activeDialogue2D.fullText.length, activeDialogue2D.revealedChars + activeDialogue2D.typewriterSpeed * dt);
+        if (activeDialogue2D.revealedChars >= activeDialogue2D.fullText.length) activeDialogue2D.finishedTyping = true;
+        renderDialogueOverlay2D();
+      }
+
       var objMap = new Map();
       sim.scene.objects.forEach(function (o) { objMap.set(o.id, o); });
-      var solids = collectSolids(sim);
+      var damageZones = [];
+      var solids = collectSolids(sim, damageZones);
 
       if (sim.pendingWaits.length > 0) {
         var keep = [];
         sim.pendingWaits.forEach(function (w) {
           w.remainingSec -= dt;
-          if (w.remainingSec <= 0) runActionList(w.actions, w.mechId, sim, objMap);
+          if (w.remainingSec <= 0) runActionList(w.actions, w.mechId, sim, objMap, w.ctx);
           else keep.push(w);
         });
         sim.pendingWaits = keep;
@@ -2404,6 +4135,13 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       sim.scene.objects.slice().forEach(function (obj) {
         if (!obj.visible) return;
         applyObjectTweens(obj, dt, sim.tweenStates);
+        if (obj.type === 'light_2d' && obj.light2d) {
+          var lFl = (obj.components || []).find(function (c) { return c.enabled && c.type === 'lighting.flicker'; });
+          if (lFl) {
+            if (obj.light2d.__baseInt === undefined) obj.light2d.__baseInt = obj.light2d.intensity;
+            obj.light2d.intensity = Math.max(0.1, obj.light2d.__baseInt * (1 + Math.sin(sim.elapsed * Number(lFl.config.speed || 8)) * Number(lFl.config.amount || 0.25)));
+          }
+        }
         var body = sim.bodies.get(obj.id);
         if (!body) return;
         if (body.invulnerableTimer > 0) body.invulnerableTimer = Math.max(0, body.invulnerableTimer - dt);
@@ -2418,12 +4156,24 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             var off = Math.sin(body.patrolPhase) * dist;
             if (c.config.axis === 'y') obj.transform.y = body.originY + off; else obj.transform.x = body.originX + off;
           } else if (c.type === 'chase_player' && players.length > 0) {
-            var tgt = players[0]; var dxP = tgt.transform.x - obj.transform.x; var dyP = tgt.transform.y - obj.transform.y; var distP = Math.hypot(dxP, dyP);
-            if (distP <= Number(c.config.detectRadius || 420) && distP > Number(c.config.stopDistance || 36) && distP > 0.001) {
-              var cSpd = Number(c.config.speed || 130);
-              obj.transform.x += (dxP / distP) * cSpd * dt; obj.transform.y += (dyP / distP) * cSpd * dt;
-              if (obj.sprite) obj.sprite.flipX = dxP < 0;
-            }
+            var tgt = players[0]; var tgB = sim.bodies.get(tgt.id);
+            var dxP = tgt.transform.x - obj.transform.x; var dyP = tgt.transform.y - obj.transform.y; var distP = Math.hypot(dxP, dyP);
+            var cFlee = Number(c.config.fleeHealthRatio !== undefined ? c.config.fleeHealthRatio : (obj.aiAgent && obj.aiAgent.fleeHealthRatio !== undefined ? obj.aiAgent.fleeHealthRatio : 0.25));
+            var cInsist = Number(c.config.insistDamageRatio !== undefined ? c.config.insistDamageRatio : (obj.aiAgent && obj.aiAgent.insistDamageRatio !== undefined ? obj.aiAgent.insistDamageRatio : 0.45));
+            var isFlee2 = (body.maxHealth > 0 ? body.health / body.maxHealth : 1) <= cFlee;
+            var isInsist2 = !isFlee2 && (tgB && tgB.maxHealth > 0 ? tgB.health / tgB.maxHealth : 1) <= cInsist;
+            var vFov2 = Number(c.config.visionFovDeg !== undefined ? c.config.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 140));
+            var faceX2 = obj.sprite && obj.sprite.flipX ? -1 : 1;
+            var inCone2 = vFov2 >= 359 || (distP > 0.001 ? (dxP / distP) * faceX2 : 1) >= Math.cos(((Math.min(360, vFov2) * 0.5) * Math.PI) / 180) || distP <= 96;
+            var hasLos2 = c.config.requireLineOfSight !== true || hasAiLos2D(obj.transform.x, obj.transform.y, tgt.transform.x, tgt.transform.y, solids);
+            if ((isFlee2 || (inCone2 && hasLos2)) && distP <= Number(c.config.detectRadius || 420) && (isFlee2 || distP > Number(c.config.stopDistance || 36)) && distP > 0.001) {
+              var gxP = isFlee2 ? -dxP : dxP; var gyP = isFlee2 ? -dyP : dyP; var glP = Math.hypot(gxP, gyP) || 1;
+              var cSpd = Number(c.config.speed || 130) * (isFlee2 ? 1.12 : isInsist2 ? 1.25 : 1);
+              body.vx = (gxP / glP) * cSpd; body.vy = (gyP / glP) * cSpd;
+              obj.transform.x += body.vx * dt; resolveH(obj, body, solids);
+              obj.transform.y += body.vy * dt; resolveV(obj, body, solids);
+              if (obj.sprite) obj.sprite.flipX = body.vx < 0;
+            } else { body.vx = 0; body.vy = 0; }
           } else if (c.type === 'projectile') {
             obj.transform.x += body.vx * dt; obj.transform.y += body.vy * dt;
             if (c.config.destroyOnSolid) {
@@ -2492,16 +4242,16 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           obj.transform.y += body.vy * dt; resolveV(obj, body, solids);
         } else if (plat) {
           var prm = resolvePlatformerConfig(plat.config);
-          var mx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+          var mx = Math.abs(input.axisX || 0) > 0.08 ? input.axisX : ((input.right ? 1 : 0) - (input.left ? 1 : 0));
           if (body.grounded) { body.coyoteTimer = prm.coyoteTime; body.jumpsUsed = 0; }
           else body.coyoteTimer = Math.max(0, body.coyoteTimer - dt);
           if (jumpJustPressed) body.jumpBufferTimer = prm.jumpBuffer;
           else body.jumpBufferTimer = Math.max(0, body.jumpBufferTimer - dt);
-          var rate = mx !== 0 ? prm.acceleration * (body.grounded ? 1 : prm.airControl) : prm.deceleration * (body.grounded ? prm.groundFriction : prm.airControl * 0.7);
+          var rate = Math.abs(mx) > 0.02 ? prm.acceleration * (body.grounded ? 1 : prm.airControl) : prm.deceleration * (body.grounded ? prm.groundFriction : prm.airControl * 0.7);
           body.vx = moveTowards(body.vx + body.ax * dt, mx * prm.maxSpeed, rate * dt);
           body.ax = 0;
-          if (mx < 0 && obj.sprite) obj.sprite.flipX = true;
-          if (mx > 0 && obj.sprite) obj.sprite.flipX = false;
+          if (mx < -0.05 && obj.sprite) obj.sprite.flipX = true;
+          if (mx > 0.05 && obj.sprite) obj.sprite.flipX = false;
           var canG = body.coyoteTimer > 0 && body.jumpsUsed === 0;
           var canA = !canG && body.jumpsUsed < prm.maxJumps && jumpJustPressed;
           if (body.jumpBufferTimer > 0 && (canG || canA)) {
@@ -2521,14 +4271,15 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           obj.transform.y += body.vy * dt; resolveV(obj, body, solids);
         } else if (td) {
           var tp = resolveTopDownConfig(td.config);
-          var dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-          var dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
-          if (dx !== 0 && dy !== 0) { dx *= 0.7071; dy *= 0.7071; }
-          body.vx = moveTowards(body.vx + body.ax * dt, dx * tp.maxSpeed, (dx !== 0 ? tp.acceleration : tp.deceleration) * dt);
-          body.vy = moveTowards(body.vy + body.ay * dt, dy * tp.maxSpeed, (dy !== 0 ? tp.acceleration : tp.deceleration) * dt);
+          var dx = Math.abs(input.axisX || 0) > 0.08 ? input.axisX : ((input.right ? 1 : 0) - (input.left ? 1 : 0));
+          var dy = Math.abs(input.axisY || 0) > 0.08 ? input.axisY : ((input.down ? 1 : 0) - (input.up ? 1 : 0));
+          var magT = Math.hypot(dx, dy);
+          if (magT > 1) { dx /= magT; dy /= magT; }
+          body.vx = moveTowards(body.vx + body.ax * dt, dx * tp.maxSpeed, (Math.abs(dx) > 0.02 ? tp.acceleration : tp.deceleration) * dt);
+          body.vy = moveTowards(body.vy + body.ay * dt, dy * tp.maxSpeed, (Math.abs(dy) > 0.02 ? tp.acceleration : tp.deceleration) * dt);
           body.ax = 0; body.ay = 0;
-          if (dx < 0 && obj.sprite) obj.sprite.flipX = true;
-          if (dx > 0 && obj.sprite) obj.sprite.flipX = false;
+          if (dx < -0.05 && obj.sprite) obj.sprite.flipX = true;
+          if (dx > 0.05 && obj.sprite) obj.sprite.flipX = false;
           obj.transform.x += body.vx * dt; resolveH(obj, body, solids);
           obj.transform.y += body.vy * dt; resolveV(obj, body, solids);
         } else if (!hasExtCtrl && obj.rigidbody && obj.rigidbody.bodyType === 'dynamic') {
@@ -2536,11 +4287,26 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           body.vx += body.ax * dt; body.vy += body.ay * dt; body.ax = 0; body.ay = 0;
           obj.transform.x += body.vx * dt; resolveH(obj, body, solids);
           obj.transform.y += body.vy * dt; resolveV(obj, body, solids);
+        } else if (!hasExtCtrl && body.scriptVelocityDriven) {
+          obj.transform.x += body.vx * dt;
+          obj.transform.y += body.vy * dt;
         }
       });
 
       if (players.length > 0) {
         var pCols = players.map(function (p) { return getWorldColliders(p); });
+        if (damageZones.length > 0) {
+          players.forEach(function (pl, pIdx) {
+            var pcs = pCols[pIdx];
+            for (var dzi = 0; dzi < damageZones.length; dzi++) {
+              var dz = damageZones[dzi];
+              if (pcs.some(function (pc) { return colsOverlap(pc, dz); })) {
+                applyDamage(sim, pl, Math.max(1, dz.dps * 0.35), 0.35);
+                break;
+              }
+            }
+          });
+        }
         sim.scene.objects.forEach(function (obj) {
           if (!obj.visible) return;
           var bd = sim.bodies.get(obj.id);
@@ -2576,6 +4342,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       mechanics.forEach(function (mech) {
         var ev = mech.trigger ? mech.trigger.event : '';
         var trig = false;
+        var collisionPairs = [];
         if (ev === 'scene.start' && !sim.sceneStarted) trig = true;
         else if (ev === 'scene.paused' && paused) trig = true;
         else if (ev === 'tick') trig = true;
@@ -2623,9 +4390,9 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
                 var nSet = isTr ? nextTriggers : nextCollisions;
                 if (ov) {
                   nSet.add(pk);
-                  if ((ev === 'collision.enter' || ev === 'trigger.enter') && !pSet.has(pk)) trig = true;
-                  else if (ev === 'collision.stay') trig = true;
-                } else if ((ev === 'collision.exit' || ev === 'trigger.exit') && pSet.has(pk)) trig = true;
+                  if ((ev === 'collision.enter' || ev === 'trigger.enter') && !pSet.has(pk)) { trig = true; collisionPairs.push({ owner: sObj, other: tObj }); }
+                  else if (ev === 'collision.stay') { trig = true; collisionPairs.push({ owner: sObj, other: tObj }); }
+                } else if ((ev === 'collision.exit' || ev === 'trigger.exit') && pSet.has(pk)) { trig = true; collisionPairs.push({ owner: sObj, other: tObj }); }
               });
             });
           }
@@ -2634,7 +4401,147 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
         var conds = mech.conditions || [];
         var comb = mech.conditionCombinator || 'all';
         var condOk = conds.length === 0 ? true : comb === 'any' ? conds.some(function (c) { return evalCondition(c, sim, objMap); }) : comb === 'none' ? conds.every(function (c) { return !evalCondition(c, sim, objMap); }) : conds.every(function (c) { return evalCondition(c, sim, objMap); });
-        if (condOk) runActionList(mech.actions || [], mech.id, sim, objMap);
+        if (condOk) {
+          if (collisionPairs.length > 0) {
+            collisionPairs.forEach(function (pair) { runActionList(mech.actions || [], mech.id, sim, objMap, pair); });
+          } else {
+            runActionList(mech.actions || [], mech.id, sim, objMap);
+          }
+        }
+      });
+
+      // Avanzar tweens de scripts nexus.tween()
+      if (sim.scriptTweens && sim.scriptTweens.length > 0) {
+        var keepTw = [];
+        sim.scriptTweens.forEach(function (tw) {
+          tw.elapsed += dt;
+          var r = Math.min(1, tw.elapsed / tw.duration);
+          var ease = 1 - Math.pow(1 - r, 2);
+          var twO = objMap.get(tw.targetId);
+          if (twO) {
+            Object.keys(tw.to).forEach(function (pr) {
+              var sVal = tw.from[pr] !== undefined ? tw.from[pr] : tw.to[pr];
+              var val = sVal + (tw.to[pr] - sVal) * ease;
+              if (pr === 'x') twO.transform.x = val;
+              else if (pr === 'y') twO.transform.y = val;
+              else if (pr === 'rotation' || pr === 'rz') twO.transform.rotation = val;
+              else if (pr === 'scaleX') twO.transform.scaleX = val;
+              else if (pr === 'scaleY') twO.transform.scaleY = val;
+              else if (pr === 'opacity') twO.opacity = Math.max(0, Math.min(1, val));
+            });
+          }
+          if (r < 1) keepTw.push(tw);
+        });
+        sim.scriptTweens = keepTw;
+      }
+
+      // Ejecutar Scripts JS de escena y de objetos (onStart por binding, onCollisionEnter simétrico, onUpdate, onClick)
+      var api2d = makeScriptApi2D(sim, objMap, dt);
+      if (!sim.startedScriptBindings) sim.startedScriptBindings = new Set();
+      if (!sim.scriptActivePairs) sim.scriptActivePairs = new Set();
+
+      (sim.scene.scriptIds || []).forEach(function (sid) {
+        var sKey = 'scene:' + sid;
+        if (sim.startedScriptBindings.has(sKey)) return;
+        sim.startedScriptBindings.add(sKey);
+        var e = compiledScripts2D.get(sid);
+        if (e && e.hooks && typeof e.hooks.onStart === 'function') {
+          try { e.hooks.onStart(makeSceneScriptHandle2D(sid, sim, objMap, Object.assign({}, e.hooks.params || {})), api2d); }
+          catch (err) { console.warn('[NEXUS Script Error]', e.name, err); }
+        }
+      });
+
+      sim.scene.objects.slice().forEach(function (obj) {
+        (obj.scriptBindings || []).forEach(function (b) {
+          if (!b.enabled) return;
+          var bKey = 'obj:' + obj.id + ':' + b.id;
+          if (sim.startedScriptBindings.has(bKey)) return;
+          sim.startedScriptBindings.add(bKey);
+          var e = compiledScripts2D.get(b.scriptId);
+          if (e && e.hooks && typeof e.hooks.onStart === 'function') {
+            try { e.hooks.onStart(makeScriptHandle2D(obj, sim, objMap, Object.assign({}, e.hooks.params || {}, b.params || {})), api2d); }
+            catch (err) { console.warn('[NEXUS Script Error]', obj.name, e.name, err); }
+          }
+        });
+      });
+
+      var nextScriptPairs = new Set();
+      var scObjs = sim.scene.objects.filter(function (o) { return o.visible && o.type !== 'ui_widget'; });
+      var hasColScripts = scObjs.some(function (o) {
+        return (o.scriptBindings || []).some(function (b) {
+          var ce = b.enabled && compiledScripts2D.get(b.scriptId);
+          return ce && ce.hooks && typeof ce.hooks.onCollisionEnter === 'function';
+        });
+      });
+      if (hasColScripts) {
+        var boxCache2d = new Map();
+        var getBoxes2d = function (o) {
+          var c = boxCache2d.get(o.id);
+          if (!c) { c = getWorldColliders(o); boxCache2d.set(o.id, c); }
+          return c;
+        };
+        for (var si = 0; si < scObjs.length; si++) {
+          var sa = scObjs[si];
+          var saHas = (sa.scriptBindings || []).some(function (b) { var ce = b.enabled && compiledScripts2D.get(b.scriptId); return ce && ce.hooks && typeof ce.hooks.onCollisionEnter === 'function'; });
+          var saCols = getBoxes2d(sa);
+          if (saCols.length === 0) continue;
+          for (var sj = si + 1; sj < scObjs.length; sj++) {
+            var sb = scObjs[sj];
+            var sbHas = (sb.scriptBindings || []).some(function (b) { var ce = b.enabled && compiledScripts2D.get(b.scriptId); return ce && ce.hooks && typeof ce.hooks.onCollisionEnter === 'function'; });
+            if (!saHas && !sbHas) continue;
+            var sbCols = getBoxes2d(sb);
+            if (sbCols.length === 0) continue;
+            var hit2d = saCols.some(function (ac) { return sbCols.some(function (bc) { return canLayersCollide(ac.layer, bc.layer, ac.mask, bc.mask) && colsOverlap(ac, bc); }); });
+            if (!hit2d) continue;
+            var pk2d = sa.id < sb.id ? (sa.id + '|' + sb.id) : (sb.id + '|' + sa.id);
+            nextScriptPairs.add(pk2d);
+            if (!sim.scriptActivePairs.has(pk2d)) {
+              (sa.scriptBindings || []).forEach(function (bind) {
+                if (!bind.enabled) return;
+                var ent = compiledScripts2D.get(bind.scriptId);
+                if (ent && ent.hooks && typeof ent.hooks.onCollisionEnter === 'function') {
+                  try { ent.hooks.onCollisionEnter(makeScriptHandle2D(sa, sim, objMap, Object.assign({}, ent.hooks.params || {}, bind.params || {})), makeScriptHandle2D(sb, sim, objMap, {}), api2d); }
+                  catch (err) { console.warn('[NEXUS Script Error]', ent.name, err); }
+                }
+              });
+              (sb.scriptBindings || []).forEach(function (bind) {
+                if (!bind.enabled) return;
+                var ent = compiledScripts2D.get(bind.scriptId);
+                if (ent && ent.hooks && typeof ent.hooks.onCollisionEnter === 'function') {
+                  try { ent.hooks.onCollisionEnter(makeScriptHandle2D(sb, sim, objMap, Object.assign({}, ent.hooks.params || {}, bind.params || {})), makeScriptHandle2D(sa, sim, objMap, {}), api2d); }
+                  catch (err) { console.warn('[NEXUS Script Error]', ent.name, err); }
+                }
+              });
+            }
+          }
+        }
+      }
+      sim.scriptActivePairs = nextScriptPairs;
+
+      (sim.scene.scriptIds || []).forEach(function (sid) {
+        var e = compiledScripts2D.get(sid);
+        if (e && e.hooks && typeof e.hooks.onUpdate === 'function') {
+          try { e.hooks.onUpdate(makeSceneScriptHandle2D(sid, sim, objMap, Object.assign({}, e.hooks.params || {})), dt, api2d); }
+          catch (err) { console.warn('[NEXUS Script Error]', e.name, err); }
+        }
+      });
+
+      sim.scene.objects.slice().forEach(function (obj) {
+        if (!obj.visible || !obj.scriptBindings) return;
+        obj.scriptBindings.forEach(function (b) {
+          if (!b.enabled) return;
+          var e = compiledScripts2D.get(b.scriptId);
+          if (!e || !e.hooks) return;
+          var prm = Object.assign({}, e.hooks.params || {}, b.params || {});
+          if (typeof e.hooks.onUpdate === 'function') {
+            try { e.hooks.onUpdate(makeScriptHandle2D(obj, sim, objMap, prm), dt, api2d); }
+            catch (err) { console.warn('[NEXUS Script Error]', obj.name, e.name, err); }
+          }
+          if (clickedSet.has(obj.id) && typeof e.hooks.onClick === 'function') {
+            try { e.hooks.onClick(makeScriptHandle2D(obj, sim, objMap, prm), api2d); }
+            catch (err) { console.warn('[NEXUS Script Error]', obj.name, e.name, err); }
+          }
+        });
       });
 
       sim.sceneStarted = true;
@@ -2668,8 +4575,72 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
 
       sim.scene.objects.forEach(function (obj) {
         if (!obj.visible) return;
+        if (obj.type === 'sprite' && obj.sprite && obj.animStateMachine && obj.animStateMachine.states && obj.animStateMachine.states.length > 0) {
+          var bodyF = sim.bodies.get(obj.id);
+          if (bodyF) {
+            var curFsm = (obj.sprite.animation && obj.sprite.animation.fsmActiveState && obj.sprite.animation.fsmActiveState.stateName) || (obj.stateMachine && obj.stateMachine.currentState) || '';
+            var nodeA = sim.nodeMap.get(obj.id);
+            var sprA = nodeA && nodeA.__animSprite;
+            var fsmTKey = 'fsm_t:' + obj.id;
+            var stateEl = (sim.runtimeTimers.get(fsmTKey) || 0) + dt;
+            sim.runtimeTimers.set(fsmTKey, stateEl);
+            var animProg = 0, animFin = false;
+            var fCount = (obj.sprite.animation && obj.sprite.animation.fsmActiveState && obj.sprite.animation.fsmActiveState.frameCount) || (sprA ? sprA.totalFrames : 1) || 1;
+            var fFps = (obj.sprite.animation && obj.sprite.animation.fsmActiveState && obj.sprite.animation.fsmActiveState.fps) || (obj.sprite.animation && obj.sprite.animation.fps) || 8;
+            var isLoop = obj.sprite.animation && obj.sprite.animation.fsmActiveState ? obj.sprite.animation.fsmActiveState.loop !== false : (sprA ? Boolean(sprA.loop) : true);
+            var clipDur = Math.max(0.05, fCount / Math.max(1, fFps));
+            if (sprA && sprA.totalFrames > 0) {
+              animProg = Math.min(1, (sprA.currentFrame + 1) / sprA.totalFrames);
+              animFin = !sprA.loop && (sprA.currentFrame >= sprA.totalFrames - 1 || stateEl >= clipDur);
+            } else {
+              animProg = isLoop ? (stateEl % clipDur) / clipDur : Math.min(1, stateEl / clipDur);
+              animFin = !isLoop && stateEl >= clipDur;
+            }
+            var fsmRes = stepAnimFsm2d(obj.animStateMachine, curFsm, { speed: Math.hypot(bodyF.vx, bodyF.vy), vy: -bodyF.vy, isGrounded: bodyF.grounded, animFinished: animFin, animProgress: animProg, heldKeys: pressedKeys, justPressedKeys: justPressedKeys2d, variables: sim.variables });
+            if (fsmRes && (fsmRes.changed || !obj.sprite.animation || !obj.sprite.animation.fsmActiveState)) {
+              sim.runtimeTimers.set(fsmTKey, 0);
+              if (!obj.sprite.animation) obj.sprite.animation = { enabled: true, cols: fsmRes.node.cols || 4, rows: fsmRes.node.rows || 1, frameCount: fsmRes.node.frameCount || 4, fps: 8, loop: true, playing: true };
+              var anim2 = obj.sprite.animation;
+              anim2.enabled = true; anim2.playing = true; anim2.activeClip = fsmRes.clipName;
+              anim2.fsmActiveState = {
+                stateName: fsmRes.stateName,
+                assetId: fsmRes.node.assetId || obj.sprite.assetId,
+                cols: fsmRes.node.cols || anim2.cols,
+                rows: fsmRes.node.rows || anim2.rows,
+                startFrame: fsmRes.node.startFrame || 0,
+                frameCount: fsmRes.node.frameCount || anim2.frameCount,
+                fps: Math.max(1, (anim2.fps || 8) * Math.max(0.1, fsmRes.timeScale || 1)),
+                loop: fsmRes.loopMode !== 'LoopOnce'
+              };
+              obj.stateMachine = { currentState: fsmRes.stateName, states: obj.animStateMachine.states.map(function (s) { return s.name; }) };
+            } else if (fsmRes && fsmRes.node) {
+              var evList2d = (fsmRes.node.frameEvents || []).concat((obj.sprite && obj.sprite.frameEvents) || []);
+              if (evList2d.length > 0) {
+                var fePrevK = 'fe2d:' + obj.id + ':' + fsmRes.node.id;
+                var curFr2d = sprA && sprA.totalFrames > 0 ? sprA.currentFrame : (Math.floor(stateEl * Math.max(1, fFps)) % Math.max(1, fCount));
+                var prevFr2d = sim.runtimeTimers.get(fePrevK);
+                if (curFr2d !== prevFr2d) {
+                  sim.runtimeTimers.set(fePrevK, curFr2d);
+                  evList2d.forEach(function (fe) {
+                    if (fe.frameIndex === curFr2d) {
+                      if (fe.eventName) sim.emittedEvents.push(fe.eventName);
+                      if (fe.soundAssetId) playAudioAsset(fe.soundAssetId, 0.9, 1, 'sfx', false, obj.transform.x, obj.transform.y, 720);
+                    }
+                  });
+                }
+              }
+            }
+          }
+        }
         var emList = [];
-        if (obj.particleEmitter && obj.particleEmitter.enabled) emList.push(obj.particleEmitter);
+        if (obj.particleEmitter && obj.particleEmitter.enabled) {
+          emList.push(obj.particleEmitter);
+          if (obj.particleEmitter.layers && obj.particleEmitter.layers.length > 0) {
+            obj.particleEmitter.layers.forEach(function (ly) {
+              if (ly && ly.enabled !== false) emList.push(Object.assign({}, obj.particleEmitter, ly));
+            });
+          }
+        }
         (obj.components || []).forEach(function (c) {
           if (c.enabled && c.type === 'juice.particle_emitter') {
             var defs = getParticleDefaults(c.config.preset || 'fire');
@@ -2683,15 +4654,27 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           if (eCnt > 0) emitBurstFromConfig(sim, obj.transform.x, obj.transform.y, em, Math.min(12, eCnt));
         });
       });
+      justPressedKeys2d.clear();
       if (sim.emitterParticles.length > 0) {
-        sim.emitterParticles = sim.emitterParticles.filter(function (pt) {
+        sim.emitterParticles = sim.emitterParticles.filter(function (pt, idxP) {
           pt.age += dt; if (pt.age >= pt.maxAge) return false;
-          pt.vy += pt.gravity * dt; pt.x += pt.vx * dt; pt.y += pt.vy * dt; return true;
+          var etP = Math.min(1, pt.age / Math.max(0.05, pt.maxAge));
+          pt.vy += pt.gravity * dt;
+          if (pt.drag > 0) {
+            var dp = Math.max(0, 1 - pt.drag * dt);
+            pt.vx *= dp; pt.vy *= dp;
+          }
+          if (pt.turbulence > 0) {
+            pt.vx += Math.sin(pt.age * 7.3 + idxP) * pt.turbulence * dt;
+          }
+          var spScale = pt.speedCurve && pt.speedCurve.length >= 2 ? sampleVfxCurve2D(pt.speedCurve, etP, 1, 1) : 1;
+          pt.x += pt.vx * spScale * dt; pt.y += pt.vy * spScale * dt;
+          return true;
         });
       }
 
       var camCfg = sim.scene.cameraConfig;
-      var cTgt = camCfg && camCfg.followObjectId ? objMap.get(camCfg.followObjectId) : sim.scene.objects.find(function (o) { return o.visible && o.components && o.components.some(function (c) { return c.enabled && c.type === 'juice.camera_follow'; }); });
+      var cTgt = (sim.cameraFollowOverrideId ? objMap.get(sim.cameraFollowOverrideId) : null) || (camCfg && camCfg.followObjectId ? objMap.get(camCfg.followObjectId) : sim.scene.objects.find(function (o) { return o.visible && o.components && o.components.some(function (c) { return c.enabled && c.type === 'juice.camera_follow'; }); }));
       if (cTgt) {
         var fc = (cTgt.components || []).find(function (c) { return c.enabled && c.type === 'juice.camera_follow'; });
         var dX = cTgt.transform.x - stageW * 0.5; var dY = cTgt.transform.y - stageH * 0.5;
@@ -2748,18 +4731,53 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
         }
       }
 
+      if (activeSim) {
+        syncWidgetsDom2D(activeSim);
+      }
+
+      syncLegacyKeys();
       var sim = activeSim;
       sceneRoot.position.set(-sim.cameraPos.x, -sim.cameraPos.y);
 
       sim.scene.objects.forEach(function (obj) {
         var node = sim.nodeMap.get(obj.id);
         if (!node) return;
+        if (obj.type === 'sprite' && obj.sprite && obj.sprite.animation && obj.sprite.animation.fsmActiveState) {
+          var fst = obj.sprite.animation.fsmActiveState;
+          var fAid = fst.assetId || obj.sprite.assetId || '';
+          var desiredKey = fAid + ':' + (fst.cols || 1) + ':' + (fst.rows || 1) + ':' + (fst.startFrame || 0) + ':' + (fst.frameCount || 1) + ':' + (fst.fps || 8) + ':' + (fst.loop !== false);
+          if (node.__fsmKey !== desiredKey) {
+            var parentC = node.parent || sceneRoot;
+            var chIdx = parentC.children.indexOf(node);
+            var rebuilt = createDisplayForObject(obj, sim);
+            if (chIdx >= 0) parentC.addChildAt(rebuilt, chIdx); else parentC.addChild(rebuilt);
+            node.destroy({ children: true, texture: false, textureSource: false });
+            sim.nodeMap.set(obj.id, rebuilt);
+            node = rebuilt;
+          }
+        }
         var sq = sim.visualSquash.get(obj.id);
         node.position.set(obj.transform.x, obj.transform.y);
         node.rotation = obj.transform.rotation * DEG_TO_RAD;
         node.scale.set(obj.transform.scaleX * (sq ? sq.sx : 1) * (obj.sprite && obj.sprite.flipX ? -1 : 1), obj.transform.scaleY * (sq ? sq.sy : 1) * (obj.sprite && obj.sprite.flipY ? -1 : 1));
         node.alpha = Math.max(0, Math.min(1, obj.opacity));
         node.visible = obj.visible;
+        if (obj.visible && obj.optimization) {
+          var opt = obj.optimization;
+          var pad = Math.max(Math.abs(obj.transform.width * obj.transform.scaleX), Math.abs(obj.transform.height * obj.transform.scaleY)) + 80;
+          if (opt.frustumCulling && !obj.parentId && (obj.transform.x < sim.cameraPos.x - pad || obj.transform.x > sim.cameraPos.x + stageW + pad || obj.transform.y < sim.cameraPos.y - pad || obj.transform.y > sim.cameraPos.y + stageH + pad)) {
+            node.visible = false;
+          }
+          if (node.visible && opt.fadeEnabled) {
+            var cxO = sim.cameraPos.x + stageW * 0.5;
+            var cyO = sim.cameraPos.y + stageH * 0.5;
+            var dO = Math.hypot(obj.transform.x - cxO, obj.transform.y - cyO);
+            var fSt = Math.max(10, opt.fadeStart !== undefined ? opt.fadeStart : 380);
+            var fEn = Math.max(fSt + 20, opt.fadeEnd !== undefined ? opt.fadeEnd : 620);
+            if (dO >= fEn) node.visible = false;
+            else if (dO > fSt) node.alpha *= Math.max(0, Math.min(1, 1 - (dO - fSt) / (fEn - fSt)));
+          }
+        }
         if (obj.type === 'text' && obj.text) {
           node.text = interpolateText(obj.text.text || '', sim.variables, obj.text.bindVariable);
         } else if (obj.type === 'ui_progress_bar' && obj.uiProgressBar && node.__pbGraphics) {
@@ -2827,8 +4845,22 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       });
       sim.emitterParticles.forEach(function (pt) {
         var et = Math.min(1, pt.age / Math.max(0.05, pt.maxAge));
-        fxGraphics.circle(pt.x - sim.cameraPos.x, pt.y - sim.cameraPos.y, Math.max(1, pt.sizeStart + (pt.sizeEnd - pt.sizeStart) * et));
-        fxGraphics.fill({ color: parseColor(et < 0.5 ? pt.colorStart : pt.colorEnd, 0xf97316), alpha: Math.max(0, pt.alpha * (1 - et)) });
+        var aEnd = pt.alphaEnd !== undefined ? pt.alphaEnd : 0;
+        var curAlpha = Math.max(0, Math.min(1, sampleVfxCurve2D(pt.alphaCurve, et, pt.alpha, aEnd)));
+        var curSz = Math.max(1, sampleVfxCurve2D(pt.sizeCurve, et, pt.sizeStart, pt.sizeEnd));
+        var col = parseColor(et < 0.5 ? pt.colorStart : pt.colorEnd, 0xf97316);
+        var px = pt.x - sim.cameraPos.x;
+        var py = pt.y - sim.cameraPos.y;
+        if (pt.particleShape === 'ring') {
+          fxGraphics.circle(px, py, curSz);
+          fxGraphics.stroke({ width: 2, color: col, alpha: curAlpha });
+        } else if (pt.particleShape === 'liquid') {
+          fxGraphics.ellipse(px, py, curSz * 0.72, curSz * 1.45);
+          fxGraphics.fill({ color: col, alpha: curAlpha });
+        } else {
+          fxGraphics.circle(px, py, curSz);
+          fxGraphics.fill({ color: col, alpha: curAlpha });
+        }
       });
       sim.scene.objects.forEach(function (obj) {
         if (!obj.visible) return;
@@ -2847,6 +4879,7 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           if (r > 0) { fxGraphics.roundRect(bx + 1, by + 1, Math.max(2, (bw - 2) * r), 4, 1); fxGraphics.fill({ color: parseColor(hpC.config.fillColor, 0x22c55e), alpha: 1 }); }
         }
       });
+      renderLighting2DExport(sim);
 
       transitionGraphics.clear();
       if (sim.screenFlash) {

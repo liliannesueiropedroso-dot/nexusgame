@@ -153,7 +153,22 @@ export class NexusAudioEngine {
   async playAssetBlob(
     assetId: string,
     blob: Blob,
-    options: { channel?: AudioChannel; volume?: number; pitch?: number; loop?: boolean } = {}
+    options: {
+      channel?: AudioChannel;
+      volume?: number;
+      pitch?: number;
+      loop?: boolean;
+      spatial?: {
+        mode: '2d' | '3d';
+        x: number;
+        y: number;
+        z?: number;
+        listenerX: number;
+        listenerY: number;
+        listenerZ?: number;
+        maxDistance?: number;
+      };
+    } = {}
   ): Promise<void> {
     const channel = options.channel ?? 'sfx';
     if (channel === 'music') {
@@ -183,7 +198,46 @@ export class NexusAudioEngine {
       const gain = ctx.createGain();
       gain.gain.value = clipVol;
       source.connect(gain);
-      gain.connect(busNode);
+
+      if (options.spatial) {
+        const sp = options.spatial;
+        if (sp.mode === '3d' && typeof ctx.createPanner === 'function') {
+          const panner = ctx.createPanner();
+          panner.panningModel = 'HRTF';
+          panner.distanceModel = 'inverse';
+          panner.refDistance = 3;
+          panner.maxDistance = Math.max(8, sp.maxDistance ?? 40);
+          panner.rolloffFactor = 1.1;
+          if (typeof panner.positionX !== 'undefined') {
+            panner.positionX.value = sp.x;
+            panner.positionY.value = sp.y;
+            panner.positionZ.value = sp.z ?? 0;
+          } else {
+            panner.setPosition(sp.x, sp.y, sp.z ?? 0);
+          }
+          this.updateListener3D(sp.listenerX, sp.listenerY, sp.listenerZ ?? 0);
+          gain.connect(panner);
+          panner.connect(busNode);
+        } else {
+          const maxD = Math.max(120, sp.maxDistance ?? 720);
+          const dx = sp.x - sp.listenerX;
+          const dy = sp.y - sp.listenerY;
+          const dist = Math.hypot(dx, dy);
+          const atten = Math.max(0, 1 - dist / maxD);
+          gain.gain.value = clipVol * atten;
+          if (typeof ctx.createStereoPanner === 'function') {
+            const stereo = ctx.createStereoPanner();
+            stereo.pan.value = Math.max(-1, Math.min(1, dx / (maxD * 0.6)));
+            gain.connect(stereo);
+            stereo.connect(busNode);
+          } else {
+            gain.connect(busNode);
+          }
+        }
+      } else {
+        gain.connect(busNode);
+      }
+
       this.activeSources.add(source);
       source.onended = () => {
         this.activeSources.delete(source);
@@ -191,6 +245,19 @@ export class NexusAudioEngine {
       source.start(0);
     } catch {
       // Fallo silencioso en entornos sin códec de audio (p. ej. headless sin hardware)
+    }
+  }
+
+  updateListener3D(x: number, y: number, z: number): void {
+    const ctx = this.ctx;
+    if (!ctx || !ctx.listener) return;
+    const listener = ctx.listener;
+    if (typeof listener.positionX !== 'undefined') {
+      listener.positionX.value = x;
+      listener.positionY.value = y;
+      listener.positionZ.value = z;
+    } else if (typeof listener.setPosition === 'function') {
+      listener.setPosition(x, y, z);
     }
   }
 
@@ -202,6 +269,7 @@ export class NexusAudioEngine {
       loop?: boolean;
       pitch?: number;
       keepIfSame?: boolean;
+      crossfadeSec?: number;
     } = {}
   ): Promise<void> {
     if (
@@ -220,7 +288,27 @@ export class NexusAudioEngine {
     }
 
     const token = ++this.musicRequestToken;
-    this.stopMusicInternal(false);
+    const fadeSec = Math.max(0, Math.min(5, options.crossfadeSec ?? 1.5));
+    const prevSource = this.activeMusicSource;
+    const prevGain = this.activeMusicGain;
+
+    if (fadeSec <= 0.02 || !this.ctx || !prevSource || !prevGain) {
+      this.stopMusicInternal(false);
+    } else {
+      const now = this.ctx.currentTime;
+      try {
+        prevGain.gain.cancelScheduledValues(now);
+        prevGain.gain.setValueAtTime(Math.max(0.001, prevGain.gain.value), now);
+        prevGain.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
+        prevSource.onended = null;
+        prevSource.stop(now + fadeSec + 0.03);
+      } catch {
+        // fallback immediate stop
+      }
+      this.activeMusicSource = null;
+      this.activeMusicGain = null;
+      this.activeMusicAssetId = null;
+    }
 
     const ctx = this.ensureContext();
     if (!ctx) return;
@@ -234,8 +322,15 @@ export class NexusAudioEngine {
       source.loop = options.loop ?? true;
       source.playbackRate.value = Math.max(0.25, Math.min(3, options.pitch ?? 1));
 
+      const targetVol = Math.max(0, Math.min(2, options.volume ?? 1));
       const clipGain = ctx.createGain();
-      clipGain.gain.value = Math.max(0, Math.min(2, options.volume ?? 1));
+      const now = ctx.currentTime;
+      if (fadeSec > 0.02 && prevSource) {
+        clipGain.gain.setValueAtTime(0.001, now);
+        clipGain.gain.linearRampToValueAtTime(Math.max(0.001, targetVol), now + fadeSec);
+      } else {
+        clipGain.gain.value = targetVol;
+      }
       const busNode = this.busGains.music ?? ctx.destination;
 
       source.connect(clipGain);
@@ -321,6 +416,11 @@ export class NexusAudioEngine {
 
   setChannelVolume(channel: 'master' | AudioChannel, volume: number): void {
     this.buses[channel] = Math.max(0, Math.min(1, volume));
+    this.syncGainNodes();
+  }
+
+  setChannelMuted(channel: 'master' | AudioChannel, muted: boolean): void {
+    this.buses.muted[channel] = Boolean(muted);
     this.syncGainNodes();
   }
 

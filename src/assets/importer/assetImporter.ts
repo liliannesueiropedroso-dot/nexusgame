@@ -1,6 +1,6 @@
 import { createId } from '../../utils/id';
 import type { ProjectAssetMeta } from '../../project/models/project';
-import { detectAudioFormat, detectImageFormat } from '../library/assetUtils';
+import { detectAudioFormat, detectImageFormat, detectModel3dFormat } from '../library/assetUtils';
 import { generateThumbnailFromBlob } from '../thumbnails/thumbnailGenerator';
 
 export interface ImportedAssetResult {
@@ -19,6 +19,12 @@ const AUDIO_BADGE_THUMBNAIL =
     '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="12" fill="#18181f"/><path d="M36 60V28l28-6v32" stroke="#38bdf8" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="30" cy="62" r="8" fill="#38bdf8"/><circle cx="58" cy="56" r="8" fill="#38bdf8"/></svg>'
   );
 
+const MODEL3D_BADGE_THUMBNAIL =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="12" fill="#131926"/><polygon points="48,18 76,33 76,63 48,78 20,63 20,33" fill="none" stroke="#a855f7" stroke-width="4" stroke-linejoin="round"/><polyline points="20,33 48,48 76,33" fill="none" stroke="#c084fc" stroke-width="3.5"/><line x1="48" y1="48" x2="48" y2="78" stroke="#c084fc" stroke-width="3.5"/><text x="48" y="89" text-anchor="middle" fill="#e9d5ff" font-size="9.5" font-family="sans-serif" font-weight="bold">GLB / FBX</text></svg>'
+  );
+
 export async function importImageFiles(files: File[]): Promise<AssetImportBatchResult> {
   const imported: ImportedAssetResult[] = [];
   const errors: string[] = [];
@@ -26,11 +32,12 @@ export async function importImageFiles(files: File[]): Promise<AssetImportBatchR
   for (const file of files) {
     const imgFormat = detectImageFormat(file.name, file.type);
     const audioFormat = imgFormat ? null : detectAudioFormat(file.name, file.type);
-    const format = imgFormat ?? audioFormat;
+    const modelFormat = imgFormat || audioFormat ? null : detectModel3dFormat(file.name, file.type);
+    const format = imgFormat ?? audioFormat ?? modelFormat;
 
     if (!format) {
       errors.push(
-        `"${file.name}": formato no soportado. Permitidos: PNG, JPG, WebP, SVG, WAV, MP3, OGG, M4A, AAC, FLAC y WebM.`
+        `"${file.name}": formato no soportado. Permitidos: PNG, JPG, WebP, SVG, WAV, MP3, OGG, M4A, AAC, FLAC, WebM, GLB, GLTF y FBX.`
       );
       continue;
     }
@@ -41,6 +48,34 @@ export async function importImageFiles(files: File[]): Promise<AssetImportBatchR
     }
 
     try {
+      if (modelFormat) {
+        const mimeType =
+          file.type ||
+          (modelFormat === 'glb'
+            ? 'model/gltf-binary'
+            : modelFormat === 'fbx'
+              ? 'application/x-fbx'
+              : 'model/gltf+json');
+        const buffer = await file.arrayBuffer();
+        const blob = new Blob([buffer], { type: mimeType });
+        const baseName = file.name.replace(/\.[^.]+$/, '') || file.name;
+        const meta: ProjectAssetMeta = {
+          id: createId('asset'),
+          name: baseName,
+          filename: file.name,
+          mimeType,
+          format: modelFormat,
+          kind: 'model3d',
+          size: file.size,
+          width: 0,
+          height: 0,
+          thumbnailDataUrl: MODEL3D_BADGE_THUMBNAIL,
+          createdAt: Date.now(),
+        };
+        imported.push({ meta, blob });
+        continue;
+      }
+
       if (audioFormat) {
         const mimeType =
           file.type ||
