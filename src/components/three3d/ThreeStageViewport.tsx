@@ -445,6 +445,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
                   bodyType: o.physics3d?.bodyType ?? 'static',
                   shape: o.physics3d?.shape ?? 'box',
                   isTrigger: o.physics3d?.isTrigger,
+                  cameraCollision: o.physics3d?.cameraCollision,
                   mass: o.physics3d?.mass ?? 1,
                   gravityScale: o.physics3d?.gravityScale ?? 1,
                   restitution: o.physics3d?.restitution ?? 0.1,
