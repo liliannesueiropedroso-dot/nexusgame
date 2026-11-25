@@ -21,22 +21,29 @@ import {
   Move,
   Paintbrush,
   RotateCw,
+  Route,
   Scan,
   Scissors,
   Sparkles,
   Sprout,
+  Wrench,
 } from 'lucide-react';
 import { buildNavMeshFromScene } from '../../engine/ai3d/navmesh';
 import type {
   EditorTool,
   GameObjectData,
   GameObjectType,
+  Mesh3DProperties,
   Mesh3DShape,
   SceneData,
+  SplinePathData,
   StageResolution,
 } from '../../engine/core/types';
 import { createGameObject } from '../../engine/objects/factory';
-import { createSoftBodySimulation } from '../../engine/physics/softBodyPhysics';
+import {
+  createSoftBodySimulation,
+  getBoatPontoonLocalOffsets,
+} from '../../engine/physics/softBodyPhysics';
 import { buildWorldTrimeshData, extractWorldTrimeshFromObject3D } from '../../engine/physics3d/trimeshCollider';
 import { performCsgOperation } from '../../engine/three3d/csgOperations';
 import { buildModularGeometry } from '../../engine/three3d/geometryBuilders';
@@ -47,15 +54,20 @@ import {
   createSkyDomeMesh,
   createWaterSurfaceMesh,
   createWindFoliageInstancedMesh,
-  generateProceduralTerrain,
   groundHeightAt,
   scatterFoliageInstances,
 } from '../../engine/three3d/terrainSystem';
+import {
+  carveRiverAlongSpline,
+  resampleSpline3D,
+  sculptRoadAlongSpline,
+} from '../../engine/three3d/splineTerrain';
 import {
   detectSoftwareWebGL,
   ResourceDisposer,
 } from '../../engine/three3d/resourceDisposer';
 import { loadModel3DFromBlob } from '../../engine/three3d/modelLoader';
+import { createId } from '../../utils/id';
 import { UIWidgetOverlayLayer } from '../widgets/UIWidgetOverlayLayer';
 
 interface ThreeStageViewportProps {
@@ -102,7 +114,8 @@ type ViewportBrushMode =
   | 'sculpt_flatten'
   | 'sculpt_paint'
   | 'scatter'
-  | 'fence';
+  | 'fence'
+  | 'spline_draw';
 
 interface FaceHandleDragState {
   objectId: string;
@@ -205,11 +218,14 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
   const [showGrid, setShowGrid] = useState(true);
   const [showNavMesh, setShowNavMesh] = useState(true);
   const [showColliders, setShowColliders] = useState(false);
+  const [showPhysicsGizmos, setShowPhysicsGizmos] = useState(false);
   const [editColliderZone, setEditColliderZone] = useState(false);
   const [faceScaleEnabled, setFaceScaleEnabled] = useState(true);
   const [brushMode, setBrushMode] = useState<ViewportBrushMode>('gizmo');
   const [brushRadius, setBrushRadius] = useState(4);
   const [paintChannel, setPaintChannel] = useState<0 | 1 | 2 | 3>(0);
+  const [activeSplineId, setActiveSplineId] = useState<string | null>(null);
+  const [splineWidth, setSplineWidth] = useState<number>(4.5);
 
   const isDraggingGizmoRef = useRef(false);
   const justFinishedDragRef = useRef(false);
@@ -236,6 +252,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
     pickables: THREE.Object3D[];
     glbCache: Map<string, { scene: THREE.Group; clipNames: string[] }>;
     texCache: Map<string, THREE.Texture>;
+    defaultEnvTex: THREE.Texture;
     animatedUniforms: Array<{ uTime: { value: number } }>;
     isSoftwareGl: boolean;
     requestRender: () => void;
@@ -249,11 +266,14 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
     showGrid,
     showNavMesh,
     showColliders,
+    showPhysicsGizmos,
     editColliderZone,
     faceScaleEnabled,
     brushMode,
     brushRadius,
     paintChannel,
+    activeSplineId,
+    splineWidth,
     onSelectObjects,
     onPreviewObjectsChange,
     onCommitObjectsChange,
@@ -268,11 +288,14 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
     showGrid,
     showNavMesh,
     showColliders,
+    showPhysicsGizmos,
     editColliderZone,
     faceScaleEnabled,
     brushMode,
     brushRadius,
     paintChannel,
+    activeSplineId,
+    splineWidth,
     onSelectObjects,
     onPreviewObjectsChange,
     onCommitObjectsChange,
@@ -692,6 +715,44 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
         const updated = [...currentList, fence];
         brushWorkingObjects = updated;
         curState.onCommitObjectsChange(updated);
+        return;
+      }
+
+      if (mode === 'spline_draw' && isInitialClick) {
+        const curSplines = curState.scene.splines3d ?? [];
+        let targetId = curState.activeSplineId;
+        if (!targetId || !curSplines.some((sp) => sp.id === targetId)) {
+          targetId = curSplines[0]?.id ?? null;
+        }
+        const newPt = {
+          x: Number(pt.x.toFixed(2)),
+          y: Number(pt.y.toFixed(2)),
+          z: Number(pt.z.toFixed(2)),
+        };
+        if (!targetId) {
+          const newSpline: SplinePathData = {
+            id: createId('spline'),
+            name: `Ruta_Spline_${curSplines.length + 1}`,
+            kind: 'road',
+            closed: false,
+            width: curState.splineWidth || 4.5,
+            points: [newPt],
+          };
+          setActiveSplineId(newSpline.id);
+          curState.onUpdateScene((s) => ({
+            ...s,
+            splines3d: [...(s.splines3d ?? []), newSpline],
+          }));
+        } else {
+          curState.onUpdateScene((s) => ({
+            ...s,
+            splines3d: (s.splines3d ?? []).map((sp) =>
+              sp.id === targetId
+                ? { ...sp, points: [...sp.points, newPt] }
+                : sp
+            ),
+          }));
+        }
       }
     };
 
@@ -932,6 +993,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
       pickables: [],
       glbCache,
       texCache,
+      defaultEnvTex: envTex,
       animatedUniforms: [],
       isSoftwareGl,
       requestRender,
@@ -1001,7 +1063,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
     // Fondo, Niebla, Domo de Cielo Día/Noche e Iluminación inteligente con rebote
     const bgColor = scene.backgroundColor || '#131722';
     threeScene.background = new THREE.Color(bgColor);
-    threeScene.environment = null;
+    threeScene.environment = ctx.defaultEnvTex;
 
     ctx.animatedUniforms = [];
 
@@ -1316,19 +1378,47 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
           const geom = disposer.trackGeometry(buildModularGeometry(mCfg));
           const mapTex = resolveTexture(mCfg.textureAssetId, true);
           const normalTex = resolveTexture(mCfg.normalAssetId, false);
+          const roughTex = resolveTexture(mCfg.roughnessAssetId, false);
+          const metalTex = resolveTexture(mCfg.metalnessAssetId, false);
+          const aoTex = resolveTexture(mCfg.aoAssetId, false);
+          const emissiveTex = resolveTexture(mCfg.emissiveAssetId, true);
+
+          if (aoTex && geom.attributes.uv && !geom.attributes.uv2) {
+            geom.setAttribute('uv2', geom.attributes.uv);
+          }
+
+          const cc = mCfg.clearcoat ?? 0;
+          const trans = ctx.isSoftwareGl ? 0 : (mCfg.transmission ?? 0);
+          const usePhysical = cc > 0 || trans > 0;
+          const baseParams = {
+            color: mapTex || isTerrain ? '#ffffff' : mCfg.color || '#3b82f6',
+            vertexColors: isTerrain,
+            metalness: isTerrain ? 0.04 : mCfg.metalness ?? 0.2,
+            roughness: isTerrain ? 0.88 : mCfg.roughness ?? 0.6,
+            emissive: new THREE.Color(mCfg.emissive || '#000000'),
+            emissiveIntensity: mCfg.emissiveIntensity ?? 0,
+            emissiveMap: emissiveTex,
+            map: mapTex,
+            normalMap: normalTex,
+            roughnessMap: roughTex,
+            metalnessMap: metalTex,
+            aoMap: aoTex,
+            aoMapIntensity: aoTex ? 0.9 : 0,
+            envMapIntensity: 1.15,
+            transparent: obj.opacity < 1 || trans > 0,
+            opacity: obj.opacity,
+          };
+
           const mat = disposer.trackMaterial(
-            new THREE.MeshStandardMaterial({
-              color: mapTex || isTerrain ? '#ffffff' : mCfg.color || '#3b82f6',
-              vertexColors: isTerrain,
-              metalness: isTerrain ? 0.04 : mCfg.metalness ?? 0.2,
-              roughness: isTerrain ? 0.88 : mCfg.roughness ?? 0.6,
-              emissive: new THREE.Color(mCfg.emissive || '#000000'),
-              emissiveIntensity: mCfg.emissiveIntensity ?? 0,
-              map: mapTex,
-              normalMap: normalTex,
-              transparent: obj.opacity < 1,
-              opacity: obj.opacity,
-            })
+            usePhysical
+              ? new THREE.MeshPhysicalMaterial({
+                  ...baseParams,
+                  clearcoat: cc,
+                  clearcoatRoughness: mCfg.clearcoatRoughness ?? 0.12,
+                  transmission: trans,
+                  ior: 1.48,
+                })
+              : new THREE.MeshStandardMaterial(baseParams)
           );
           const mesh = new THREE.Mesh(geom, mat);
           mesh.castShadow = mCfg.castShadow && !ctx.isSoftwareGl;
@@ -1529,7 +1619,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
     let colliderEditProxy: THREE.Object3D | null = null;
     if (showColliders) {
       for (const obj of scene.objects) {
-        if (!obj.visible || obj.type !== 'mesh_3d' || obj.physics3d?.enabled === false) continue;
+        if (!obj.visible || (obj.type !== 'mesh_3d' && !(obj.type === 'container' && obj.physics3d?.enabled)) || obj.physics3d?.enabled === false) continue;
         const t = obj.transform3d ?? DEFAULT_T3D;
         const shape = obj.physics3d?.shape ?? 'box';
         const isExactShape =
@@ -1665,6 +1755,152 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
       collidersRoot.add(coneWire);
     }
 
+    // Depurador Visual de Físicas (Gizmos): amortiguadores, pontones de agua, vectores y gravedad local
+    if (showPhysicsGizmos) {
+      const sphGeo = disposer.trackGeometry(new THREE.SphereGeometry(0.16, 10, 8));
+      for (const obj of scene.objects) {
+        if (!obj.visible || !obj.vehicle?.enabled) continue;
+        const t = obj.transform3d ?? DEFAULT_T3D;
+        const vCfg = obj.vehicle;
+        const kind = vCfg.vehicleKind ?? 'car';
+        const q = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(
+            THREE.MathUtils.degToRad(t.rx),
+            THREE.MathUtils.degToRad(t.ry),
+            THREE.MathUtils.degToRad(t.rz)
+          )
+        );
+        const pos = new THREE.Vector3(t.x, t.y, t.z);
+
+        // Vector dirección hacia adelante (+Z local) con punta de flecha
+        const fwdDir = new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize();
+        const rightDir = new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize();
+        const arrowStart = pos.clone().add(new THREE.Vector3(0, 0.28, 0));
+        const arrowTip = arrowStart.clone().addScaledVector(fwdDir, 3.6);
+        const arrowWingL = arrowTip.clone().addScaledVector(fwdDir, -0.55).addScaledVector(rightDir, -0.38);
+        const arrowWingR = arrowTip.clone().addScaledVector(fwdDir, -0.55).addScaledVector(rightDir, 0.38);
+        const arrowPts = [arrowStart, arrowTip, arrowTip, arrowWingL, arrowTip, arrowWingR];
+        const arrowGeo = disposer.trackGeometry(new THREE.BufferGeometry().setFromPoints(arrowPts));
+        const arrowMat = disposer.trackMaterial(
+          new THREE.LineBasicMaterial({ color: '#facc15', depthTest: false, transparent: true, opacity: 0.96 })
+        );
+        const arrowLine = new THREE.LineSegments(arrowGeo, arrowMat);
+        arrowLine.renderOrder = 998;
+        collidersRoot.add(arrowLine);
+
+        if (kind === 'car' || kind === 'moto') {
+          const hw = kind === 'moto' ? 0 : (vCfg.trackWidth || 1.92) * 0.5;
+          const hl = (vCfg.wheelBase || 2.5) * 0.5;
+          const rest = Math.max(0.35, vCfg.suspensionRestLen || 0.65);
+          const wheelR = Math.max(0.2, vCfg.wheelRadius || 0.42);
+          const wheelOffsets =
+            kind === 'moto'
+              ? [new THREE.Vector3(0, 0, hl), new THREE.Vector3(0, 0, -hl)]
+              : [
+                  new THREE.Vector3(-hw, 0, hl),
+                  new THREE.Vector3(hw, 0, hl),
+                  new THREE.Vector3(-hw, 0, -hl),
+                  new THREE.Vector3(hw, 0, -hl),
+                ];
+          const suspPts: THREE.Vector3[] = [];
+          const wheelMat = disposer.trackMaterial(
+            new THREE.MeshBasicMaterial({ color: '#22d3ee', depthTest: false, transparent: true, opacity: 0.95 })
+          );
+          for (const wo of wheelOffsets) {
+            const topW = wo.clone().applyQuaternion(q).add(pos);
+            const botW = wo
+              .clone()
+              .add(new THREE.Vector3(0, -(rest + wheelR * 0.5), 0))
+              .applyQuaternion(q)
+              .add(pos);
+            suspPts.push(topW, botW);
+            const wm = new THREE.Mesh(sphGeo, wheelMat);
+            wm.position.copy(botW);
+            wm.renderOrder = 998;
+            collidersRoot.add(wm);
+          }
+          const suspGeo = disposer.trackGeometry(new THREE.BufferGeometry().setFromPoints(suspPts));
+          const suspMat = disposer.trackMaterial(
+            new THREE.LineBasicMaterial({ color: '#34d399', depthTest: false, transparent: true, opacity: 0.95 })
+          );
+          const suspLines = new THREE.LineSegments(suspGeo, suspMat);
+          suspLines.renderOrder = 998;
+          collidersRoot.add(suspLines);
+        } else if (kind === 'boat') {
+          const pontoons = getBoatPontoonLocalOffsets(vCfg.boatSize ?? 'speedboat', vCfg.trackWidth, vCfg.wheelBase);
+          const pMat = disposer.trackMaterial(
+            new THREE.MeshBasicMaterial({ color: '#38bdf8', depthTest: false, transparent: true, opacity: 0.95 })
+          );
+          for (const pOff of pontoons) {
+            const wp = new THREE.Vector3(pOff.ox, -0.25, pOff.oz).applyQuaternion(q).add(pos);
+            const pm = new THREE.Mesh(sphGeo, pMat);
+            pm.position.copy(wp);
+            pm.renderOrder = 998;
+            collidersRoot.add(pm);
+          }
+          const linkedWater =
+            scene.objects.find((o) => o.id === vCfg.waterObjectId) ??
+            scene.objects.find((o) => o.type === 'mesh_3d' && o.mesh3d?.shape === 'water');
+          if (linkedWater) {
+            const wt = linkedWater.transform3d ?? DEFAULT_T3D;
+            const planeWireGeo = disposer.trackGeometry(
+              new THREE.EdgesGeometry(new THREE.BoxGeometry(5.5, 0.04, 5.5))
+            );
+            const planeWireMat = disposer.trackMaterial(
+              new THREE.LineBasicMaterial({ color: '#0ea5e9', depthTest: false, transparent: true, opacity: 0.9 })
+            );
+            const pw = new THREE.LineSegments(planeWireGeo, planeWireMat);
+            pw.position.set(pos.x, wt.y, pos.z);
+            pw.renderOrder = 998;
+            collidersRoot.add(pw);
+          }
+        } else if (kind === 'spaceship' && vCfg.localGravityBox?.enabled) {
+          const gb = vCfg.localGravityBox;
+          const gbGeo = disposer.trackGeometry(
+            new THREE.EdgesGeometry(new THREE.BoxGeometry(gb.sx, gb.sy, gb.sz))
+          );
+          const gbMat = disposer.trackMaterial(
+            new THREE.LineBasicMaterial({ color: '#c084fc', depthTest: false, transparent: true, opacity: 0.92 })
+          );
+          const gbWire = new THREE.LineSegments(gbGeo, gbMat);
+          gbWire.position.copy(pos);
+          gbWire.quaternion.copy(q);
+          gbWire.renderOrder = 998;
+          collidersRoot.add(gbWire);
+        }
+      }
+    }
+
+    // Visualización de Curvas Splines 3D en el editor
+    const splines = scene.splines3d ?? [];
+    if (splines.length > 0) {
+      const ptGeo = disposer.trackGeometry(new THREE.SphereGeometry(0.22, 10, 8));
+      for (const sp of splines) {
+        const isActiveSp = sp.id === activeSplineId || brushMode === 'spline_draw';
+        const ptMat = disposer.trackMaterial(
+          new THREE.MeshBasicMaterial({ color: isActiveSp ? '#f59e0b' : '#94a3b8' })
+        );
+        for (const p of sp.points) {
+          const dot = new THREE.Mesh(ptGeo, ptMat);
+          dot.position.set(p.x, p.y + 0.12, p.z);
+          collidersRoot.add(dot);
+        }
+        if (sp.points.length >= 2) {
+          const sampled = resampleSpline3D(sp.points, sp.closed, 0.65);
+          const linePts = sampled.map((s) => new THREE.Vector3(s.x, s.y + 0.15, s.z));
+          const curveGeo = disposer.trackGeometry(new THREE.BufferGeometry().setFromPoints(linePts));
+          const curveMat = disposer.trackMaterial(
+            new THREE.LineBasicMaterial({
+              color: isActiveSp ? '#fbbf24' : '#38bdf8',
+              transparent: true,
+              opacity: isActiveSp ? 0.95 : 0.65,
+            })
+          );
+          collidersRoot.add(new THREE.Line(curveGeo, curveMat));
+        }
+      }
+    }
+
     // Visualización de NavMesh mediante un único InstancedMesh
     if (showNavMesh && scene.navMesh) {
       const nav = scene.navMesh;
@@ -1792,7 +2028,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
     }
 
     requestRender();
-  }, [scene, selectedIds, assetBlobs, showGrid, showNavMesh, showColliders, editColliderZone, activeTool, faceScaleEnabled, brushMode]);
+  }, [scene, selectedIds, assetBlobs, showGrid, showNavMesh, showColliders, showPhysicsGizmos, activeSplineId, editColliderZone, activeTool, faceScaleEnabled, brushMode]);
 
   // Cambiar modo de TransformControls / OrbitControls según herramienta o pincel activo
   useEffect(() => {
@@ -1932,6 +2168,103 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
       'success',
       `Mapa IA (NavMesh) generado: ${walkableCells} celdas transitables (${nav.cols}×${nav.rows}).`
     );
+  };
+
+  const activeSpline =
+    (scene.splines3d ?? []).find((s) => s.id === activeSplineId) ??
+    (scene.splines3d ?? [])[0] ??
+    null;
+
+  const ensureTerrainForSpline = (): { objects: GameObjectData[]; terrainObj: GameObjectData } => {
+    const existing = scene.objects.find(
+      (o) => o.type === 'mesh_3d' && o.mesh3d?.shape === 'terrain'
+    );
+    if (existing) return { objects: scene.objects, terrainObj: existing };
+    const created = createGameObject('mesh_3d', scene.objects, {
+      name: 'Terreno_Procedural',
+      shape3d: 'terrain',
+      x3d: 0,
+      y3d: 0,
+      z3d: 0,
+    });
+    return { objects: [...scene.objects, created], terrainObj: created };
+  };
+
+  const handleSculptRoadFromSpline = () => {
+    if (!activeSpline || activeSpline.points.length < 2) {
+      onNotify?.('info', 'Coloca al menos 2 puntos sobre el escenario con la herramienta Spline 3D.');
+      return;
+    }
+    const { objects: baseList, terrainObj } = ensureTerrainForSpline();
+    const nextTd = sculptRoadAlongSpline(terrainObj, activeSpline, {
+      halfWidth: Math.max(0.9, splineWidth * 0.5),
+      roadChannel: 1,
+    });
+    if (!nextTd) return;
+    onUpdateScene((s) => ({
+      ...s,
+      objects: baseList.map((o) =>
+        o.id === terrainObj.id && o.mesh3d
+          ? { ...o, mesh3d: { ...o.mesh3d, terrainData: nextTd } }
+          : o
+      ),
+    }));
+    onNotify?.('success', `Carretera esculpida y pintada sobre el terreno a lo largo de "${activeSpline.name}".`);
+  };
+
+  const handleCarveRiverFromSpline = () => {
+    if (!activeSpline || activeSpline.points.length < 2) {
+      onNotify?.('info', 'Coloca al menos 2 puntos sobre el escenario con la herramienta Spline 3D.');
+      return;
+    }
+    const { objects: baseList, terrainObj } = ensureTerrainForSpline();
+    const res = carveRiverAlongSpline(terrainObj, activeSpline, {
+      halfWidth: Math.max(1.2, splineWidth * 0.55),
+      depth: 2.2,
+    });
+    if (!res) return;
+    const riverWater = createGameObject('mesh_3d', baseList, {
+      name: `Rio_${activeSpline.name}`,
+      shape3d: 'water',
+      x3d: res.waterTransform.x,
+      y3d: res.waterTransform.y,
+      z3d: res.waterTransform.z,
+    });
+    riverWater.mesh3d = {
+      ...riverWater.mesh3d!,
+      shape: 'water',
+      waterConfig: res.waterConfig,
+    };
+    onUpdateScene((s) => ({
+      ...s,
+      objects: [
+        ...baseList.map((o) =>
+          o.id === terrainObj.id && o.mesh3d
+            ? { ...o, mesh3d: { ...o.mesh3d, terrainData: res.terrainData } }
+            : o
+        ),
+        riverWater,
+      ],
+    }));
+    onSelectObjects([riverWater.id]);
+    onNotify?.('success', `Cauce excavado y lleno de agua ("${riverWater.name}") creado.`);
+  };
+
+  const handleCreateNewSpline = () => {
+    const cur = scene.splines3d ?? [];
+    const created: SplinePathData = {
+      id: createId('spline'),
+      name: `Ruta_Spline_${cur.length + 1}`,
+      kind: 'road',
+      closed: false,
+      width: splineWidth,
+      points: [],
+    };
+    setActiveSplineId(created.id);
+    onUpdateScene((s) => ({
+      ...s,
+      splines3d: [...(s.splines3d ?? []), created],
+    }));
   };
 
   return (
@@ -2140,6 +2473,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
             ['sculpt_paint', 'Pintar textura', Paintbrush],
             ['scatter', 'Esparcir hierba', Sprout],
             ['fence', 'Valla magnética', Fence],
+            ['spline_draw', 'Spline 3D', Route],
           ] as Array<[ViewportBrushMode, string, typeof Mountain]>
         ).map(([bMode, bLabel, BIcon]) => (
           <button
@@ -2159,7 +2493,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
           </button>
         ))}
 
-        {brushMode !== 'gizmo' && (
+        {brushMode !== 'gizmo' && brushMode !== 'spline_draw' && (
           <div className="flex items-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-200">
             <label className="flex items-center gap-1">
               <span>Radio</span>
@@ -2188,6 +2522,94 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
                 <option value={3}>Arena</option>
               </select>
             )}
+          </div>
+        )}
+
+        {brushMode === 'spline_draw' && (
+          <div className="flex flex-wrap items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-100">
+            <select
+              aria-label="Curva Spline 3D activa"
+              value={activeSpline?.id ?? ''}
+              onChange={(e) => setActiveSplineId(e.target.value || null)}
+              className="rounded border border-[#32384a] bg-[#141722] px-1.5 py-0.5 text-[11px] text-zinc-100"
+            >
+              {(scene.splines3d ?? []).length === 0 && <option value="">Haz clic para trazar</option>}
+              {(scene.splines3d ?? []).map((sp) => (
+                <option key={sp.id} value={sp.id}>
+                  {sp.name} ({sp.points.length} pts)
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handleCreateNewSpline}
+              className="rounded bg-[#222636] px-1.5 py-0.5 text-[10px] font-semibold text-amber-200 hover:bg-[#2d3347]"
+            >
+              + Nueva Ruta
+            </button>
+            {activeSpline && activeSpline.points.length > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateScene((s) => ({
+                    ...s,
+                    splines3d: (s.splines3d ?? []).map((sp) =>
+                      sp.id === activeSpline.id
+                        ? { ...sp, points: sp.points.slice(0, -1) }
+                        : sp
+                    ),
+                  }))
+                }
+                className="rounded bg-[#222636] px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-[#2d3347]"
+              >
+                Deshacer Punto
+              </button>
+            )}
+            {activeSpline && activeSpline.points.length >= 3 && (
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateScene((s) => ({
+                    ...s,
+                    splines3d: (s.splines3d ?? []).map((sp) =>
+                      sp.id === activeSpline.id ? { ...sp, closed: !sp.closed } : sp
+                    ),
+                  }))
+                }
+                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                  activeSpline.closed ? 'bg-amber-600/40 text-amber-100' : 'bg-[#222636] text-zinc-300'
+                }`}
+              >
+                {activeSpline.closed ? 'Bucle Cerrado' : 'Cerrar Bucle'}
+              </button>
+            )}
+            <label className="flex items-center gap-1 text-[10px]">
+              <span>Ancho</span>
+              <input
+                type="range"
+                min={2}
+                max={14}
+                step={0.5}
+                aria-label="Ancho de ruta Spline"
+                value={splineWidth}
+                onChange={(e) => setSplineWidth(Number(e.target.value))}
+                className="w-12 accent-amber-400"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={handleSculptRoadFromSpline}
+              className="rounded bg-amber-600/85 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-amber-500"
+            >
+              Aplanar Carretera
+            </button>
+            <button
+              type="button"
+              onClick={handleCarveRiverFromSpline}
+              className="rounded bg-cyan-600/85 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-cyan-500"
+            >
+              Excavar Río + Agua
+            </button>
           </div>
         )}
 
@@ -2220,6 +2642,19 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
         >
           <Scan className="h-3.5 w-3.5" />
           <span>Colisiones</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowPhysicsGizmos((v) => !v)}
+          aria-pressed={showPhysicsGizmos}
+          title="Depurador Visual de Físicas: líneas de amortiguadores, pontones de agua, vectores y caja de gravedad espacial"
+          className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium ${
+            showPhysicsGizmos ? 'bg-purple-600/30 text-purple-200 ring-1 ring-purple-500/50' : 'text-zinc-400 hover:text-zinc-100'
+          }`}
+        >
+          <Wrench className="h-3.5 w-3.5" />
+          <span>Físicas</span>
         </button>
 
         {showColliders && (

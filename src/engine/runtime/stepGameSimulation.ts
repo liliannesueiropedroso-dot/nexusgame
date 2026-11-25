@@ -1463,6 +1463,10 @@ function executeActionList(
         }
         break;
       }
+      case 'vehicle.enterExit': {
+        // Implementado activamente en el motor 3D (physics3d / HTML5 3D)
+        break;
+      }
       case 'vfx.emit': {
         const target = resolveActionTarget(p.target, objectMap, ctx);
         const x = target ? target.transform.x : Number(p.x ?? 640);

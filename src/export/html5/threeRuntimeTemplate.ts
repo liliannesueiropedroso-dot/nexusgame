@@ -732,15 +732,75 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     }
   }
 
+  function sampleSpline3D(points, closed, tRaw) {
+    if (!points || points.length === 0) return { x: 0, y: 0, z: 0, tx: 0, ty: 0, tz: 1 };
+    if (points.length === 1) return { x: points[0].x, y: points[0].y, z: points[0].z, tx: 0, ty: 0, tz: 1 };
+    var t = closed ? ((tRaw % 1) + 1) % 1 : Math.max(0, Math.min(1, tRaw));
+    var n = points.length, segCount = closed ? n : n - 1;
+    var scaled = t * segCount;
+    var idx = Math.min(segCount - 1, Math.floor(scaled));
+    var u = scaled - idx;
+    function ptAt(k) {
+      if (closed) return points[((k % n) + n) % n];
+      return points[Math.max(0, Math.min(n - 1, k))];
+    }
+    var p0 = ptAt(idx - 1), p1 = ptAt(idx), p2 = ptAt(idx + 1), p3 = ptAt(idx + 2);
+    var u2 = u * u, u3 = u2 * u;
+    function cm(a, b, c, d) {
+      return 0.5 * ((2 * b) + (-a + c) * u + (2 * a - 5 * b + 4 * c - d) * u2 + (-a + 3 * b - 3 * c + d) * u3);
+    }
+    function cmTan(a, b, c, d) {
+      return 0.5 * ((-a + c) + 2 * (2 * a - 5 * b + 4 * c - d) * u + 3 * (-a + 3 * b - 3 * c + d) * u2);
+    }
+    var tx = cmTan(p0.x, p1.x, p2.x, p3.x), ty = cmTan(p0.y, p1.y, p2.y, p3.y), tz = cmTan(p0.z, p1.z, p2.z, p3.z);
+    var tl = Math.hypot(tx, ty, tz) || 1;
+    return { x: cm(p0.x, p1.x, p2.x, p3.x), y: cm(p0.y, p1.y, p2.y, p3.y), z: cm(p0.z, p1.z, p2.z, p3.z), tx: tx / tl, ty: ty / tl, tz: tz / tl };
+  }
+
+  function sampleWaterWaveHeightAt(wx0, wy0, wz0, cfg, wx, wz, timeSec) {
+    var hw = Math.max(2, (cfg.width || 24) * 0.5), hd = Math.max(2, (cfg.depth || 24) * 0.5);
+    if (Math.abs(wx - wx0) > hw || Math.abs(wz - wz0) > hd) return null;
+    var spd = cfg.waveSpeed !== undefined ? cfg.waveSpeed : 1.8;
+    var amp = cfg.waveAmplitude !== undefined ? cfg.waveAmplitude : 0.14;
+    var fx = cfg.flowX !== undefined ? cfg.flowX : 0.6, fz = cfg.flowZ !== undefined ? cfg.flowZ : 0.2;
+    var t = timeSec * spd;
+    var w1 = Math.sin(wx * 0.75 + t + fx * t * 0.8) * Math.cos(wz * 0.65 + fz * t * 0.8);
+    var w2 = Math.sin((wx + wz) * 1.4 - t * 1.3) * 0.4;
+    return wy0 + (w1 + w2) * amp;
+  }
+
+  function getBoatPontoonLocalOffsets(cfg) {
+    var preset = cfg.boatSize || 'speedboat';
+    var hw = Math.max(0.7, (cfg.trackWidth || (preset === 'ship' ? 4.8 : preset === 'medium' ? 2.4 : 2.1)) * 0.45);
+    var hl = Math.max(1.2, (cfg.wheelBase || (preset === 'ship' ? 12 : preset === 'medium' ? 5.2 : 4.4)) * 0.45);
+    if (preset === 'ship') {
+      return [[-hw,-hl],[0,-hl],[hw,-hl],[-hw,-hl*0.35],[0,-hl*0.35],[hw,-hl*0.35],[-hw,hl*0.35],[0,hl*0.35],[hw,hl*0.35],[-hw,hl],[0,hl],[hw,hl]];
+    }
+    if (preset === 'medium') {
+      return [[-hw,hl],[hw,hl],[-hw,0],[hw,0],[-hw,-hl],[hw,-hl]];
+    }
+    return [[-hw,hl],[hw,hl],[-hw,-hl],[hw,-hl]];
+  }
+
+  function shouldStepVehiclePhysics(vx, vy, vz, camX, camY, camZ, cfg) {
+    var lod = cfg && cfg.physicsLodDistance !== undefined ? cfg.physicsLodDistance : 120;
+    if (!lod || lod <= 0) return true;
+    return Math.hypot(vx - camX, vy - camY, vz - camZ) <= lod;
+  }
+
   function createVehicle4WState(x, y, z, yawDeg, cfg) {
-    var hw = (cfg.trackWidth || 1.7) * 0.5, hl = (cfg.wheelBase || 2.6) * 0.5;
+    var isMoto = cfg.vehicleKind === 'moto';
+    var hw = isMoto ? 0 : (cfg.trackWidth || 1.7) * 0.5, hl = (cfg.wheelBase || 2.6) * 0.5;
     function mk(ox, oz) { return { offsetX: ox, offsetZ: oz, compression: 0, grounded: false, steerAngleRad: 0, spinRad: 0, worldX: x + ox, worldY: y, worldZ: z + oz }; }
-    return { x: x, y: y, z: z, yawRad: (yawDeg || 0) * DEG2RAD, pitchRad: 0, rollRad: 0, vx: 0, vy: 0, vz: 0, speedForward: 0, steerAngleRad: 0, wheels: [mk(-hw, hl), mk(hw, hl), mk(-hw, -hl), mk(hw, -hl)] };
+    var pts = getBoatPontoonLocalOffsets(cfg).map(function (p) { return { offsetX: p[0], offsetZ: p[1], submerged: 0, waterY: y }; });
+    return { x: x, y: y, z: z, prevX: x, prevY: y, prevZ: z, yawRad: (yawDeg || 0) * DEG2RAD, pitchRad: 0, rollRad: 0, vx: 0, vy: 0, vz: 0, speedForward: 0, steerAngleRad: 0, propellerSpinRad: 0, wheels: [mk(-hw, hl), mk(hw, hl), mk(-hw, -hl), mk(hw, -hl)], pontoons: pts };
   }
 
   function stepVehicle4W(st, cfg, thr, str, dt, sampleGroundY) {
     var sdt = Math.min(0.033, Math.max(0.001, dt));
-    var maxSteer = (cfg.maxSteerDeg || 32) * DEG2RAD;
+    st.prevX = st.x; st.prevY = st.y; st.prevZ = st.z;
+    var isMoto = cfg.vehicleKind === 'moto';
+    var maxSteer = (cfg.maxSteerDeg || (isMoto ? 36 : 32)) * DEG2RAD;
     st.steerAngleRad += (Math.max(-1, Math.min(1, str)) * maxSteer - st.steerAngleRad) * Math.min(1, sdt * 10);
     var cosY = Math.cos(st.yawRad), sinY = Math.sin(st.yawRad);
     var wheelR = Math.max(0.18, cfg.wheelRadius || 0.42), restLen = Math.max(0.15, cfg.suspensionRestLen || 0.65);
@@ -768,15 +828,123 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     if (traction > 0 && Math.abs(st.speedForward) > 0.15) {
       st.yawRad -= (st.speedForward / Math.max(1.2, cfg.wheelBase || 2.6)) * Math.tan(st.steerAngleRad) * sdt;
     }
-    st.vx = Math.sin(st.yawRad) * st.speedForward; st.vz = Math.cos(st.yawRad) * st.speedForward;
+    var fwdX = Math.sin(st.yawRad), fwdZ = Math.cos(st.yawRad), rightX = Math.cos(st.yawRad), rightZ = -Math.sin(st.yawRad);
+    var grip = Math.max(0.08, Math.min(1, cfg.gripFactor !== undefined ? cfg.gripFactor : 0.88));
+    var curLat = st.vx * rightX + st.vz * rightZ;
+    var dampLat = curLat * Math.max(0, 1 - grip * 14 * sdt);
+    st.vx = fwdX * st.speedForward + rightX * dampLat;
+    st.vz = fwdZ * st.speedForward + rightZ * dampLat;
     st.x += st.vx * sdt; st.z += st.vz * sdt;
     st.vy += (totalSpring * 0.25 - 18) * sdt; st.y += st.vy * sdt;
     var avgG = (st.wheels[0].worldY + st.wheels[1].worldY + st.wheels[2].worldY + st.wheels[3].worldY) * 0.25;
     if (st.y < avgG + restLen * 0.45) { st.y = avgG + restLen * 0.45; if (st.vy < 0) st.vy = 0; }
     var fAvg = (st.wheels[0].worldY + st.wheels[1].worldY) * 0.5, rAvg = (st.wheels[2].worldY + st.wheels[3].worldY) * 0.5;
     var lAvg = (st.wheels[0].worldY + st.wheels[2].worldY) * 0.5, riAvg = (st.wheels[1].worldY + st.wheels[3].worldY) * 0.5;
+    var leanFactor = isMoto ? 0.42 : 0.12;
     st.pitchRad += (Math.atan2(rAvg - fAvg, Math.max(1, cfg.wheelBase || 2.6)) - thr * 0.04 - st.pitchRad) * Math.min(1, sdt * 10);
-    st.rollRad += (Math.atan2(lAvg - riAvg, Math.max(1, cfg.trackWidth || 1.7)) + str * (st.speedForward / maxSpd) * 0.12 - st.rollRad) * Math.min(1, sdt * 10);
+    st.rollRad += (Math.atan2(lAvg - riAvg, Math.max(0.6, cfg.trackWidth || 1.7)) + str * (st.speedForward / maxSpd) * leanFactor - st.rollRad) * Math.min(1, sdt * 10);
+  }
+
+  function stepBoatVehicle(st, cfg, thr, str, dt, sampleWaterY) {
+    var sdt = Math.min(0.033, Math.max(0.001, dt));
+    st.prevX = st.x; st.prevY = st.y; st.prevZ = st.z;
+    var bSize = cfg.boatSize || 'speedboat';
+    var inDamp = bSize === 'ship' ? 0.35 : bSize === 'medium' ? 0.65 : 1.0;
+    var cosY = Math.cos(st.yawRad), sinY = Math.sin(st.yawRad);
+    var totalBuoy = 0, subCount = 0, pitchSum = 0, rollSum = 0;
+    var pts = st.pontoons || [];
+    for (var i = 0; i < pts.length; i++) {
+      var pt = pts[i];
+      var wx = st.x + pt.offsetX * cosY + pt.offsetZ * sinY;
+      var wz = st.z - pt.offsetX * sinY + pt.offsetZ * cosY;
+      var wY = sampleWaterY(wx, wz);
+      var sub = Math.max(0, Math.min(2.0, wY - (st.y - 0.35)));
+      pt.submerged = sub; pt.waterY = wY;
+      if (sub > 0) { subCount++; totalBuoy += sub * 24; }
+      pitchSum += wY * (pt.offsetZ >= 0 ? 1 : -1);
+      rollSum += wY * (pt.offsetX <= 0 ? 1 : -1);
+    }
+    var inWater = subCount > 0 ? subCount / Math.max(1, pts.length) : 0;
+    var drag = Math.max(0.2, Math.min(6, cfg.buoyancyDrag !== undefined ? cfg.buoyancyDrag : 1.45));
+    if (Math.abs(thr) > 0.02) st.speedForward += (cfg.maxTorque || 20) * inDamp * Math.max(-0.5, Math.min(1, thr)) * (0.35 + 0.65 * inWater) * sdt;
+    else st.speedForward *= Math.max(0, 1 - drag * sdt);
+    var maxSpd = Math.max(4, cfg.maxSpeed || (bSize === 'ship' ? 14 : 24));
+    st.speedForward = Math.max(-maxSpd * 0.4, Math.min(maxSpd, st.speedForward));
+    st.yawRad -= str * (bSize === 'ship' ? 0.55 : bSize === 'medium' ? 0.9 : 1.35) * (0.45 + 0.55 * (Math.abs(st.speedForward) / maxSpd)) * sdt;
+    st.vx = Math.sin(st.yawRad) * st.speedForward; st.vz = Math.cos(st.yawRad) * st.speedForward;
+    st.x += st.vx * sdt; st.z += st.vz * sdt;
+    st.vy += (totalBuoy / Math.max(1, pts.length) - 12 - st.vy * (cfg.suspensionDamping || 4.2)) * sdt;
+    st.y += st.vy * sdt;
+    st.propellerSpinRad += (6 + Math.abs(st.speedForward) * 2.2) * sdt;
+    st.pitchRad += (Math.max(-0.35, Math.min(0.35, -pitchSum * 0.06 * inDamp - thr * 0.06 * inDamp)) - st.pitchRad) * Math.min(1, sdt * (6 * inDamp + 1.5));
+    st.rollRad += (Math.max(-0.4, Math.min(0.4, rollSum * 0.06 * inDamp + str * 0.14 * inDamp)) - st.rollRad) * Math.min(1, sdt * (6 * inDamp + 1.5));
+  }
+
+  function stepPlaneVehicle(st, cfg, thr, pitchIn, rollIn, yawIn, dt, sampleGroundY) {
+    var sdt = Math.min(0.033, Math.max(0.001, dt));
+    st.prevX = st.x; st.prevY = st.y; st.prevZ = st.z;
+    var isFighter = (cfg.planeStyle || 'fighter') === 'fighter';
+    var pitchRate = isFighter ? 1.85 : 0.72, rollRate = isFighter ? 2.8 : 0.95, yawRate = isFighter ? 1.25 : 0.55;
+    st.pitchRad = Math.max(-1.2, Math.min(1.2, st.pitchRad + pitchIn * pitchRate * sdt));
+    if (!isFighter && Math.abs(pitchIn) < 0.05) st.pitchRad *= Math.max(0, 1 - 1.6 * sdt);
+    st.rollRad += rollIn * rollRate * sdt;
+    if (!isFighter) {
+      var maxAirR = (32 * Math.PI) / 180;
+      st.rollRad = Math.max(-maxAirR, Math.min(maxAirR, st.rollRad));
+      if (Math.abs(rollIn) < 0.05) st.rollRad *= Math.max(0, 1 - 2.4 * sdt);
+    }
+    st.yawRad -= (yawIn * yawRate + Math.sin(st.rollRad) * (isFighter ? 1.35 : 0.65)) * sdt;
+    var maxSpd = Math.max(12, cfg.maxSpeed || (isFighter ? 56 : 38));
+    var thrustAcc = (cfg.maxTorque || (isFighter ? 28 : 16)) * Math.max(-0.25, Math.min(1, thr));
+    if (Math.abs(thr) > 0.02) st.speedForward += thrustAcc * sdt; else st.speedForward *= Math.max(0, 1 - 0.18 * sdt);
+    st.speedForward = Math.max(0, Math.min(maxSpd, st.speedForward));
+    st.propellerSpinRad += (10 + st.speedForward * 1.8) * sdt;
+    var cosP = Math.cos(st.pitchRad), sinP = Math.sin(st.pitchRad);
+    st.vx = Math.sin(st.yawRad) * cosP * st.speedForward;
+    st.vz = Math.cos(st.yawRad) * cosP * st.speedForward;
+    var liftRatio = Math.min(1.35, (st.speedForward / Math.max(8, maxSpd * 0.38)) * (cfg.liftFactor || 1.0));
+    var verticalLift = (liftRatio - 1.0) * 9.5 + sinP * st.speedForward;
+    st.vy += (verticalLift - st.vy * 1.4) * Math.min(1, sdt * 4);
+    st.x += st.vx * sdt; st.y += st.vy * sdt; st.z += st.vz * sdt;
+    var gearClr = cfg.hasLandingGear !== false ? 1.0 : 0.55;
+    var gY = sampleGroundY(st.x, st.z) + gearClr;
+    if (st.y < gY) { st.y = gY; if (st.vy < 0) st.vy = 0; if (st.pitchRad < 0) st.pitchRad *= 0.7; st.rollRad *= 0.8; st.speedForward *= Math.max(0, 1 - 0.35 * sdt); }
+  }
+
+  function stepSpaceshipVehicle(st, cfg, thr, strafeIn, ascendIn, yawIn, pitchIn, rollIn, dt) {
+    var sdt = Math.min(0.033, Math.max(0.001, dt));
+    st.prevX = st.x; st.prevY = st.y; st.prevZ = st.z;
+    st.yawRad -= yawIn * 1.15 * sdt;
+    st.pitchRad = Math.max(-1.45, Math.min(1.45, st.pitchRad + pitchIn * 1.0 * sdt));
+    st.rollRad += rollIn * 1.4 * sdt;
+    var acc = Math.max(8, cfg.maxTorque || 22);
+    var fx = Math.sin(st.yawRad), fz = Math.cos(st.yawRad), rx = Math.cos(st.yawRad), rz = -Math.sin(st.yawRad);
+    st.vx += (fx * thr + rx * strafeIn) * acc * sdt;
+    st.vz += (fz * thr + rz * strafeIn) * acc * sdt;
+    st.vy += ascendIn * acc * sdt;
+    var damp = Math.max(0, 1 - 1.35 * sdt);
+    if (Math.abs(thr) < 0.02 && Math.abs(strafeIn) < 0.02) { st.vx *= damp; st.vz *= damp; }
+    if (Math.abs(ascendIn) < 0.02) st.vy *= damp;
+    var maxSpd = Math.max(6, cfg.maxSpeed || 36);
+    var spMag = Math.hypot(st.vx, st.vy, st.vz);
+    if (spMag > maxSpd) { var s = maxSpd / spMag; st.vx *= s; st.vy *= s; st.vz *= s; }
+    st.speedForward = st.vx * fx + st.vz * fz;
+    st.x += st.vx * sdt; st.y += st.vy * sdt; st.z += st.vz * sdt;
+    st.propellerSpinRad += (6 + spMag * 0.8) * sdt;
+  }
+
+  function applyLocalGravityZone(vState, box, actorT3, actorHalfY) {
+    if (!box || !box.enabled) return { inside: false, nextX: actorT3.x, nextY: actorT3.y, nextZ: actorT3.z };
+    var dxV = vState.x - vState.prevX, dyV = vState.y - vState.prevY, dzV = vState.z - vState.prevZ;
+    var yaw = vState.yawRad, cosY = Math.cos(-yaw), sinY = Math.sin(-yaw);
+    var rx = actorT3.x - vState.prevX, ry = actorT3.y - vState.prevY, rz = actorT3.z - vState.prevZ;
+    var lx = rx * cosY + rz * sinY, lz = -rx * sinY + rz * cosY;
+    var hx = Math.max(1, (box.sx || 12) * 0.5), hy = Math.max(1, (box.sy || 6) * 0.5), hz = Math.max(1, (box.sz || 18) * 0.5);
+    if (Math.abs(lx) > hx || Math.abs(ry) > hy || Math.abs(lz) > hz) return { inside: false, nextX: actorT3.x, nextY: actorT3.y, nextZ: actorT3.z };
+    var nextX = actorT3.x + dxV, nextZ = actorT3.z + dzV;
+    var floorY = vState.y - hy + 0.15 + actorHalfY;
+    var nextY = Math.max(floorY, actorT3.y + dyV);
+    return { inside: true, nextX: nextX, nextY: nextY, nextZ: nextZ };
   }
 
   function normalizeModelRoot3D(loadedRoot, targetSize) {
@@ -1572,6 +1740,8 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     var lightBindings = new Map();
     var mixerMap = new Map();
     var waterBindings = new Map();
+    var ripplePool3D = [];
+    var wakeTrails3D = new Map();
     var foliageBindings = new Map();
     var softBodyMeshes = new Map();
     var vehicleWheelMeshes = new Map();
@@ -1907,6 +2077,17 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
       lightBindings.clear();
       mixerMap.clear();
       waterBindings.clear();
+      wakeTrails3D.clear();
+      ripplePool3D = [];
+      for (var riP = 0; riP < 24; riP++) {
+        var rGeo = new THREE.RingGeometry(0.42, 0.54, 24);
+        rGeo.rotateX(-Math.PI / 2);
+        var rMat = new THREE.MeshBasicMaterial({ color: '#e0f2fe', transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+        var rMesh = new THREE.Mesh(rGeo, rMat);
+        rMesh.visible = false;
+        worldGroup.add(rMesh);
+        ripplePool3D.push({ active: false, x: 0, y: 0, z: 0, age: 0, maxAge: 1.15, scale: 0.1, maxScale: 3.0, opacity: 0.85, mesh: rMesh });
+      }
       foliageBindings.clear();
       softBodyMeshes.clear();
       vehicleWheelMeshes.clear();
@@ -2109,12 +2290,23 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             meshBindings.set(src.id, grp);
           } else {
             var isTerrain = m3.shape === 'terrain';
-            var mat = new THREE.MeshStandardMaterial({
+            var pbrGeo = buildModularGeometry(m3);
+            var ccVal = m3.clearcoat !== undefined ? m3.clearcoat : 0;
+            var transVal = software ? 0 : (m3.transmission !== undefined ? m3.transmission : 0);
+            var matOpts = {
               color: isTerrain || (m3.shape === 'plane' && !m3.textureAssetId) ? '#ffffff' : (m3.color || '#3b82f6'),
               vertexColors: isTerrain,
-              metalness: isTerrain ? 0.04 : (m3.metalness || 0.2),
-              roughness: isTerrain ? 0.88 : (m3.roughness || 0.65)
-            });
+              metalness: isTerrain ? 0.04 : (m3.metalness !== undefined ? m3.metalness : 0.2),
+              roughness: isTerrain ? 0.88 : (m3.roughness !== undefined ? m3.roughness : 0.65),
+              emissive: m3.emissive ? new THREE.Color(m3.emissive) : new THREE.Color(0x000000),
+              emissiveIntensity: m3.emissiveIntensity !== undefined ? m3.emissiveIntensity : 0,
+              envMapIntensity: 1.15,
+              transparent: (src.opacity !== undefined && src.opacity < 1) || transVal > 0,
+              opacity: src.opacity !== undefined ? src.opacity : 1
+            };
+            var mat = (ccVal > 0 || transVal > 0) && THREE.MeshPhysicalMaterial
+              ? new THREE.MeshPhysicalMaterial(Object.assign({}, matOpts, { clearcoat: ccVal, clearcoatRoughness: m3.clearcoatRoughness !== undefined ? m3.clearcoatRoughness : 0.12, transmission: transVal, ior: 1.48 }))
+              : new THREE.MeshStandardMaterial(matOpts);
             if (m3.textureAssetId && assetMap.has(m3.textureAssetId)) {
               texLoader.load(assetMap.get(m3.textureAssetId).path, function (t) { t.colorSpace = THREE.SRGBColorSpace; mat.map = t; mat.needsUpdate = true; });
             } else if (m3.shape === 'plane') {
@@ -2129,7 +2321,23 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
                 mat.map = gTex; mat.needsUpdate = true;
               }
             }
-            var mesh = new THREE.Mesh(buildModularGeometry(m3), mat);
+            if (m3.normalAssetId && assetMap.has(m3.normalAssetId)) {
+              texLoader.load(assetMap.get(m3.normalAssetId).path, function (t) { mat.normalMap = t; mat.needsUpdate = true; });
+            }
+            if (m3.roughnessAssetId && assetMap.has(m3.roughnessAssetId)) {
+              texLoader.load(assetMap.get(m3.roughnessAssetId).path, function (t) { mat.roughnessMap = t; mat.needsUpdate = true; });
+            }
+            if (m3.metalnessAssetId && assetMap.has(m3.metalnessAssetId)) {
+              texLoader.load(assetMap.get(m3.metalnessAssetId).path, function (t) { mat.metalnessMap = t; mat.needsUpdate = true; });
+            }
+            if (m3.emissiveAssetId && assetMap.has(m3.emissiveAssetId)) {
+              texLoader.load(assetMap.get(m3.emissiveAssetId).path, function (t) { t.colorSpace = THREE.SRGBColorSpace; mat.emissiveMap = t; mat.needsUpdate = true; });
+            }
+            if (m3.aoAssetId && assetMap.has(m3.aoAssetId)) {
+              if (pbrGeo.attributes && pbrGeo.attributes.uv && !pbrGeo.attributes.uv2) pbrGeo.setAttribute('uv2', pbrGeo.attributes.uv);
+              texLoader.load(assetMap.get(m3.aoAssetId).path, function (t) { mat.aoMap = t; mat.aoMapIntensity = 0.9; mat.needsUpdate = true; });
+            }
+            var mesh = new THREE.Mesh(pbrGeo, mat);
             mesh.castShadow = m3.castShadow !== false && !software;
             mesh.receiveShadow = m3.receiveShadow !== false && !software;
             mesh.frustumCulled = src.optimization && src.optimization.frustumCulling !== undefined ? src.optimization.frustumCulling : true;
@@ -2156,17 +2364,22 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           if (src.vehicle && src.vehicle.enabled) {
             var vSim = createVehicle4WState(t3.x, t3.y, t3.z, t3.ry || 0, src.vehicle);
             vehSims.set(src.id, vSim);
-            var wRad = Math.max(0.18, src.vehicle.wheelRadius || 0.42);
-            var wGeo = new THREE.CylinderGeometry(wRad, wRad, 0.34, 12);
-            wGeo.rotateZ(Math.PI / 2);
-            var wMat = new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.75 });
-            var wMeshes = vSim.wheels.map(function (wh) {
-              var wm = new THREE.Mesh(wGeo, wMat);
-              wm.position.set(wh.worldX, wh.worldY, wh.worldZ);
-              worldGroup.add(wm);
-              return wm;
-            });
-            vehicleWheelMeshes.set(src.id, wMeshes);
+            var vKindInit = src.vehicle.vehicleKind || 'car';
+            var vPartsInit = src.vehicle.parts;
+            if ((vKindInit === 'car' || vKindInit === 'moto') && (!vPartsInit || !vPartsInit.wheelFL)) {
+              var wRad = Math.max(0.18, src.vehicle.wheelRadius || 0.42);
+              var wGeo = new THREE.CylinderGeometry(wRad, wRad, 0.34, 12);
+              wGeo.rotateZ(Math.PI / 2);
+              var wMat = new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.75 });
+              var wSlice = vKindInit === 'moto' ? [vSim.wheels[0], vSim.wheels[2]] : vSim.wheels;
+              var wMeshes = wSlice.map(function (wh) {
+                var wm = new THREE.Mesh(wGeo, wMat);
+                wm.position.set(wh.worldX, wh.worldY, wh.worldZ);
+                worldGroup.add(wm);
+                return wm;
+              });
+              vehicleWheelMeshes.set(src.id, wMeshes);
+            }
           }
         } else if (src.type === 'light_3d' && src.light3d) {
           var l3 = src.light3d;
@@ -2208,6 +2421,17 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
         }
       });
 
+      // Marcar partes animadas de vehículos compuestos (ruedas/hélices hijas)
+      simObjs.forEach(function (so) {
+        var pts = so.source && so.source.vehicle && so.source.vehicle.parts;
+        if (!pts) return;
+        [pts.wheelFL, pts.wheelFR, pts.wheelRL, pts.wheelRR, pts.propellerId].forEach(function (pid) {
+          if (!pid) return;
+          var pn = nodeMap3d.get(pid);
+          if (pn) pn.userData.vehicleAnimatedPart = true;
+        });
+      });
+
       activeSim = {
         scene: currentScene,
         objects: simObjs,
@@ -2218,6 +2442,11 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
         softBodySims: softBodySims,
         vehicleSims: vehicleSims,
         inWaterObjects: new Set(),
+        waterTrackers: new Map(),
+        splineProgress: new Map(),
+        mountedActorId: null,
+        mountedVehicleId: null,
+        cameraFollowOverride3D: null,
         prevCollisions: new Set(),
         startedScriptBindings: new Set(),
         scriptObjectData: new Map(),
@@ -3065,6 +3294,38 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           cs3.activeCameraId = camTarget.id;
         }
       }
+      else if (act.type === 'vehicle.enterExit' && activeSim) {
+        var objsV = activeSim.objects || [];
+        var actorV = (p.actorId ? objsV.find(function (o) { return o.id === p.actorId || o.name === p.actorId; }) : null) || resolvePlayer3d(objsV);
+        var vehV = (p.vehicleId ? objsV.find(function (o) { return o.id === p.vehicleId || o.name === p.vehicleId; }) : null) || objsV.find(function (o) { return o.source.vehicle && o.source.vehicle.enabled; });
+        if (actorV && vehV && actorV.id !== vehV.id) {
+          if (activeSim.mountedVehicleId === vehV.id) {
+            var vYaw = (vehV.t3.ry || 0) * DEG2RAD;
+            var sideOff = Number(p.exitOffsetX !== undefined ? p.exitOffsetX : 2.6);
+            actorV.t3.x = vehV.t3.x + Math.cos(vYaw) * sideOff;
+            actorV.t3.y = vehV.t3.y + 0.9;
+            actorV.t3.z = vehV.t3.z - Math.sin(vYaw) * sideOff;
+            actorV.vx = 0; actorV.vy = 0; actorV.vz = 0;
+            actorV.visible = true;
+            activeSim.mountedVehicleId = null;
+            activeSim.mountedActorId = null;
+            activeSim.cameraFollowOverride3D = null;
+            activeSim.cameraManualLock = false;
+          } else if (!activeSim.mountedVehicleId) {
+            var vDist = Math.hypot(actorV.t3.x - vehV.t3.x, actorV.t3.z - vehV.t3.z);
+            var maxD = Number(p.maxDistance !== undefined ? p.maxDistance : 12);
+            if (vDist <= maxD) {
+              activeSim.mountedVehicleId = vehV.id;
+              activeSim.mountedActorId = actorV.id;
+              actorV.visible = false;
+              actorV.vx = 0; actorV.vy = 0; actorV.vz = 0;
+              actorV.t3.x = vehV.t3.x; actorV.t3.y = vehV.t3.y; actorV.t3.z = vehV.t3.z;
+              activeSim.cameraFollowOverride3D = (vehV.source.vehicle && vehV.source.vehicle.parts && vehV.source.vehicle.parts.cameraId) || vehV.id;
+              activeSim.cameraManualLock = false;
+            }
+          }
+        }
+      }
       else if (act.type === 'camera.shake') { activeSim.shakeIntensity = Math.max(activeSim.shakeIntensity, Number(p.intensity || 0.35)); activeSim.shakeTimer = Math.max(activeSim.shakeTimer, Number(p.duration || 0.25)); }
       else if (act.type === 'vfx.emit' || act.type === 'particles.burst' || act.type === 'particles.emit') {
         var vDefs = getParticleDefaults3D(String(p.preset || 'sparks'));
@@ -3320,8 +3581,10 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
         }
         var dynamicBodies = objs.filter(function (o) {
           if (!o.visible || hasParentInScene3d(o)) return false;
+          if (activeSim.mountedActorId === o.id && activeSim.mountedVehicleId) return false;
           if (o.type !== 'mesh_3d' && o.type !== 'container') return false;
           if (o.type === 'mesh_3d' && o.source.mesh3d && (o.source.mesh3d.shape === 'terrain' || o.source.mesh3d.shape === 'water' || o.source.mesh3d.shape === 'grass_field')) return false;
+          if (o.source.vehicle && o.source.vehicle.enabled) return true;
           if (o.source.physics3d && o.source.physics3d.enabled && o.source.physics3d.bodyType === 'dynamic') return true;
           if (o.source.physics3d && o.source.physics3d.bodyType === 'kinematic') return false;
           return hasDynamicBehavior3d(o);
@@ -3342,7 +3605,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           return false;
         }
         var staticSolids = objs.filter(function (o) {
-          return o.visible && !dynamicIdSet.has(o.id) && !isDescendantOfDynamic3d(o) && o.type === 'mesh_3d' && (!o.source.mesh3d || o.source.mesh3d.shape !== 'grass_field') && (!o.source.physics3d || o.source.physics3d.enabled !== false) && (!o.source.physics3d || o.source.physics3d.bodyType !== 'dynamic');
+          return o.visible && !dynamicIdSet.has(o.id) && !isDescendantOfDynamic3d(o) && !(activeSim.mountedActorId === o.id && activeSim.mountedVehicleId) && o.type === 'mesh_3d' && (!o.source.mesh3d || o.source.mesh3d.shape !== 'grass_field') && (!o.source.physics3d || o.source.physics3d.enabled !== false) && (!o.source.physics3d || o.source.physics3d.bodyType !== 'dynamic');
         });
         var primaryPlayer3d = resolvePlayer3d(objs);
 
@@ -3523,6 +3786,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             (o.source.components || []).forEach(function (c) {
               if (!c.enabled) return;
               if (c.type === 'player_3d' || c.type === 'player_platformer' || c.type === 'player_topdown' || c.type === 'movement.platformer_pro' || c.type === 'movement.topdown_8dir') {
+                if (activeSim.mountedActorId === o.id && activeSim.mountedVehicleId) return;
                 var rSpd = Number(c.config.speed !== undefined ? c.config.speed : (c.config.maxSpeed !== undefined ? c.config.maxSpeed : 7));
                 var baseSpd = rSpd > 35 ? rSpd / 35 : rSpd;
                 var spKey = String(c.config.sprintKey || 'ShiftLeft');
@@ -3998,22 +4262,85 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           dynamicBodies.forEach(function (b) {
             var vCfg = b.source.vehicle, vState = activeSim.vehicleSims.get(b.id);
             if (vCfg && vCfg.enabled && vState) {
-              var thr = (heldKeys.has('KeyW') || heldKeys.has('ArrowUp') ? 1 : 0) - (heldKeys.has('KeyS') || heldKeys.has('ArrowDown') ? 1 : 0);
-              var str = (heldKeys.has('KeyD') || heldKeys.has('ArrowRight') ? 1 : 0) - (heldKeys.has('KeyA') || heldKeys.has('ArrowLeft') ? 1 : 0);
-              if (thr === 0 && Math.abs(moveAxisY) > 0.05) thr = -moveAxisY;
-              if (str === 0 && Math.abs(moveAxisX) > 0.05) str = moveAxisX;
-              stepVehicle4W(vState, vCfg, thr, str, stepDt, function (wx, wz) { return groundHeightAt(objs, wx, wz); });
+              if (!shouldStepVehiclePhysics(vState.x, vState.y, vState.z, camera.position.x, camera.position.y, camera.position.z, vCfg)) return;
+              var pControls = !primaryPlayer3d || activeSim.mountedVehicleId === b.id || b.id === primaryPlayer3d.id;
+              var thr = 0, str = 0, pitchIn = 0, ascendIn = 0, yawIn = 0;
+              if (pControls) {
+                thr = (heldKeys.has('KeyW') || heldKeys.has('ArrowUp') ? 1 : 0) - (heldKeys.has('KeyS') || heldKeys.has('ArrowDown') ? 1 : 0);
+                str = (heldKeys.has('KeyD') || heldKeys.has('ArrowRight') ? 1 : 0) - (heldKeys.has('KeyA') || heldKeys.has('ArrowLeft') ? 1 : 0);
+                if (heldKeys.has('Space')) ascendIn += 1;
+                if (heldKeys.has('ShiftLeft') || heldKeys.has('ControlLeft')) ascendIn -= 1;
+                if (heldKeys.has('KeyQ')) yawIn -= 1;
+                if (heldKeys.has('KeyE') && !activeSim.mountedVehicleId) yawIn += 1;
+                if (heldKeys.has('ArrowUp')) pitchIn -= 1;
+                if (heldKeys.has('ArrowDown')) pitchIn += 1;
+                if (thr === 0 && Math.abs(moveAxisY) > 0.05) thr = -moveAxisY;
+                if (str === 0 && Math.abs(moveAxisX) > 0.05) str = moveAxisX;
+              }
+              var vKind = vCfg.vehicleKind || 'car';
+              var pSplineId = vCfg.patrolSplineId || b.source.followSplineId;
+              var pSpline = pSplineId && currentScene.splines3d ? currentScene.splines3d.find(function (sp) { return sp.id === pSplineId; }) : null;
+              if (pSpline && pSpline.points && pSpline.points.length >= 2 && !activeSim.mountedVehicleId) {
+                var cT = activeSim.splineProgress.get(b.id) || 0;
+                var nT = pSpline.closed ? (cT + Math.max(0.02, (vCfg.maxSpeed || 14) * 0.008) * stepDt) % 1 : Math.min(1, cT + Math.max(0.02, (vCfg.maxSpeed || 14) * 0.008) * stepDt);
+                activeSim.splineProgress.set(b.id, nT);
+                var spPt = sampleSpline3D(pSpline.points, pSpline.closed, nT);
+                vState.prevX = vState.x; vState.prevY = vState.y; vState.prevZ = vState.z;
+                vState.vx = (spPt.x - vState.x) / Math.max(0.001, stepDt);
+                vState.vy = (spPt.y - vState.y) / Math.max(0.001, stepDt);
+                vState.vz = (spPt.z - vState.z) / Math.max(0.001, stepDt);
+                vState.x = spPt.x; vState.y = spPt.y; vState.z = spPt.z;
+                vState.yawRad = Math.atan2(spPt.tx, spPt.tz);
+                vState.speedForward = Math.hypot(vState.vx, vState.vz);
+                vState.propellerSpinRad += 14 * stepDt;
+              } else if (vKind === 'boat') {
+                var lnkW = vCfg.waterObjectId ? objs.find(function (w) { return w.id === vCfg.waterObjectId && w.source.mesh3d && w.source.mesh3d.waterConfig; }) : objs.find(function (w) { return w.source.mesh3d && w.source.mesh3d.shape === 'water' && w.source.mesh3d.waterConfig; });
+                stepBoatVehicle(vState, vCfg, thr, str, stepDt, function (wx, wz) {
+                  if (!lnkW || !lnkW.source.mesh3d || !lnkW.source.mesh3d.waterConfig) return groundHeightAt(objs, wx, wz);
+                  var wh = sampleWaterWaveHeightAt(lnkW.t3.x, lnkW.t3.y, lnkW.t3.z, lnkW.source.mesh3d.waterConfig, wx, wz, activeSim.elapsedTime);
+                  return wh !== null ? wh : groundHeightAt(objs, wx, wz);
+                });
+              } else if (vKind === 'plane') {
+                var pPitch = pitchIn !== 0 ? pitchIn : (heldKeys.has('Space') ? 0.85 : (heldKeys.has('ShiftLeft') ? -0.85 : 0));
+                stepPlaneVehicle(vState, vCfg, thr, pPitch, -str, yawIn, stepDt, function (wx, wz) { return groundHeightAt(objs, wx, wz); });
+              } else if (vKind === 'spaceship') {
+                stepSpaceshipVehicle(vState, vCfg, thr, str, ascendIn, yawIn, pitchIn, 0, stepDt);
+              } else {
+                stepVehicle4W(vState, vCfg, thr, str, stepDt, function (wx, wz) { return groundHeightAt(objs, wx, wz); });
+              }
               b.t3.x = vState.x; b.t3.y = vState.y; b.t3.z = vState.z;
               b.t3.ry = vState.yawRad / DEG2RAD; b.t3.rx = vState.pitchRad / DEG2RAD; b.t3.rz = vState.rollRad / DEG2RAD;
               b.vx = vState.vx; b.vy = vState.vy; b.vz = vState.vz;
-              b.isGrounded = vState.wheels.some(function (w) { return w.grounded; });
+              b.isGrounded = vKind === 'boat' ? vState.pontoons.some(function (pt) { return pt.submerged > 0; }) : vState.wheels.some(function (w) { return w.grounded; });
+              if (vKind === 'spaceship' && vCfg.localGravityBox && vCfg.localGravityBox.enabled && primaryPlayer3d && activeSim.mountedActorId !== primaryPlayer3d.id) {
+                var lg = applyLocalGravityZone(vState, vCfg.localGravityBox, primaryPlayer3d.t3, Math.max(0.4, Math.abs(primaryPlayer3d.t3.sy) * 0.5));
+                if (lg.inside) { primaryPlayer3d.t3.x = lg.nextX; primaryPlayer3d.t3.y = lg.nextY; primaryPlayer3d.t3.z = lg.nextZ; if (primaryPlayer3d.vy < 0) primaryPlayer3d.vy = 0; primaryPlayer3d.isGrounded = true; }
+              }
               var wMs = vehicleWheelMeshes.get(b.id);
               if (wMs) {
+                var wSliceStep = vKind === 'moto' ? [0, 2] : [0, 1, 2, 3];
                 wMs.forEach(function (wm, wi) {
-                  var wh = vState.wheels[wi];
+                  var wh = vState.wheels[wSliceStep[wi] !== undefined ? wSliceStep[wi] : wi];
                   wm.position.set(wh.worldX, wh.worldY, wh.worldZ);
-                  wm.rotation.set(wh.spinRad, vState.yawRad - wh.steerAngleRad, 0);
+                  wm.rotation.set(wh.spinRad, vState.yawRad + wh.steerAngleRad, 0, 'YXZ');
                 });
+              }
+              if (vCfg.parts) {
+                [vCfg.parts.wheelFL, vCfg.parts.wheelFR, vCfg.parts.wheelRL, vCfg.parts.wheelRR].forEach(function (pid, wIdx) {
+                  if (!pid) return;
+                  var pn = meshBindings.get(pid), ps = objs.find(function (x) { return x.id === pid; }), wh = vState.wheels[wIdx];
+                  if (pn && ps && wh) {
+                    pn.position.set(ps.t3.x, ps.t3.y + wh.compression * 0.28, ps.t3.z);
+                    var bq = new THREE.Quaternion().setFromEuler(new THREE.Euler((ps.t3.rx || 0) * DEG2RAD, (ps.t3.ry || 0) * DEG2RAD, (ps.t3.rz || 0) * DEG2RAD, 'XYZ'));
+                    var rq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), wh.spinRad);
+                    var sq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), wh.steerAngleRad);
+                    pn.quaternion.copy(sq).multiply(rq).multiply(bq);
+                  }
+                });
+                if (vCfg.parts.propellerId) {
+                  var prN = meshBindings.get(vCfg.parts.propellerId), prS = objs.find(function (x) { return x.id === vCfg.parts.propellerId; });
+                  if (prN && prS) prN.rotation.set((prS.t3.rx || 0) * DEG2RAD, (prS.t3.ry || 0) * DEG2RAD, vState.propellerSpinRad, 'XYZ');
+                }
               }
               return;
             }
@@ -4215,6 +4542,112 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           if (nms) nms.forEach(function (nm, ni) { var nd = sbSim.nodes[ni]; if (nd) nm.position.set(nd.x, nd.y, nd.z); });
         });
 
+        // Seguir Spline 3D en objetos no-vehículo + Ondas Pooled + Estelas Ribbon detrás de botes y entidades
+        objs.forEach(function (so) {
+          if (so.visible && so.source.followSplineId && !(so.source.vehicle && so.source.vehicle.enabled) && currentScene.splines3d) {
+            var sp3 = currentScene.splines3d.find(function (sp) { return sp.id === so.source.followSplineId; });
+            if (sp3 && sp3.points && sp3.points.length >= 2) {
+              var ct = activeSim.splineProgress.get(so.id) || 0;
+              var nt = sp3.closed ? (ct + Math.max(0.02, (so.source.followSplineSpeed || 6) * 0.015) * dt) % 1 : Math.min(1, ct + Math.max(0.02, (so.source.followSplineSpeed || 6) * 0.015) * dt);
+              activeSim.splineProgress.set(so.id, nt);
+              var spt = sampleSpline3D(sp3.points, sp3.closed, nt);
+              so.t3.x = spt.x; so.t3.y = spt.y; so.t3.z = spt.z;
+              so.t3.ry = Math.atan2(spt.tx, spt.tz) / DEG2RAD;
+            }
+          }
+          if (so.visible && so.source.mesh3d && so.source.mesh3d.shape === 'water' && so.source.mesh3d.waterConfig) {
+            var wc3 = so.source.mesh3d.waterConfig;
+            var allowSet = wc3.interactingEntities && wc3.interactingEntities.length > 0 ? new Set(wc3.interactingEntities) : null;
+            var entTargets = [];
+            objs.forEach(function (ent) {
+              if (!ent.visible || ent.id === so.id || (ent.type !== 'mesh_3d' && !(ent.source.vehicle && ent.source.vehicle.enabled))) return;
+              if (allowSet && !allowSet.has(ent.id)) return;
+              var spdE = Math.hypot(ent.vx || 0, ent.vz || 0);
+              if (!allowSet && spdE < 0.05 && !(ent.source.vehicle && ent.source.vehicle.vehicleKind === 'boat')) return;
+              var wyE = sampleWaterWaveHeightAt(so.t3.x, so.t3.y, so.t3.z, wc3, ent.t3.x, ent.t3.z, activeSim.elapsedTime);
+              var trkKey = so.id + ':' + ent.id;
+              var prevTrk = activeSim.waterTrackers.get(trkKey) || { inside: false, rippleCooldown: 0 };
+              var hyE = (ent.source.physics3d && ent.source.physics3d.halfExtents && ent.source.physics3d.halfExtents.y) || Math.max(0.2, Math.abs(ent.t3.sy || 1) * 0.5);
+              var isInW = wyE !== null && ent.t3.y - hyE <= wyE + 0.35;
+              prevTrk.rippleCooldown = Math.max(0, prevTrk.rippleCooldown - dt);
+              function triggerRipple3D(rx, ry, rz, maxSc) {
+                var sl = ripplePool3D.find(function (r) { return !r.active; }) || ripplePool3D[0];
+                if (sl) { sl.active = true; sl.x = rx; sl.y = ry + 0.04; sl.z = rz; sl.age = 0; sl.maxAge = 1.15; sl.scale = 0.1; sl.maxScale = maxSc; sl.opacity = 0.85; }
+              }
+              if (isInW && !prevTrk.inside && wyE !== null) {
+                triggerRipple3D(ent.t3.x, wyE, ent.t3.z, 3.2);
+                burstParticles3D(ent.t3.x, wyE + 0.25, ent.t3.z, 10, { colorStart: '#e0f2fe', speedMin: 28, speedMax: 72, sizeStart: 0.26, lifetime: 0.55 });
+                prevTrk.rippleCooldown = 0.25;
+              } else if (isInW && spdE > 0.1 && prevTrk.rippleCooldown <= 0 && wyE !== null) {
+                triggerRipple3D(ent.t3.x, wyE, ent.t3.z, 2.7);
+                prevTrk.rippleCooldown = 0.25;
+              }
+              prevTrk.inside = isInW;
+              activeSim.waterTrackers.set(trkKey, prevTrk);
+              if (wc3.enableWakeTrail !== false && wyE !== null) {
+                var wYaw = (ent.t3.ry || 0) * DEG2RAD;
+                var trailObj = wakeTrails3D.get(trkKey);
+                if (!trailObj) {
+                  var MAX_TP = 32;
+                  var tPos = new Float32Array(MAX_TP * 2 * 3);
+                  var tGeo = new THREE.BufferGeometry();
+                  tGeo.setAttribute('position', new THREE.BufferAttribute(tPos, 3));
+                  var tMat = new THREE.MeshBasicMaterial({ color: '#e0f2fe', transparent: true, opacity: 0.48, depthWrite: false, side: THREE.DoubleSide });
+                  var tMesh = new THREE.Mesh(tGeo, tMat);
+                  tMesh.frustumCulled = false;
+                  tMesh.visible = false;
+                  worldGroup.add(tMesh);
+                  trailObj = { points: [], timer: 0, mesh: tMesh, posArr: tPos, maxPts: MAX_TP };
+                  wakeTrails3D.set(trkKey, trailObj);
+                }
+                trailObj.timer += dt;
+                if (spdE > 0.15 && (trailObj.points.length === 0 || trailObj.timer >= 0.06)) {
+                  trailObj.timer = 0;
+                  var hwTr = Math.max(0.45, ((ent.source.physics3d && ent.source.physics3d.halfExtents && ent.source.physics3d.halfExtents.x) || Math.abs(ent.t3.sx || 1) * 0.5) * 0.85);
+                  trailObj.points.unshift({ x: ent.t3.x, y: wyE + 0.05, z: ent.t3.z, nx: Math.cos(wYaw) * hwTr, nz: -Math.sin(wYaw) * hwTr, age: 0 });
+                  if (trailObj.points.length > trailObj.maxPts) trailObj.points.pop();
+                }
+                for (var piT = trailObj.points.length - 1; piT >= 0; piT--) {
+                  trailObj.points[piT].age += dt;
+                  if (trailObj.points[piT].age > 1.8) trailObj.points.splice(piT, 1);
+                }
+                if (trailObj.points.length >= 2) {
+                  var arrT = trailObj.posArr, cntT = trailObj.points.length;
+                  for (var kT = 0; kT < cntT; kT++) {
+                    var tp = trailObj.points[kT], wMul = 1 + (tp.age / 1.8) * 1.4;
+                    var i6 = kT * 6;
+                    arrT[i6] = tp.x - tp.nx * wMul; arrT[i6 + 1] = tp.y; arrT[i6 + 2] = tp.z - tp.nz * wMul;
+                    arrT[i6 + 3] = tp.x + tp.nx * wMul; arrT[i6 + 4] = tp.y; arrT[i6 + 5] = tp.z + tp.nz * wMul;
+                  }
+                  trailObj.mesh.geometry.attributes.position.needsUpdate = true;
+                  var triIndices = [];
+                  for (var qT = 0; qT < cntT - 1; qT++) {
+                    var a0 = qT * 2, b0 = a0 + 1, c0 = a0 + 2, d0 = a0 + 3;
+                    triIndices.push(a0, c0, b0, b0, c0, d0);
+                  }
+                  trailObj.mesh.geometry.setIndex(triIndices);
+                  trailObj.mesh.visible = true;
+                } else {
+                  trailObj.mesh.visible = false;
+                }
+              }
+            });
+          }
+        });
+        for (var rStep = 0; rStep < ripplePool3D.length; rStep++) {
+          var rpS = ripplePool3D[rStep];
+          if (!rpS.active) { rpS.mesh.visible = false; continue; }
+          rpS.age += dt;
+          if (rpS.age >= rpS.maxAge) { rpS.active = false; rpS.mesh.visible = false; continue; }
+          var rf = rpS.age / rpS.maxAge;
+          rpS.scale = 0.1 + (rpS.maxScale - 0.1) * rf;
+          rpS.opacity = 0.85 * (1 - rf);
+          rpS.mesh.visible = true;
+          rpS.mesh.position.set(rpS.x, rpS.y, rpS.z);
+          rpS.mesh.scale.set(rpS.scale, 1, rpS.scale);
+          rpS.mesh.material.opacity = rpS.opacity;
+        }
+
         objs.forEach(function (o) {
           if (!o.visible) return;
           if (o.source.animStateMachine && o.source.animStateMachine.states && o.source.animStateMachine.states.length > 0) {
@@ -4366,7 +4799,9 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             }
             mesh.visible = vis;
             if (!foliageBindings.has(o.id)) {
-              if (!mesh.userData.boneAttached) {
+              if (mesh.userData.vehicleAnimatedPart) {
+                mesh.scale.set(o.t3.sx, o.t3.sy, o.t3.sz);
+              } else if (!mesh.userData.boneAttached) {
                 mesh.position.set(o.t3.x, o.t3.y, o.t3.z);
                 mesh.rotation.set(o.t3.rx * DEG2RAD, o.t3.ry * DEG2RAD, o.t3.rz * DEG2RAD);
               } else if (o.source.boneSocket) {
@@ -4374,7 +4809,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
                 mesh.position.set(sk.offsetX || 0, sk.offsetY || 0, sk.offsetZ || 0);
                 mesh.rotation.set((sk.rotX || 0) * DEG2RAD, (sk.rotY || 0) * DEG2RAD, (sk.rotZ || 0) * DEG2RAD);
               }
-              if (!waterBindings.has(o.id)) mesh.scale.set(o.t3.sx, o.t3.sy, o.t3.sz);
+              if (!waterBindings.has(o.id) && !mesh.userData.vehicleAnimatedPart) mesh.scale.set(o.t3.sx, o.t3.sy, o.t3.sz);
             }
           }
           var mm = mixerMap.get(o.id);
@@ -4417,7 +4852,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           dampingFactor: 0.14, lookAhead: 1.4, offsetX: 0, offsetY: 6.5, offsetZ: 11, distance: 11,
           pitchMinDeg: -50, pitchMaxDeg: 25, fov: 55, deadzoneW: 2, deadzoneH: 2, collideWithWalls: true, useBounds: false
         };
-        var camTgtObj = (cCfg.targetObjectId ? objs.find(function (x) { return x.id === cCfg.targetObjectId || x.name === cCfg.targetObjectId; }) : null) || primaryPlayer3d;
+        var camTgtObj = (activeSim.cameraFollowOverride3D ? objs.find(function (x) { return x.id === activeSim.cameraFollowOverride3D || x.name === activeSim.cameraFollowOverride3D; }) : null) || (cCfg.targetObjectId ? objs.find(function (x) { return x.id === cCfg.targetObjectId || x.name === cCfg.targetObjectId; }) : null) || primaryPlayer3d;
         var camTgtW = camTgtObj ? getWorldT3(camTgtObj, objs) : null;
         var camOwnPos = activeCamObj ? getWorldT3(activeCamObj, objs) : { x: 0, y: 7, z: 13 };
 

@@ -43,6 +43,7 @@ interface LeftSidebarProps {
   onMoveAssetToFolder?: (assetId: string, folderId: string | null) => void;
   onInstantiatePrefab?: (prefabId: string) => void;
   onDeletePrefab?: (prefabId: string) => void;
+  onOpenVehicleWizard?: () => void;
 }
 
 export const LeftSidebar: React.FC<LeftSidebarProps> = (props) => {
@@ -104,6 +105,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = (props) => {
             onGroupSelected={props.onGroupSelected}
             onUngroupFolder={props.onUngroupFolder}
             onCreatePrefabFromObject={props.onCreatePrefabFromObject}
+            onOpenVehicleWizard={props.onOpenVehicleWizard}
           />
         ) : (
           <AssetsLibraryPanel

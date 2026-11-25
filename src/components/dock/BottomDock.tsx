@@ -88,6 +88,7 @@ interface BottomDockProps {
   onUpdateObject?: (id: string, updater: (obj: GameObjectData) => GameObjectData) => void;
   onApplyDiagnosticFix: (diag: EngineDiagnostic) => void;
   onSelectObjectById: (id: string) => void;
+  onOpenVehicleWizard?: () => void;
 }
 
 export const BottomDock: React.FC<BottomDockProps> = ({
@@ -129,6 +130,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onUpdateObject,
   onApplyDiagnosticFix,
   onSelectObjectById,
+  onOpenVehicleWizard,
 }) => {
   const handleTabClick = (tab: DockTab) => {
     if (!open) {
@@ -325,6 +327,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               onUpdateScene={onUpdateScene}
               onUpdateObject={onUpdateObject}
               onSelectObjectById={onSelectObjectById}
+              onOpenVehicleWizard={onOpenVehicleWizard}
             />
           )}
           {activeTab === 'code' && (

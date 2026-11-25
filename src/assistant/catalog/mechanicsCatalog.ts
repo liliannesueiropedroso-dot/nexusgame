@@ -839,6 +839,63 @@ export const MECHANICS_CATALOG: MechanicCatalogEntry[] = [
     },
   },
   {
+    id: 'vehicle.enter_exit',
+    family: 'Movimiento',
+    name: 'Entrar / Salir de Vehículo (Tecla E)',
+    description:
+      'Vincula un Personaje y un Vehículo con la tecla E: oculta/acopla al personaje, pasa los controles WASD al vehículo y cambia suavemente la SmartCamera.',
+    keywords: ['entrar', 'salir', 'vehiculo', 'auto', 'coche', 'avion', 'nave', 'tecla e', 'conducir'],
+    compatibleWith: ['mesh_3d'],
+    requiresComponents: [],
+    events: ['input.pressed'],
+    actions: ['vehicle.enterExit'],
+    buildApplyPatch: (target, scene) => {
+      const playerObj =
+        scene.objects.find((o) =>
+          o.components.some(
+            (c) =>
+              c.enabled &&
+              (c.type === 'player_3d' ||
+                c.type === 'player_platformer' ||
+                c.type === 'player_topdown')
+          )
+        ) ?? scene.objects.find((o) => o.type === 'mesh_3d' && !o.vehicle?.enabled) ?? null;
+      const vehObj =
+        (target?.vehicle?.enabled ? target : null) ??
+        scene.objects.find((o) => o.vehicle?.enabled) ??
+        target;
+      if (!vehObj) return null;
+      return {
+        addedMechanic: {
+          id: createId('mech'),
+          name: `Conducir ${vehObj.name} (Tecla E)`,
+          enabled: true,
+          priority: 15,
+          conditionCombinator: 'all',
+          ownerObjectId: vehObj.id,
+          trigger: {
+            event: 'input.pressed',
+            key: 'KeyE',
+          },
+          conditions: [],
+          actions: [
+            {
+              id: createId('act'),
+              type: 'vehicle.enterExit',
+              parameters: {
+                actorId: playerObj?.id ?? '',
+                vehicleId: vehObj.id,
+                key: 'KeyE',
+                exitOffsetX: 2.6,
+              },
+            },
+          ],
+        },
+        summary: `Mecánica Entrar/Salir con Tecla E creada para "${vehObj.name}".`,
+      };
+    },
+  },
+  {
     id: 'survival.vitals',
     family: 'Interacción',
     name: 'Vitales de Supervivencia (Hambre / Sed)',

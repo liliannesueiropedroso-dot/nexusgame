@@ -43,6 +43,7 @@ interface MechanicsPanelProps {
   onUpdateScene?: (updater: (scene: SceneData) => SceneData) => void;
   onUpdateObject?: (id: string, updater: (obj: GameObjectData) => GameObjectData) => void;
   onSelectObjectById?: (id: string) => void;
+  onOpenVehicleWizard?: () => void;
 }
 
 const TRIGGER_LABELS: Record<MechanicTriggerEvent, string> = {
@@ -125,6 +126,7 @@ const ACTION_LABELS: Record<ActionType, string> = {
   'ai.stop': 'IA 3D: Detener agente',
   'dialogue.start': 'Iniciar diálogo ramificado (dialogue.start)',
   'i18n.setLocale': 'Cambiar idioma activo (i18n.setLocale)',
+  'vehicle.enterExit': 'Entrar / Salir de Vehículo (Tecla E)',
   wait: 'Esperar N segundos (Wait)',
 };
 
@@ -161,6 +163,7 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
   onUpdateScene,
   onUpdateObject,
   onSelectObjectById,
+  onOpenVehicleWizard,
 }) => {
   const [selectedId, setSelectedId] = useState<string | null>(mechanics[0]?.id ?? null);
   const [viewMode, setViewMode] = useState<'rules' | 'wiring'>('rules');
@@ -811,6 +814,16 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
               <Link2 className="h-3 w-3" />
               <span>Cables ({sceneWiringLinks.length})</span>
             </button>
+            {onOpenVehicleWizard && (
+              <button
+                type="button"
+                onClick={onOpenVehicleWizard}
+                className="inline-flex items-center gap-1 rounded bg-emerald-600/20 px-1.5 py-0.5 text-[10.5px] font-semibold text-emerald-300 hover:bg-emerald-600/30"
+                title="Abrir Asistente Visual de Vehículos 3D"
+              >
+                <span>+ Vehículo</span>
+              </button>
+            )}
           </div>
           <button
             type="button"
@@ -2540,6 +2553,43 @@ export const MechanicsPanel: React.FC<MechanicsPanelProps> = ({
                             <option value="en">English (en)</option>
                             <option value="pt">Português (pt)</option>
                           </select>
+                        )}
+
+                        {act.type === 'vehicle.enterExit' && (
+                          <div className="grid grid-cols-3 gap-1">
+                            <select
+                              aria-label="Personaje conductor"
+                              value={String(act.parameters.actorId ?? '')}
+                              onChange={(e) => patchParams({ actorId: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Jugador (auto)</option>
+                              {objects.filter((o) => o.type === 'mesh_3d').map((o) => (
+                                <option key={o.id} value={o.id}>{o.name}</option>
+                              ))}
+                            </select>
+                            <select
+                              aria-label="Vehículo destino"
+                              value={String(act.parameters.vehicleId ?? '')}
+                              onChange={(e) => patchParams({ vehicleId: e.target.value })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1 py-0.5 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Vehículo...</option>
+                              {objects.filter((o) => o.vehicle?.enabled || o.type === 'mesh_3d').map((o) => (
+                                <option key={o.id} value={o.id}>{o.name}</option>
+                              ))}
+                            </select>
+                            <NumericInput
+                              ariaLabel="Distancia al bajar del vehículo"
+                              min={0.5}
+                              max={12}
+                              step={0.2}
+                              value={Number(act.parameters.exitOffsetX ?? 2.6)}
+                              onChange={(exitOffsetX) => patchParams({ exitOffsetX })}
+                              className="rounded border border-[#32323c] bg-[#1a1a1e] px-1.5 py-0.5 font-mono text-[11px] text-zinc-100"
+                              title="Offset X al bajar (m)"
+                            />
+                          </div>
                         )}
 
                         {act.type === 'wait' && (

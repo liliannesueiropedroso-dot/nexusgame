@@ -53,10 +53,22 @@ import { getBehaviorEntry } from '../components/behaviorRegistry';
 import { PersistenceStore } from '../wiring/persistenceStore';
 import { EngineWiringSystem } from '../wiring/wiringEngine';
 import { groundHeightAt, sampleTerrainHeightAt } from '../three3d/terrainSystem';
+import { sampleSpline3D } from '../three3d/splineTerrain';
 import {
+  evaluateWaterEntityInteractions,
+  sampleWaterWaveHeightAt,
+  type WaterEntityTracker,
+  type WaterInteractionEvent,
+} from '../three3d/waterEffects';
+import {
+  applyLocalGravityZone,
   createSoftBodySimulation,
   createVehicle4WState,
+  shouldStepVehiclePhysics,
+  stepBoatVehicle,
+  stepPlaneVehicle,
   stepSoftBodySimulation,
+  stepSpaceshipVehicle,
   stepVehicle4W,
   type SoftBodySimulationState,
   type Vehicle4WRuntimeState,
@@ -316,6 +328,9 @@ export function createSimulation3DState(
   }
   const inWaterObjects = new Set<string>();
   let lastSplashPos = { x: 9999, y: -999, z: 9999, time: -10 };
+  const waterTrackers = new Map<string, WaterEntityTracker>();
+  const waterInteractionQueue: WaterInteractionEvent[] = [];
+  const splineProgress = new Map<string, number>();
   const prevCollisions = new Set<string>();
   const startedScriptBindings = new Set<string>();
   const loggedScriptErrors = new Set<string>();
@@ -355,6 +370,8 @@ export function createSimulation3DState(
   wiringSys.startAll();
   const behaviorTimers = new Map<string, number>();
   let cameraFollowOverride3D: string | null = null;
+  let activeMountedVehicleId: string | null = null;
+  let mountedActorId: string | null = null;
   let spawnCounter = 0;
   let cameraManualLock = false;
   let cameraBlend: {
@@ -1363,6 +1380,49 @@ export function createSimulation3DState(
         if (cam) beginSmartCameraSwitch(cameraState, cam.id, Number(p.duration ?? 0.65));
         break;
       }
+      case 'vehicle.enterExit': {
+        const actor =
+          (typeof p.actorId === 'string' && p.actorId ? resolveObjectRef(p.actorId) : null) ??
+          resolvePlayerActor();
+        const vehTarget =
+          (typeof p.vehicleId === 'string' && p.vehicleId ? resolveObjectRef(p.vehicleId) : null) ??
+          (typeof p.target === 'string' && p.target ? resolveObjectRef(p.target) : null) ??
+          objects.find((o) => o.source.vehicle?.enabled);
+        if (actor && vehTarget && vehTarget.id !== actor.id) {
+          if (activeMountedVehicleId === vehTarget.id) {
+            const yaw = (vehTarget.t3.ry * Math.PI) / 180;
+            const side = Number(p.exitOffsetX ?? 2.6);
+            actor.t3.x = vehTarget.t3.x + Math.cos(yaw) * side;
+            actor.t3.y = vehTarget.t3.y + 0.9;
+            actor.t3.z = vehTarget.t3.z - Math.sin(yaw) * side;
+            actor.vx = 0;
+            actor.vy = 0;
+            actor.vz = 0;
+            actor.visible = true;
+            activeMountedVehicleId = null;
+            mountedActorId = null;
+            cameraFollowOverride3D = null;
+            cameraManualLock = false;
+          } else if (!activeMountedVehicleId) {
+            const dist = Math.hypot(actor.t3.x - vehTarget.t3.x, actor.t3.z - vehTarget.t3.z);
+            const maxDist = Number(p.maxDistance ?? 12);
+            if (dist <= maxDist) {
+              activeMountedVehicleId = vehTarget.id;
+              mountedActorId = actor.id;
+              actor.visible = false;
+              actor.vx = 0;
+              actor.vy = 0;
+              actor.vz = 0;
+              actor.t3.x = vehTarget.t3.x;
+              actor.t3.y = vehTarget.t3.y;
+              actor.t3.z = vehTarget.t3.z;
+              cameraFollowOverride3D = vehTarget.source.vehicle?.parts?.cameraId || vehTarget.id;
+              cameraManualLock = false;
+            }
+          }
+        }
+        break;
+      }
       case 'camera.shake':
         api.camera.shake(Number(p.intensity ?? 0.35), Number(p.duration ?? 0.25));
         break;
@@ -2149,6 +2209,18 @@ export function createSimulation3DState(
           comp.type === 'movement.platformer_pro' ||
           comp.type === 'movement.topdown_8dir'
         ) {
+          if (mountedActorId === obj.id && activeMountedVehicleId) {
+            const mVeh = objById.get(activeMountedVehicleId);
+            if (mVeh) {
+              obj.t3.x = mVeh.t3.x;
+              obj.t3.y = mVeh.t3.y;
+              obj.t3.z = mVeh.t3.z;
+              obj.vx = mVeh.vx;
+              obj.vy = mVeh.vy;
+              obj.vz = mVeh.vz;
+            }
+            continue;
+          }
           const rawSpeed = Number(comp.config.speed ?? comp.config.maxSpeed ?? 6.5);
           const baseSpeed = rawSpeed > 35 ? rawSpeed / 35 : rawSpeed;
           const sprintKey = String(comp.config.sprintKey ?? 'ShiftLeft');
@@ -2958,6 +3030,7 @@ export function createSimulation3DState(
       ) || Boolean(o.source.aiAgent?.enabled && o.source.aiAgent.mode !== 'idle');
 
     const dynamicBodies = objects.filter((o) => {
+      if (mountedActorId === o.id && activeMountedVehicleId) return false;
       if (!o.visible || hasParentInScene(o)) return false;
       if (o.type !== 'mesh_3d' && o.type !== 'container') return false;
       if (
@@ -2968,6 +3041,7 @@ export function createSimulation3DState(
       ) {
         return false;
       }
+      if (o.source.vehicle?.enabled) return true;
       if (o.source.physics3d?.enabled && o.source.physics3d.bodyType === 'dynamic') return true;
       if (o.source.physics3d?.bodyType === 'kinematic') return false;
       return hasDynamicBehavior(o);
@@ -3001,19 +3075,115 @@ export function createSimulation3DState(
     const currentCollisions = new Set<string>();
 
     for (const body of dynamicBodies) {
-      // Si el objeto tiene suspensión 4-ruedas activa, resolver su cinemática de vehículo primero
+      // Resolver vehículos multi-modo (Auto, Moto, Bote, Avión, Nave Espacial 6DOF) con LOD
       const vCfg = body.source.vehicle;
       const vState = vehicleSims.get(body.id);
       if (vCfg?.enabled && vState) {
+        const lodActive = shouldStepVehiclePhysics(
+          vState,
+          { x: cameraState.posX, y: cameraState.posY, z: cameraState.posZ },
+          vCfg.physicsLodDistance
+        );
+        if (!lodActive) continue;
+
+        const hasDriverControl =
+          !primaryPlayer ||
+          activeMountedVehicleId === body.id ||
+          body.id === primaryPlayer.id ||
+          !objects.some((o) => o.id !== body.id && o.source.vehicle?.enabled && activeMountedVehicleId === o.id);
+
+        // Si hay una regla explícita para otro vehículo y el jugador está a pie, conducir solo si montado o no hay jugador
+        const playerControlsThis =
+          !primaryPlayer || activeMountedVehicleId === body.id || body.id === primaryPlayer.id;
+
         let thr = 0;
         let str = 0;
-        if (activeHeldKeys.has('KeyW') || activeHeldKeys.has('ArrowUp')) thr += 1;
-        if (activeHeldKeys.has('KeyS') || activeHeldKeys.has('ArrowDown')) thr -= 1;
-        if (activeHeldKeys.has('KeyA') || activeHeldKeys.has('ArrowLeft')) str -= 1;
-        if (activeHeldKeys.has('KeyD') || activeHeldKeys.has('ArrowRight')) str += 1;
-        if (thr === 0 && Math.abs(activeMoveAxisY) > 0.05) thr = -activeMoveAxisY;
-        if (str === 0 && Math.abs(activeMoveAxisX) > 0.05) str = activeMoveAxisX;
-        stepVehicle4W(vState, vCfg, thr, str, dt, (wx, wz) => groundHeightAt(scene, wx, wz));
+        let pitchIn = 0;
+        let ascendIn = 0;
+        let yawIn = 0;
+        if (playerControlsThis && hasDriverControl) {
+          if (activeHeldKeys.has('KeyW') || activeHeldKeys.has('ArrowUp')) thr += 1;
+          if (activeHeldKeys.has('KeyS') || activeHeldKeys.has('ArrowDown')) thr -= 1;
+          if (activeHeldKeys.has('KeyA') || activeHeldKeys.has('ArrowLeft')) str -= 1;
+          if (activeHeldKeys.has('KeyD') || activeHeldKeys.has('ArrowRight')) str += 1;
+          if (activeHeldKeys.has('Space')) ascendIn += 1;
+          if (activeHeldKeys.has('ShiftLeft') || activeHeldKeys.has('ControlLeft')) ascendIn -= 1;
+          if (activeHeldKeys.has('KeyQ')) yawIn -= 1;
+          if (activeHeldKeys.has('KeyE') && !activeMountedVehicleId) yawIn += 1;
+          if (activeHeldKeys.has('ArrowUp')) pitchIn -= 1;
+          if (activeHeldKeys.has('ArrowDown')) pitchIn += 1;
+          if (thr === 0 && Math.abs(activeMoveAxisY) > 0.05) thr = -activeMoveAxisY;
+          if (str === 0 && Math.abs(activeMoveAxisX) > 0.05) str = activeMoveAxisX;
+        }
+
+        const kind = vCfg.vehicleKind ?? 'car';
+        const patrolSplineId = vCfg.patrolSplineId || body.source.followSplineId;
+        const patrolSpline = patrolSplineId
+          ? (scene.splines3d ?? []).find((sp) => sp.id === patrolSplineId)
+          : null;
+
+        if (patrolSpline && patrolSpline.points.length >= 2 && !activeMountedVehicleId) {
+          const curT = splineProgress.get(body.id) ?? 0;
+          const spdRatio = Math.max(0.02, (vCfg.maxSpeed || 14) * 0.008);
+          const nextT = patrolSpline.closed ? (curT + spdRatio * dt) % 1 : Math.min(1, curT + spdRatio * dt);
+          splineProgress.set(body.id, nextT);
+          const pt = sampleSpline3D(patrolSpline.points, patrolSpline.closed, nextT);
+          vState.prevX = vState.x;
+          vState.prevY = vState.y;
+          vState.prevZ = vState.z;
+          vState.vx = (pt.x - vState.x) / Math.max(0.001, dt);
+          vState.vy = (pt.y - vState.y) / Math.max(0.001, dt);
+          vState.vz = (pt.z - vState.z) / Math.max(0.001, dt);
+          vState.x = pt.x;
+          vState.y = pt.y;
+          vState.z = pt.z;
+          vState.yawRad = Math.atan2(pt.tx, pt.tz);
+          vState.speedForward = Math.hypot(vState.vx, vState.vz);
+          vState.propellerSpinRad += 14 * dt;
+        } else if (kind === 'boat') {
+          const linkedWater = vCfg.waterObjectId
+            ? objects.find((o) => o.id === vCfg.waterObjectId && o.source.mesh3d?.waterConfig)
+            : objects.find((o) => o.source.mesh3d?.shape === 'water' && o.source.mesh3d.waterConfig);
+          stepBoatVehicle(vState, vCfg, thr, str, dt, (wx, wz) => {
+            if (!linkedWater?.source.mesh3d?.waterConfig) return groundHeightAt(scene, wx, wz);
+            return sampleWaterWaveHeightAt(
+              {
+                id: linkedWater.id,
+                x: linkedWater.t3.x,
+                y: linkedWater.t3.y,
+                z: linkedWater.t3.z,
+                config: linkedWater.source.mesh3d.waterConfig,
+              },
+              wx,
+              wz,
+              elapsedTime
+            );
+          });
+        } else if (kind === 'plane') {
+          const planePitch =
+            pitchIn !== 0
+              ? pitchIn
+              : activeHeldKeys.has('Space')
+                ? 0.85
+                : activeHeldKeys.has('ShiftLeft')
+                  ? -0.85
+                  : 0;
+          stepPlaneVehicle(
+            vState,
+            vCfg,
+            thr,
+            planePitch,
+            -str,
+            yawIn,
+            dt,
+            (wx, wz) => groundHeightAt(scene, wx, wz)
+          );
+        } else if (kind === 'spaceship') {
+          stepSpaceshipVehicle(vState, vCfg, thr, str, ascendIn, yawIn, pitchIn, 0, dt);
+        } else {
+          stepVehicle4W(vState, vCfg, thr, str, dt, (wx, wz) => groundHeightAt(scene, wx, wz));
+        }
+
         body.t3.x = vState.x;
         body.t3.y = vState.y;
         body.t3.z = vState.z;
@@ -3023,7 +3193,28 @@ export function createSimulation3DState(
         body.vx = vState.vx;
         body.vy = vState.vy;
         body.vz = vState.vz;
-        body.isGrounded = vState.wheels.some((w) => w.grounded);
+        body.isGrounded =
+          kind === 'boat'
+            ? vState.pontoons.some((p) => p.submerged > 0)
+            : vState.wheels.some((w) => w.grounded);
+
+        // Zona de Gravedad Local para naves espaciales grandes: el jugador puede caminar dentro en movimiento
+        if (
+          kind === 'spaceship' &&
+          vCfg.localGravityBox?.enabled &&
+          primaryPlayer &&
+          mountedActorId !== primaryPlayer.id
+        ) {
+          const heP = getHalfExtents3D(primaryPlayer);
+          const lg = applyLocalGravityZone(vState, vCfg.localGravityBox, primaryPlayer.t3, heP.y);
+          if (lg.inside) {
+            primaryPlayer.t3.x = lg.nextX;
+            primaryPlayer.t3.y = lg.nextY;
+            primaryPlayer.t3.z = lg.nextZ;
+            if (primaryPlayer.vy < 0) primaryPlayer.vy = 0;
+            primaryPlayer.isGrounded = true;
+          }
+        }
         continue;
       }
 
@@ -3376,6 +3567,70 @@ export function createSimulation3DState(
 
     particlePool.step(dt, 9.8, true);
 
+    // Evaluar interacciones de Agua (cruce de superficie + ondas cada 0.25s + rieles Spline 3D)
+    for (const obj of objects) {
+      if (obj.visible && obj.source.followSplineId && !obj.source.vehicle?.enabled) {
+        const sp = (scene.splines3d ?? []).find((s) => s.id === obj.source.followSplineId);
+        if (sp && sp.points.length >= 2) {
+          const curT = splineProgress.get(obj.id) ?? 0;
+          const spd = Math.max(0.02, (obj.source.followSplineSpeed ?? 6) * 0.015);
+          const nextT = sp.closed ? (curT + spd * dt) % 1 : Math.min(1, curT + spd * dt);
+          splineProgress.set(obj.id, nextT);
+          const pt = sampleSpline3D(sp.points, sp.closed, nextT);
+          obj.t3.x = pt.x;
+          obj.t3.y = pt.y;
+          obj.t3.z = pt.z;
+          obj.t3.ry = (Math.atan2(pt.tx, pt.tz) * 180) / Math.PI;
+        }
+      }
+      if (obj.visible && obj.source.mesh3d?.shape === 'water' && obj.source.mesh3d.waterConfig) {
+        const wc = obj.source.mesh3d.waterConfig;
+        const candidates = objects
+          .filter((ent) => ent.visible && ent.id !== obj.id && (ent.type === 'mesh_3d' || Boolean(ent.source.vehicle?.enabled)))
+          .map((ent) => {
+            const he = getHalfExtents3D(ent);
+            return {
+              id: ent.id,
+              x: ent.t3.x,
+              y: ent.t3.y,
+              z: ent.t3.z,
+              halfY: he.y,
+              speed: Math.hypot(ent.vx, ent.vz),
+            };
+          });
+        const wEvents = evaluateWaterEntityInteractions(
+          { id: obj.id, x: obj.t3.x, y: obj.t3.y, z: obj.t3.z, config: wc },
+          candidates,
+          waterTrackers,
+          elapsedTime,
+          dt
+        );
+        for (const ev of wEvents) {
+          waterInteractionQueue.push(ev);
+          if (ev.kind === 'splash') {
+            lastSplashPos = { x: ev.x, y: ev.y, z: ev.z, time: elapsedTime };
+            particlePool.burst(obj.id, ev.x, ev.y + 0.25, ev.z, 16, {
+              enabled: true,
+              preset: 'sparks',
+              rate: 20,
+              maxParticles: 80,
+              speedMin: 28,
+              speedMax: 85,
+              angleDeg: -90,
+              spreadDeg: 180,
+              gravity: 210,
+              sizeStart: 0.34,
+              sizeEnd: 0.05,
+              lifetime: 0.55,
+              colorStart: '#e0f2fe',
+              colorEnd: '#38bdf8',
+              blendAlpha: 0.9,
+            }, true);
+          }
+        }
+      }
+    }
+
     runMechanicsForEvent('tick');
     for (const k of activeJustPressedKeys) {
       runMechanicsForEvent('input.pressed', undefined, undefined, { key: k });
@@ -3571,6 +3826,8 @@ export function createSimulation3DState(
     softBodySims,
     vehicleSims,
     getLastWaterSplash: () => lastSplashPos,
+    consumeWaterInteractionEvents: () => waterInteractionQueue.splice(0, waterInteractionQueue.length),
+    getMountedVehicleId: () => activeMountedVehicleId,
     getElapsedTime: () => elapsedTime,
     getUiOverlayState: () => ({ toasts: activeToasts, widgets: dynamicWidgets }),
     getSunOverride: () => sunOverride,

@@ -79,6 +79,18 @@ export function findUnusedAssetIds(
       if (obj.mesh3d?.normalAssetId) {
         referencedIds.add(obj.mesh3d.normalAssetId);
       }
+      if (obj.mesh3d?.roughnessAssetId) {
+        referencedIds.add(obj.mesh3d.roughnessAssetId);
+      }
+      if (obj.mesh3d?.metalnessAssetId) {
+        referencedIds.add(obj.mesh3d.metalnessAssetId);
+      }
+      if (obj.mesh3d?.aoAssetId) {
+        referencedIds.add(obj.mesh3d.aoAssetId);
+      }
+      if (obj.mesh3d?.emissiveAssetId) {
+        referencedIds.add(obj.mesh3d.emissiveAssetId);
+      }
       if (obj.animStateMachine?.states) {
         for (const st of obj.animStateMachine.states) {
           if (st.assetId) referencedIds.add(st.assetId);

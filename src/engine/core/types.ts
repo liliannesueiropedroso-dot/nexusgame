@@ -368,6 +368,7 @@ export type ActionType =
   | 'ai.stop'
   | 'dialogue.start'
   | 'i18n.setLocale'
+  | 'vehicle.enterExit'
   | 'wait';
 
 export interface ActionDefinition {
@@ -799,6 +800,14 @@ export interface WaterConfig {
   shallowColor: string;
   deepColor: string;
   foamIntensity: number;
+  /** IDs de objetos que interactúan dejando estela y salpicaduras al cruzar la superficie */
+  interactingEntities?: string[];
+  /** Activa cinta de estela en agua detrás de embarcaciones u objetos rápidos */
+  enableWakeTrail?: boolean;
+  /** Reflejo planar en tiempo real (omitido automáticamente en GPU por software) */
+  planarReflections?: boolean;
+  /** Amortiguación hidrodinámica */
+  buoyancyDrag?: number;
 }
 
 export interface WindFoliageInstance {
@@ -824,6 +833,15 @@ export interface WindFoliageConfig {
   instances: WindFoliageInstance[];
 }
 
+export type PbrMaterialPresetId =
+  | 'custom'
+  | 'car_paint'
+  | 'crystal_water'
+  | 'worn_metal'
+  | 'rock'
+  | 'glass'
+  | 'neon';
+
 export interface Mesh3DProperties {
   shape: Mesh3DShape;
   color: string;
@@ -835,6 +853,14 @@ export interface Mesh3DProperties {
   receiveShadow: boolean;
   textureAssetId?: string | null;
   normalAssetId?: string | null;
+  roughnessAssetId?: string | null;
+  metalnessAssetId?: string | null;
+  aoAssetId?: string | null;
+  emissiveAssetId?: string | null;
+  clearcoat?: number;
+  clearcoatRoughness?: number;
+  transmission?: number;
+  materialPreset?: PbrMaterialPresetId;
   glbAssetId?: string | null;
   clipNames?: string[];
   csgGeometryJson?: SerializedCsgGeometry;
@@ -1053,8 +1079,21 @@ export interface SoftBodyConfig {
   color?: string;
 }
 
+export type VehicleKind3D = 'car' | 'moto' | 'boat' | 'plane' | 'spaceship';
+
+export interface VehiclePartsBinding {
+  wheelFL?: string | null;
+  wheelFR?: string | null;
+  wheelRL?: string | null;
+  wheelRR?: string | null;
+  propellerId?: string | null;
+  cameraId?: string | null;
+  landingGearId?: string | null;
+}
+
 export interface Vehicle4WConfig {
   enabled: boolean;
+  vehicleKind?: VehicleKind3D;
   maxTorque: number;
   maxSpeed: number;
   maxSteerDeg: number;
@@ -1065,6 +1104,25 @@ export interface Vehicle4WConfig {
   wheelBase: number;
   trackWidth: number;
   driveType: 'awd' | 'rwd' | 'fwd';
+  /** Agarre lateral (0.1 = derrape pronunciado, 1.0 = agarre máximo) */
+  gripFactor?: number;
+  /** Tamaño de embarcación: Lancha (4 pontones), Mediano (6), Barco Grande (12) */
+  boatSize?: 'speedboat' | 'medium' | 'ship';
+  /** Agua vinculada en escena para flotación por olas */
+  waterObjectId?: string | null;
+  /** Perfil de vuelo para aviones */
+  planeStyle?: 'fighter' | 'airliner';
+  /** Fuerza de sustentación aerodinámica */
+  liftFactor?: number;
+  hasLandingGear?: boolean;
+  /** Zona de gravedad local para naves espaciales grandes (permite caminar dentro) */
+  localGravityBox?: { enabled: boolean; sx: number; sy: number; sz: number };
+  /** Distancia LOD a partir de la cual se desactivan cálculos pesados de suspensión/olas */
+  physicsLodDistance?: number;
+  /** Sub-nodos hijos vinculados mediante parentId */
+  parts?: VehiclePartsBinding;
+  /** Ruta spline opcional de patrulla automática */
+  patrolSplineId?: string | null;
 }
 
 export interface GameObjectData {
@@ -1112,11 +1170,29 @@ export interface GameObjectData {
   role?: string;
   archetype?: ArchetypeId | null;
   net?: NetworkEntityConfig;
+  /** Seguimiento automático de una ruta Spline 3D (rieles de cámara, patrulla aérea/naval) */
+  followSplineId?: string | null;
+  followSplineSpeed?: number;
   /** Estado lógico para máquinas de estado de objeto */
   stateMachine?: {
     currentState: string;
     states: string[];
   };
+}
+
+export interface SplinePoint3D {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface SplinePathData {
+  id: string;
+  name: string;
+  closed: boolean;
+  width: number;
+  kind: 'road' | 'river' | 'rail' | 'patrol';
+  points: SplinePoint3D[];
 }
 
 export type SceneKind =
@@ -1201,6 +1277,7 @@ export interface SceneData {
   wiringLinks?: WiringLink[];
   scriptIds?: string[];
   navMesh?: NavMeshData | null;
+  splines3d?: SplinePathData[];
   activeCameraId?: string | null;
   objects: GameObjectData[];
   mechanics?: GameMechanic[];

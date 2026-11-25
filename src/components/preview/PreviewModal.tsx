@@ -15,7 +15,18 @@ import {
 } from 'lucide-react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
 import { loadModel3DFromBlob, retargetClipForRoot } from '../../engine/three3d/modelLoader';
+import {
+  buildWaterTrailRibbonBuffers,
+  createRippleRingPool,
+  createWaterTrailState,
+  sampleWaterWaveHeightAt,
+  spawnRippleInPool,
+  stepRippleRingPool,
+  updateWaterTrailPoints,
+  type WaterTrailState,
+} from '../../engine/three3d/waterEffects';
 import { sharedAudioEngine } from '../../engine/audio/audioEngine';
 import { fitCameraToViewport } from '../../engine/camera/camera2d';
 import { screenToStage } from '../../engine/core/math';
@@ -1232,6 +1243,69 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     >();
     const vehicleWheelVisuals = new Map<string, THREE.Mesh[]>();
 
+    // Pool de anillos de ondas en agua (zero-GC) + estelas Ribbon Trail
+    const ripplePool = createRippleRingPool(24);
+    const rippleMeshes: THREE.Mesh[] = [];
+    const rippleGeo = disposer.trackGeometry(new THREE.RingGeometry(0.45, 0.72, 24));
+    rippleGeo.rotateX(-Math.PI / 2);
+    for (let i = 0; i < ripplePool.length; i++) {
+      const rMat = disposer.trackMaterial(
+        new THREE.MeshBasicMaterial({
+          color: '#e0f2fe',
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      );
+      const rm = new THREE.Mesh(rippleGeo, rMat);
+      rm.visible = false;
+      rm.frustumCulled = false;
+      threeScene.add(rm);
+      rippleMeshes.push(rm);
+    }
+
+    const wakeTrails = new Map<
+      string,
+      {
+        state: WaterTrailState;
+        posArr: Float32Array;
+        alphaArr: Float32Array;
+        mesh: THREE.Mesh;
+      }
+    >();
+    const MAX_WAKE_VERTS = 26 * 6;
+    const ensureWakeTrailMesh = (key: string) => {
+      const existing = wakeTrails.get(key);
+      if (existing) return existing;
+      const posArr = new Float32Array(MAX_WAKE_VERTS * 3);
+      const alphaArr = new Float32Array(MAX_WAKE_VERTS);
+      const geom = disposer.trackGeometry(new THREE.BufferGeometry());
+      geom.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+      geom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(MAX_WAKE_VERTS * 3).fill(1), 3));
+      geom.setDrawRange(0, 0);
+      const mat = disposer.trackMaterial(
+        new THREE.MeshBasicMaterial({
+          color: '#e0f2fe',
+          transparent: true,
+          opacity: 0.42,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      );
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.frustumCulled = false;
+      worldGroup.add(mesh);
+      const entry = {
+        state: createWaterTrailState(26, 2.2),
+        posArr,
+        alphaArr,
+        mesh,
+      };
+      wakeTrails.set(key, entry);
+      return entry;
+    };
+
     let syncedSpawnVersion = 0;
     let sceneSunLight: THREE.DirectionalLight | null = null;
     const applyLoopModeToAction = (
@@ -1274,6 +1348,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       activeFoliageUniforms.length = 0;
       softBodyVisuals.clear();
       vehicleWheelVisuals.clear();
+      wakeTrails.clear();
+      for (const rm of rippleMeshes) rm.visible = false;
+      for (const r of ripplePool) r.active = false;
       activeSkyRef = null;
       syncedSpawnVersion = 0;
 
@@ -1531,8 +1608,26 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
             disposer.trackGeometry(waterRes.mesh.geometry);
             disposer.trackMaterial(waterRes.mesh.material);
             activeWaterUniforms.push(waterRes.uniforms);
-            nodeMap3d.set(obj.id, waterRes.mesh);
-            meshBindings.set(obj.id, waterRes.mesh);
+            if (wCfg.planarReflections && !software) {
+              const waterGrp = new THREE.Group();
+              waterGrp.userData.objectId = obj.id;
+              const reflGeo = disposer.trackGeometry(new THREE.PlaneGeometry(wCfg.width || 24, wCfg.depth || 24));
+              const refl = new Reflector(reflGeo, {
+                clipBias: 0.003,
+                textureWidth: 256,
+                textureHeight: 256,
+                color: 0x557799,
+              });
+              refl.rotation.x = -Math.PI / 2;
+              refl.position.y = -0.05;
+              waterGrp.add(refl);
+              waterGrp.add(waterRes.mesh);
+              nodeMap3d.set(obj.id, waterGrp);
+              meshBindings.set(obj.id, waterGrp);
+            } else {
+              nodeMap3d.set(obj.id, waterRes.mesh);
+              meshBindings.set(obj.id, waterRes.mesh);
+            }
           } else if (m3.shape === 'grass_field') {
             const fCfg = m3.foliageConfig ?? {
               kind: 'grass',
@@ -1806,7 +1901,10 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           } else {
             const isTerrain = m3.shape === 'terrain';
             const geom = buildModularGeometry(m3);
-            const mat = new THREE.MeshStandardMaterial({
+            const cc = m3.clearcoat ?? 0;
+            const trans = software ? 0 : (m3.transmission ?? 0);
+            const usePhysical = cc > 0 || trans > 0;
+            const matParams = {
               color: new THREE.Color(
                 isTerrain || (m3.shape === 'plane' && !m3.textureAssetId)
                   ? '#ffffff'
@@ -1817,18 +1915,40 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               roughness: isTerrain ? 0.88 : m3.roughness ?? 0.65,
               emissive: m3.emissive ? new THREE.Color(m3.emissive) : new THREE.Color(0x000000),
               emissiveIntensity: m3.emissiveIntensity ?? 0,
-            });
+              envMapIntensity: 1.15,
+              transparent: obj.opacity < 1 || trans > 0,
+              opacity: obj.opacity,
+            };
+            const mat: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial = usePhysical
+              ? new THREE.MeshPhysicalMaterial({
+                  ...matParams,
+                  clearcoat: cc,
+                  clearcoatRoughness: m3.clearcoatRoughness ?? 0.12,
+                  transmission: trans,
+                  ior: 1.48,
+                })
+              : new THREE.MeshStandardMaterial(matParams);
+
+            const bindAsyncTex = (
+              assetId: string | null | undefined,
+              isColor: boolean,
+              assign: (tex: THREE.Texture) => void
+            ) => {
+              if (!assetId) return;
+              const blob = assetBlobs.get(assetId);
+              if (!blob) return;
+              const url = URL.createObjectURL(blob);
+              textureLoader.load(url, (tex) => {
+                if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+                assign(tex);
+                mat.needsUpdate = true;
+                disposer.trackTexture(tex);
+                URL.revokeObjectURL(url);
+              });
+            };
+
             if (m3.textureAssetId) {
-              const texBlob = assetBlobs.get(m3.textureAssetId);
-              if (texBlob) {
-                const url = URL.createObjectURL(texBlob);
-                textureLoader.load(url, (tex) => {
-                  tex.colorSpace = THREE.SRGBColorSpace;
-                  mat.map = tex;
-                  mat.needsUpdate = true;
-                  URL.revokeObjectURL(url);
-                });
-              }
+              bindAsyncTex(m3.textureAssetId, true, (tex) => { mat.map = tex; });
             } else if (m3.shape === 'plane') {
               const gridTex = createGroundGridTexture(m3.color || '#334155');
               if (gridTex) {
@@ -1837,16 +1957,18 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                 disposer.trackTexture(gridTex);
               }
             }
-            if (m3.normalAssetId) {
-              const nBlob = assetBlobs.get(m3.normalAssetId);
-              if (nBlob) {
-                const url = URL.createObjectURL(nBlob);
-                textureLoader.load(url, (tex) => {
-                  mat.normalMap = tex;
-                  mat.needsUpdate = true;
-                  URL.revokeObjectURL(url);
-                });
+            bindAsyncTex(m3.normalAssetId, false, (tex) => { mat.normalMap = tex; });
+            bindAsyncTex(m3.roughnessAssetId, false, (tex) => { mat.roughnessMap = tex; });
+            bindAsyncTex(m3.metalnessAssetId, false, (tex) => { mat.metalnessMap = tex; });
+            bindAsyncTex(m3.emissiveAssetId, true, (tex) => { mat.emissiveMap = tex; });
+            if (m3.aoAssetId) {
+              if (geom.attributes.uv && !geom.attributes.uv2) {
+                geom.setAttribute('uv2', geom.attributes.uv);
               }
+              bindAsyncTex(m3.aoAssetId, false, (tex) => {
+                mat.aoMap = tex;
+                mat.aoMapIntensity = 0.9;
+              });
             }
             const mesh = new THREE.Mesh(geom, mat);
             mesh.castShadow = m3.castShadow && !software;
@@ -1966,19 +2088,33 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
 
       for (const [vehId] of sim3d.vehicleSims.entries()) {
         const srcObj = targetScene.objects.find((o) => o.id === vehId);
-        const wRadius = srcObj?.vehicle?.wheelRadius ?? 0.42;
-        const wGeo = disposer.trackGeometry(new THREE.CylinderGeometry(wRadius, wRadius, 0.28, 12));
-        wGeo.rotateZ(Math.PI / 2);
-        const wMat = disposer.trackMaterial(
-          new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.85, metalness: 0.15 })
-        );
-        const wheels: THREE.Mesh[] = [];
-        for (let i = 0; i < 4; i++) {
-          const wm = new THREE.Mesh(wGeo, wMat);
-          worldGroup.add(wm);
-          wheels.push(wm);
+        const vCfg = srcObj?.vehicle;
+        const kind = vCfg?.vehicleKind ?? 'car';
+        const parts = vCfg?.parts;
+        if (parts) {
+          for (const partId of [parts.wheelFL, parts.wheelFR, parts.wheelRL, parts.wheelRR, parts.propellerId]) {
+            if (!partId) continue;
+            const partNode = nodeMap3d.get(partId);
+            if (partNode) partNode.userData.vehicleAnimatedPart = true;
+          }
         }
-        vehicleWheelVisuals.set(vehId, wheels);
+        // Solo crear ruedas procedurales de respaldo si es auto/moto sin hijos de rueda asignados
+        if ((kind === 'car' || kind === 'moto') && !parts?.wheelFL) {
+          const wRadius = vCfg?.wheelRadius ?? 0.42;
+          const wGeo = disposer.trackGeometry(new THREE.CylinderGeometry(wRadius, wRadius, 0.28, 12));
+          wGeo.rotateZ(Math.PI / 2);
+          const wMat = disposer.trackMaterial(
+            new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.85, metalness: 0.15 })
+          );
+          const wheelCount = kind === 'moto' ? 2 : 4;
+          const wheels: THREE.Mesh[] = [];
+          for (let i = 0; i < wheelCount; i++) {
+            const wm = new THREE.Mesh(wGeo, wMat);
+            worldGroup.add(wm);
+            wheels.push(wm);
+          }
+          vehicleWheelVisuals.set(vehId, wheels);
+        }
       }
 
       // Vincular jerarquía 3D padre-hijo real en el grafo Three.js + registrar boneSockets
@@ -2112,6 +2248,12 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     let hudTimer = 0;
     let frameAcc = 0;
     let fpsVal = 60;
+    const wAxisX = new THREE.Vector3(1, 0, 0);
+    const wAxisY = new THREE.Vector3(0, 1, 0);
+    const wSteerQ = new THREE.Quaternion();
+    const wSpinQ = new THREE.Quaternion();
+    const wBaseQ = new THREE.Quaternion();
+    const wBaseEuler = new THREE.Euler();
 
     // Cliente multijugador 3D y avatares remotos
     const mpConf3d = currentScene3d.multiplayer;
@@ -2270,15 +2412,120 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           }
         }
 
-        // Sincronizar ruedas de Vehículos 4W
+        // Ondas circulares (Pooled RingGeometry) + Estelas Ribbon Trail detrás de barcos y entidades en el agua
+        const waterEvents = sim3d.consumeWaterInteractionEvents();
+        for (const ev of waterEvents) {
+          spawnRippleInPool(ripplePool, ev.x, ev.y, ev.z, ev.kind === 'splash' ? 1.4 : 1.25);
+        }
+        stepRippleRingPool(ripplePool, dt);
+        for (let i = 0; i < ripplePool.length; i++) {
+          const rp = ripplePool[i];
+          const rm = rippleMeshes[i];
+          rm.visible = rp.active;
+          if (rp.active) {
+            rm.position.set(rp.x, rp.y, rp.z);
+            rm.scale.set(rp.scale, 1, rp.scale);
+            (rm.material as THREE.MeshBasicMaterial).opacity = rp.opacity;
+          }
+        }
+
+        const waterObjs = sim3d.objects.filter(
+          (o) => o.visible && o.source.type === 'mesh_3d' && o.source.mesh3d?.shape === 'water' && o.source.mesh3d.waterConfig
+        );
+        for (const wObj of waterObjs) {
+          const wCfg = wObj.source.mesh3d!.waterConfig!;
+          if (wCfg.enableWakeTrail === false) continue;
+          const targetIds = new Set<string>(wCfg.interactingEntities ?? []);
+          if (targetIds.size === 0 && playerActor) targetIds.add(playerActor.id);
+          for (const [vid, vs] of sim3d.vehicleSims.entries()) {
+            const vSource = sim3d.objects.find((o) => o.id === vid);
+            if (vSource?.source.vehicle?.vehicleKind === 'boat') targetIds.add(vid);
+            void vs;
+          }
+          for (const eid of targetIds) {
+            const ent = sim3d.objects.find((o) => o.id === eid && o.visible);
+            if (!ent) continue;
+            const waveY = sampleWaterWaveHeightAt(
+              { id: wObj.id, x: wObj.t3.x, y: wObj.t3.y, z: wObj.t3.z, config: wCfg },
+              ent.t3.x,
+              ent.t3.z,
+              simElapsed
+            );
+            if (waveY === null) continue;
+            const spd = Math.hypot(ent.vx, ent.vz);
+            const yaw = THREE.MathUtils.degToRad(ent.t3.ry);
+            const trailEntry = ensureWakeTrailMesh(`${wObj.id}:${eid}`);
+            updateWaterTrailPoints(
+              trailEntry.state,
+              ent.t3.x,
+              waveY,
+              ent.t3.z,
+              Math.sin(yaw),
+              Math.cos(yaw),
+              spd,
+              Math.max(0.45, (ent.source.physics3d?.halfExtents?.x ?? Math.abs(ent.t3.sx) * 0.5) * 0.85),
+              dt
+            );
+            const vCount = buildWaterTrailRibbonBuffers(trailEntry.state, trailEntry.posArr, trailEntry.alphaArr);
+            const posAttr = trailEntry.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+            posAttr.needsUpdate = true;
+            trailEntry.mesh.geometry.setDrawRange(0, vCount);
+            trailEntry.mesh.visible = vCount >= 3;
+          }
+        }
+
+        // Sincronizar ruedas procedurales, ruedas hijas compuestas y hélices de Vehículos 3D
         for (const [vehId, vState] of sim3d.vehicleSims.entries()) {
+          const vObj = sim3d.objects.find((o) => o.id === vehId);
+          const parts = vObj?.source.vehicle?.parts;
           const wMeshes = vehicleWheelVisuals.get(vehId);
-          if (!wMeshes) continue;
-          for (let i = 0; i < 4 && i < wMeshes.length; i++) {
-            const w = vState.wheels[i];
-            const wm = wMeshes[i];
-            wm.position.set(w.worldX, w.worldY, w.worldZ);
-            wm.rotation.set(w.spinRad, vState.yawRad + w.steerAngleRad, 0, 'YXZ');
+          if (wMeshes) {
+            const isMoto = (vObj?.source.vehicle?.vehicleKind ?? 'car') === 'moto';
+            const idxMap = isMoto ? [0, 2] : [0, 1, 2, 3];
+            for (let i = 0; i < wMeshes.length; i++) {
+              const w = vState.wheels[idxMap[i] ?? i];
+              const wm = wMeshes[i];
+              wm.position.set(w.worldX, w.worldY, w.worldZ);
+              wm.rotation.set(w.spinRad, vState.yawRad + w.steerAngleRad, 0, 'YXZ');
+            }
+          }
+          if (parts) {
+            const partIds = [parts.wheelFL, parts.wheelFR, parts.wheelRL, parts.wheelRR];
+            partIds.forEach((pid, idx) => {
+              if (!pid) return;
+              const pNode = meshBindings.get(pid);
+              const pState = sim3d.objects.find((o) => o.id === pid);
+              const w = vState.wheels[idx];
+              if (pNode && pState && w) {
+                pNode.position.set(
+                  pState.t3.x,
+                  pState.t3.y + w.compression * 0.28,
+                  pState.t3.z
+                );
+                wBaseEuler.set(
+                  THREE.MathUtils.degToRad(pState.t3.rx),
+                  THREE.MathUtils.degToRad(pState.t3.ry),
+                  THREE.MathUtils.degToRad(pState.t3.rz),
+                  'XYZ'
+                );
+                wBaseQ.setFromEuler(wBaseEuler);
+                wSpinQ.setFromAxisAngle(wAxisX, w.spinRad);
+                wSteerQ.setFromAxisAngle(wAxisY, w.steerAngleRad);
+                pNode.quaternion.copy(wSteerQ).multiply(wSpinQ).multiply(wBaseQ);
+              }
+            });
+            if (parts.propellerId) {
+              const propNode = meshBindings.get(parts.propellerId);
+              const propState = sim3d.objects.find((o) => o.id === parts.propellerId);
+              if (propNode && propState) {
+                propNode.rotation.set(
+                  THREE.MathUtils.degToRad(propState.t3.rx),
+                  THREE.MathUtils.degToRad(propState.t3.ry),
+                  vState.propellerSpinRad,
+                  'XYZ'
+                );
+              }
+            }
           }
         }
 
@@ -2403,7 +2650,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               }
             }
             mesh.visible = showObj;
-            if (!mesh.userData.boneAttached) {
+            if (mesh.userData.vehicleAnimatedPart) {
+              mesh.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
+            } else if (!mesh.userData.boneAttached) {
               mesh.position.set(objState.t3.x, objState.t3.y, objState.t3.z);
               mesh.rotation.set(
                 THREE.MathUtils.degToRad(objState.t3.rx),

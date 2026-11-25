@@ -13,6 +13,7 @@ import {
   Paintbrush,
   Plus,
   RotateCcw,
+  Sparkles,
   Sprout,
   Sun,
   Trash2,
@@ -64,7 +65,12 @@ import {
   type TileBrushMode,
   type TileCollisionKind,
   type Vehicle4WConfig,
+  type VehicleKind3D,
 } from '../../engine/core/types';
+import {
+  generatePbrAssetBlobsFromImage,
+  PBR_MATERIAL_PRESETS,
+} from '../../engine/three3d/pbrGenerator';
 import {
   ARCHETYPE_RECIPES,
   applyArchetypeToScene,
@@ -107,6 +113,8 @@ interface InspectorPanelProps {
   onUpdateScene: (updater: (scene: SceneData) => SceneData) => void;
   onActivateTileBrush?: () => void;
   onImportFiles?: (files: File[]) => Promise<ProjectAssetMeta[] | void>;
+  onCreateAsset?: (meta: ProjectAssetMeta, blob: Blob) => Promise<void> | void;
+  onOpenVehicleWizard?: () => void;
 }
 
 interface SectionProps {
@@ -216,6 +224,8 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onUpdateScene,
   onActivateTileBrush,
   onImportFiles,
+  onCreateAsset,
+  onOpenVehicleWizard,
 }) => {
   const [behaviorToAdd, setBehaviorToAdd] = useState<BehaviorType>('player_platformer');
   const [behaviorCategory, setBehaviorCategory] = useState<BehaviorCategory | 'Todas'>('Todas');
@@ -228,6 +238,9 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   const [parentBoneNames, setParentBoneNames] = useState<string[]>([]);
   const [selectedArchetype, setSelectedArchetype] = useState<ArchetypeId>('collectible');
   const [archetypeNotice, setArchetypeNotice] = useState<string | null>(null);
+  const [generatingPbrMaps, setGeneratingPbrMaps] = useState(false);
+  const [pbrNotice, setPbrNotice] = useState<string | null>(null);
+  const [waterObjToAdd, setWaterObjToAdd] = useState<string>('');
 
   const singleObj = selectedObjects.length === 1 ? selectedObjects[0] : null;
   const parentObjForBones = singleObj?.parentId
@@ -3430,8 +3443,93 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       <NumberField id="wat-fz" label="Flujo Z" value={wc.flowZ} min={-5} max={5} step={0.1} onChange={(flowZ) => patchWater({ flowZ })} />
                       <NumberField id="wat-amp" label="Olas" value={wc.waveAmplitude} min={0} max={1.5} step={0.02} onChange={(waveAmplitude) => patchWater({ waveAmplitude })} />
                       <NumberField id="wat-foam" label="Espuma" value={wc.foamIntensity} min={0} max={2} step={0.05} onChange={(foamIntensity) => patchWater({ foamIntensity })} />
-                      <input type="color" aria-label="Color agua superficial" value={wc.shallowColor} onChange={(e) => patchWater({ shallowColor: e.target.value })} className="h-7 w-full rounded border border-[#32323c] bg-[#141416] p-0.5" />
-                      <input type="color" aria-label="Color agua profunda" value={wc.deepColor} onChange={(e) => patchWater({ deepColor: e.target.value })} className="h-7 w-full rounded border border-[#32323c] bg-[#141416] p-0.5" />
+                      <NumberField id="wat-drag" label="Arrastre" value={wc.buoyancyDrag ?? 1.2} min={0.1} max={5} step={0.1} onChange={(buoyancyDrag) => patchWater({ buoyancyDrag })} />
+                      <div className="grid grid-cols-2 gap-1">
+                        <input type="color" aria-label="Color agua superficial" value={wc.shallowColor} onChange={(e) => patchWater({ shallowColor: e.target.value })} className="h-7 w-full rounded border border-[#32323c] bg-[#141416] p-0.5" />
+                        <input type="color" aria-label="Color agua profunda" value={wc.deepColor} onChange={(e) => patchWater({ deepColor: e.target.value })} className="h-7 w-full rounded border border-[#32323c] bg-[#141416] p-0.5" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 text-[11px] text-zinc-200 pt-1">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={wc.enableWakeTrail !== false}
+                          onChange={(e) => patchWater({ enableWakeTrail: e.target.checked })}
+                          className="accent-cyan-500"
+                        />
+                        <span>Estela y Ondas</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(wc.planarReflections)}
+                          onChange={(e) => patchWater({ planarReflections: e.target.checked })}
+                          className="accent-cyan-500"
+                        />
+                        <span>Reflejos WebGL</span>
+                      </label>
+                    </div>
+                    <div className="space-y-1 border-t border-cyan-500/20 pt-1.5">
+                      <div className="text-[10px] font-medium text-cyan-200">
+                        Objetos que generan ondas y estelas
+                      </div>
+                      <div className="flex gap-1">
+                        <select
+                          aria-label="Objeto que interactúa con el agua"
+                          value={waterObjToAdd}
+                          onChange={(e) => setWaterObjToAdd(e.target.value)}
+                          className="min-w-0 flex-1 rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                        >
+                          <option value="">Seleccionar barco / jugador...</option>
+                          {scene.objects
+                            .filter((cand) => cand.id !== obj.id && (cand.type === 'mesh_3d' || Boolean(cand.vehicle?.enabled)) && cand.mesh3d?.shape !== 'water' && cand.mesh3d?.shape !== 'terrain')
+                            .map((cand) => (
+                              <option key={cand.id} value={cand.id}>{cand.name}</option>
+                            ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextId = waterObjToAdd || scene.objects.find((cand) => cand.id !== obj.id && (cand.type === 'mesh_3d' || Boolean(cand.vehicle?.enabled)) && cand.mesh3d?.shape !== 'water' && cand.mesh3d?.shape !== 'terrain')?.id;
+                            if (!nextId) return;
+                            const prevList = wc.interactingEntities ?? [];
+                            if (!prevList.includes(nextId)) {
+                              patchWater({ interactingEntities: [...prevList, nextId] });
+                            }
+                            setWaterObjToAdd('');
+                          }}
+                          className="rounded bg-cyan-600/80 px-2 py-1 text-[10px] font-semibold text-white hover:bg-cyan-500"
+                        >
+                          + Añadir Objeto
+                        </button>
+                      </div>
+                      {(wc.interactingEntities?.length ?? 0) > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-0.5">
+                          {wc.interactingEntities!.map((eid) => {
+                            const match = scene.objects.find((o) => o.id === eid);
+                            return (
+                              <span
+                                key={eid}
+                                className="inline-flex items-center gap-1 rounded border border-cyan-500/35 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] text-cyan-200"
+                              >
+                                <span>{match?.name ?? eid}</span>
+                                <button
+                                  type="button"
+                                  aria-label={`Quitar ${match?.name ?? eid}`}
+                                  onClick={() =>
+                                    patchWater({
+                                      interactingEntities: (wc.interactingEntities ?? []).filter((x) => x !== eid),
+                                    })
+                                  }
+                                  className="text-cyan-400 hover:text-red-400"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -3496,90 +3594,267 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 );
               })()}
 
-              <div className="grid grid-cols-2 gap-1.5">
-                <NumberField
-                  id="m3-metal"
-                  label="Metálico"
-                  value={m3.metalness}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  onChange={(metalness) => patchM3({ metalness })}
-                />
-                <NumberField
-                  id="m3-rough"
-                  label="Rugosidad"
-                  value={m3.roughness}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  onChange={(roughness) => patchM3({ roughness })}
-                />
-                <NumberField
-                  id="m3-emi-int"
-                  label="Int. Emisiva"
-                  value={m3.emissiveIntensity ?? 0}
-                  min={0}
-                  max={5}
-                  step={0.1}
-                  onChange={(emissiveIntensity) => patchM3({ emissiveIntensity })}
-                />
-                <input
-                  type="color"
-                  aria-label="Color emisivo"
-                  value={m3.emissive ?? '#000000'}
-                  onChange={(e) => patchM3({ emissive: e.target.value })}
-                  className="h-7 w-full cursor-pointer rounded border border-[#32323c] bg-[#141416] p-0.5"
-                />
-              </div>
+              {/* PBR Studio + Presets + Auto-Generador Sobel */}
+              <div className="space-y-2 rounded border border-[#2c3140] bg-[#161820] p-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300">
+                    PBR Studio (5 Ranuras + Barniz)
+                  </span>
+                </div>
 
-              <div className="space-y-1">
-                <label className="block text-[10px] text-zinc-400">
-                  Modelo 3D (.glb / .gltf / .fbx) — sustituye apariencia en el mismo lugar
-                </label>
-                <select
-                  aria-label="Modelo 3D GLB o FBX"
-                  value={m3.glbAssetId ?? ''}
-                  onChange={(e) => {
-                    const glbId = e.target.value || null;
-                    patchM3({
-                      glbAssetId: glbId,
-                      shape: glbId ? 'glb' : (m3.shape === 'glb' ? 'box' : m3.shape),
-                      clipNames: undefined,
-                    });
-                  }}
-                  className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100"
-                >
-                  <option value="">(Usar forma modular estándar)</option>
-                  {model3dAssets.map((a) => (
-                    <option key={a.id} value={a.id}>{a.name} ({a.format.toUpperCase()})</option>
+                {/* Presets de Material PBR en 1 clic */}
+                <div className="grid grid-cols-3 gap-1">
+                  {PBR_MATERIAL_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      title={preset.description}
+                      onClick={() => patchM3(preset.patch)}
+                      className={`rounded border px-1.5 py-1 text-[10px] font-medium truncate transition-colors ${
+                        m3.materialPreset === preset.id
+                          ? 'border-sky-400 bg-sky-500/20 text-sky-100'
+                          : 'border-[#2f3344] bg-[#1d202b] text-zinc-300 hover:border-sky-500/50'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
                   ))}
-                </select>
-              </div>
+                </div>
 
-              <div className="grid grid-cols-2 gap-1.5">
-                <select
-                  aria-label="Textura Albedo 3D"
-                  value={m3.textureAssetId ?? ''}
-                  onChange={(e) => patchM3({ textureAssetId: e.target.value || null })}
-                  className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
-                >
-                  <option value="">Sin textura albedo</option>
-                  {imageAssets.map((a) => (
-                    <option key={a.id} value={a.id}>{a.name}</option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Mapa normal 3D"
-                  value={m3.normalAssetId ?? ''}
-                  onChange={(e) => patchM3({ normalAssetId: e.target.value || null })}
-                  className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
-                >
-                  <option value="">Sin Normal Map</option>
-                  {imageAssets.map((a) => (
-                    <option key={a.id} value={a.id}>{a.name}</option>
-                  ))}
-                </select>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <NumberField
+                    id="m3-metal"
+                    label="Metálico"
+                    value={m3.metalness}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(metalness) => patchM3({ metalness })}
+                  />
+                  <NumberField
+                    id="m3-rough"
+                    label="Rugosidad"
+                    value={m3.roughness}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(roughness) => patchM3({ roughness })}
+                  />
+                  <NumberField
+                    id="m3-cc"
+                    label="Clearcoat"
+                    value={m3.clearcoat ?? 0}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(clearcoat) => patchM3({ clearcoat })}
+                  />
+                  <NumberField
+                    id="m3-trans"
+                    label="Cristal"
+                    value={m3.transmission ?? 0}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(transmission) => patchM3({ transmission })}
+                  />
+                  <NumberField
+                    id="m3-emi-int"
+                    label="Int. Emisiva"
+                    value={m3.emissiveIntensity ?? 0}
+                    min={0}
+                    max={5}
+                    step={0.1}
+                    onChange={(emissiveIntensity) => patchM3({ emissiveIntensity })}
+                  />
+                  <input
+                    type="color"
+                    aria-label="Color emisivo"
+                    value={m3.emissive ?? '#000000'}
+                    onChange={(e) => patchM3({ emissive: e.target.value })}
+                    className="h-7 w-full cursor-pointer rounded border border-[#32323c] bg-[#141416] p-0.5"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-[10px] text-zinc-400">
+                    Modelo 3D (.glb / .gltf / .fbx) — sustituye apariencia en el mismo lugar
+                  </label>
+                  <select
+                    aria-label="Modelo 3D GLB o FBX"
+                    value={m3.glbAssetId ?? ''}
+                    onChange={(e) => {
+                      const glbId = e.target.value || null;
+                      patchM3({
+                        glbAssetId: glbId,
+                        shape: glbId ? 'glb' : (m3.shape === 'glb' ? 'box' : m3.shape),
+                        clipNames: undefined,
+                      });
+                    }}
+                    className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100"
+                  >
+                    <option value="">(Usar forma modular estándar)</option>
+                    {model3dAssets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name} ({a.format.toUpperCase()})</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 5 ranuras de mapas PBR */}
+                <div className="grid grid-cols-2 gap-1.5">
+                  <select
+                    aria-label="Textura Albedo 3D"
+                    value={m3.textureAssetId ?? ''}
+                    onChange={(e) => patchM3({ textureAssetId: e.target.value || null })}
+                    className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                  >
+                    <option value="">1. Albedo (Color)</option>
+                    {imageAssets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Mapa normal 3D"
+                    value={m3.normalAssetId ?? ''}
+                    onChange={(e) => patchM3({ normalAssetId: e.target.value || null })}
+                    className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                  >
+                    <option value="">2. Normal Map</option>
+                    {imageAssets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Mapa de Rugosidad 3D"
+                    value={m3.roughnessAssetId ?? ''}
+                    onChange={(e) => patchM3({ roughnessAssetId: e.target.value || null })}
+                    className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                  >
+                    <option value="">3. Roughness Map</option>
+                    {imageAssets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Mapa Metálico 3D"
+                    value={m3.metalnessAssetId ?? ''}
+                    onChange={(e) => patchM3({ metalnessAssetId: e.target.value || null })}
+                    className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                  >
+                    <option value="">4. Metalness Map</option>
+                    {imageAssets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Mapa AO 3D"
+                    value={m3.aoAssetId ?? ''}
+                    onChange={(e) => patchM3({ aoAssetId: e.target.value || null })}
+                    className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                  >
+                    <option value="">5. Oclusión (AO)</option>
+                    {imageAssets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Mapa Emisivo 3D"
+                    value={m3.emissiveAssetId ?? ''}
+                    onChange={(e) => patchM3({ emissiveAssetId: e.target.value || null })}
+                    className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                  >
+                    <option value="">Emissive Map</option>
+                    {imageAssets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Botón Auto-Generar Relieve y Brillo (Sobel) */}
+                {onCreateAsset && (
+                  <button
+                    type="button"
+                    disabled={generatingPbrMaps}
+                    onClick={async () => {
+                      const albedoId = m3.textureAssetId;
+                      if (!albedoId) {
+                        setPbrNotice('Asigna primero una textura en "1. Albedo (Color)" para generar su relieve.');
+                        return;
+                      }
+                      const blob = assetBlobs?.get(albedoId);
+                      const srcMeta = imageAssets.find((a) => a.id === albedoId);
+                      if (!blob) {
+                        setPbrNotice('No se encontró la imagen en memoria.');
+                        return;
+                      }
+                      try {
+                        setGeneratingPbrMaps(true);
+                        setPbrNotice(null);
+                        const res = await generatePbrAssetBlobsFromImage(blob, srcMeta?.name || obj.name);
+                        const normalId = createId('asset');
+                        const roughId = createId('asset');
+                        const toDataUrl = (b: Blob) =>
+                          new Promise<string>((resolve) => {
+                            const fr = new FileReader();
+                            fr.onload = () => resolve(String(fr.result || ''));
+                            fr.onerror = () => resolve('');
+                            fr.readAsDataURL(b);
+                          });
+                        const [normalThumb, roughThumb] = await Promise.all([
+                          toDataUrl(res.normalBlob),
+                          toDataUrl(res.roughnessBlob),
+                        ]);
+                        await onCreateAsset(
+                          {
+                            id: normalId,
+                            name: `${srcMeta?.name || obj.name} Normal`,
+                            filename: res.normalFilename,
+                            kind: 'image',
+                            format: 'png',
+                            thumbnailDataUrl: normalThumb,
+                            mimeType: 'image/png',
+                            size: res.normalBlob.size,
+                            width: res.width,
+                            height: res.height,
+                            createdAt: Date.now(),
+                            tags: ['pbr', 'normal'],
+                          },
+                          res.normalBlob
+                        );
+                        await onCreateAsset(
+                          {
+                            id: roughId,
+                            name: `${srcMeta?.name || obj.name} Roughness`,
+                            filename: res.roughnessFilename,
+                            kind: 'image',
+                            format: 'png',
+                            thumbnailDataUrl: roughThumb,
+                            mimeType: 'image/png',
+                            size: res.roughnessBlob.size,
+                            width: res.width,
+                            height: res.height,
+                            createdAt: Date.now(),
+                            tags: ['pbr', 'roughness'],
+                          },
+                          res.roughnessBlob
+                        );
+                        patchM3({ normalAssetId: normalId, roughnessAssetId: roughId });
+                        setPbrNotice('Normal Map y Roughness Map generados con Sobel y asignados.');
+                      } catch (err) {
+                        setPbrNotice(err instanceof Error ? err.message : 'Error al generar mapas PBR.');
+                      } finally {
+                        setGeneratingPbrMaps(false);
+                      }
+                    }}
+                    className="flex w-full items-center justify-center gap-1.5 rounded border border-amber-500/40 bg-amber-500/15 px-2.5 py-1.5 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/25 disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                    <span>{generatingPbrMaps ? 'Generando mapas Sobel...' : 'Auto-Generar Relieve y Brillo (Sobel)'}</span>
+                  </button>
+                )}
+                {pbrNotice && (
+                  <p className="text-[10px] text-emerald-300 leading-snug">{pbrNotice}</p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-1.5 text-xs text-zinc-300">
@@ -4058,11 +4333,27 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 );
               })()}
             </InspectorSection>
+          </>
+        );
+      })()}
 
-            <InspectorSection title="Vehículo 4 Ruedas (Suspensión)" defaultOpen={Boolean(obj.vehicle?.enabled)}>
+      {(obj.type === 'mesh_3d' || obj.type === 'container') && (() => {
+        const phy3 = obj.physics3d ?? {
+          enabled: false,
+          bodyType: 'static' as const,
+          shape: 'box' as const,
+          mass: 1,
+          gravityScale: 1,
+          restitution: 0.1,
+          friction: 0.6,
+        };
+        return (
+          <>
+            <InspectorSection title="Vehículo 3D Pro (Auto / Bote / Avión / Nave)" defaultOpen={Boolean(obj.vehicle?.enabled)}>
               {(() => {
                 const veh: Vehicle4WConfig = obj.vehicle ?? {
                   enabled: false,
+                  vehicleKind: 'car',
                   maxTorque: 26,
                   maxSpeed: 22,
                   maxSteerDeg: 32,
@@ -4073,6 +4364,8 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   wheelBase: 2.6,
                   trackWidth: 1.7,
                   driveType: 'awd',
+                  gripFactor: 0.86,
+                  physicsLodDistance: 140,
                 };
                 const patchVeh = (p: Partial<Vehicle4WConfig>) =>
                   onUpdateObject(obj.id, (prev) => ({
@@ -4080,32 +4373,190 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     vehicle: { ...veh, ...p },
                     physics3d:
                       p.enabled === true
-                        ? { ...(prev.physics3d ?? phy3), enabled: true, bodyType: 'dynamic' }
+                        ? {
+                            ...(prev.physics3d ?? phy3),
+                            enabled: true,
+                            bodyType: 'dynamic',
+                            gravityScale: (p.vehicleKind ?? veh.vehicleKind) === 'spaceship' ? 0 : (prev.physics3d?.gravityScale ?? 1),
+                          }
                         : prev.physics3d,
                   }));
+                const kind = veh.vehicleKind ?? 'car';
                 return (
-                  <div className="space-y-1.5">
-                    <label className="flex items-center gap-2 text-xs text-zinc-200 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={veh.enabled}
-                        onChange={(e) => patchVeh({ enabled: e.target.checked })}
-                        className="accent-sky-500"
-                      />
-                      <span>Conducir con 4 ruedas + suspensión (W/S/A/D)</span>
-                    </label>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 text-xs text-zinc-200 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={veh.enabled}
+                          onChange={(e) => patchVeh({ enabled: e.target.checked })}
+                          className="accent-sky-500"
+                        />
+                        <span>Activar Vehículo Pro (WASD)</span>
+                      </label>
+                      {onOpenVehicleWizard && (
+                        <button
+                          type="button"
+                          onClick={onOpenVehicleWizard}
+                          className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/25"
+                        >
+                          Asistente
+                        </button>
+                      )}
+                    </div>
                     {veh.enabled && (
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <NumberField id="veh-spd" label="Vel. máx" value={veh.maxSpeed} min={4} max={80} onChange={(maxSpeed) => patchVeh({ maxSpeed })} />
-                        <NumberField id="veh-trq" label="Torque" value={veh.maxTorque} min={4} max={100} onChange={(maxTorque) => patchVeh({ maxTorque })} />
-                        <NumberField id="veh-str" label="Giro °" value={veh.maxSteerDeg} min={10} max={55} onChange={(maxSteerDeg) => patchVeh({ maxSteerDeg })} />
-                        <NumberField id="veh-susp" label="Suspensión" value={veh.suspensionStiffness} min={10} max={120} onChange={(suspensionStiffness) => patchVeh({ suspensionStiffness })} />
-                      </div>
+                      <>
+                        <select
+                          aria-label="Modo de vehículo 3D"
+                          value={kind}
+                          onChange={(e) => patchVeh({ vehicleKind: e.target.value as VehicleKind3D })}
+                          className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100"
+                        >
+                          <option value="car">Auto 4 Ruedas + Suspensión</option>
+                          <option value="moto">Moto 2 Ruedas + Inclinación</option>
+                          <option value="boat">Bote / Barco (Flotación en Olas)</option>
+                          <option value="plane">Avión (Aerodinámica 6DOF)</option>
+                          <option value="spaceship">Nave Espacial (6DOF + Gravedad Local)</option>
+                        </select>
+
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <NumberField id="veh-spd" label="Velocidad Máx" value={veh.maxSpeed} min={4} max={120} onChange={(maxSpeed) => patchVeh({ maxSpeed })} />
+                          <NumberField id="veh-trq" label="Aceleración" value={veh.maxTorque} min={4} max={100} onChange={(maxTorque) => patchVeh({ maxTorque })} />
+                          <NumberField id="veh-susp" label="Amortiguadores" value={veh.suspensionStiffness} min={10} max={120} onChange={(suspensionStiffness) => patchVeh({ suspensionStiffness })} />
+                          <NumberField id="veh-grip" label="Derrape (Grip)" value={veh.gripFactor ?? 0.86} min={0.1} max={1} step={0.05} onChange={(gripFactor) => patchVeh({ gripFactor })} />
+                          <NumberField id="veh-str" label="Giro °" value={veh.maxSteerDeg} min={10} max={60} onChange={(maxSteerDeg) => patchVeh({ maxSteerDeg })} />
+                          <NumberField id="veh-lod" label="LOD Físicas (m)" value={veh.physicsLodDistance ?? 140} min={20} max={600} step={10} onChange={(physicsLodDistance) => patchVeh({ physicsLodDistance })} />
+                        </div>
+
+                        {kind === 'boat' && (
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <select
+                              aria-label="Tamaño del barco"
+                              value={veh.boatSize ?? 'speedboat'}
+                              onChange={(e) => patchVeh({ boatSize: e.target.value as 'speedboat' | 'medium' | 'ship' })}
+                              className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                            >
+                              <option value="speedboat">Lancha (4 pontones)</option>
+                              <option value="medium">Mediano (6 pontones)</option>
+                              <option value="ship">Barco Grande (12 pontones)</option>
+                            </select>
+                            <select
+                              aria-label="Agua para flotar"
+                              value={veh.waterObjectId ?? ''}
+                              onChange={(e) => patchVeh({ waterObjectId: e.target.value || null })}
+                              className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Agua automática</option>
+                              {scene.objects.filter((o) => o.type === 'mesh_3d' && o.mesh3d?.shape === 'water').map((w) => (
+                                <option key={w.id} value={w.id}>{w.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {kind === 'plane' && (
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <select
+                              aria-label="Estilo de avión"
+                              value={veh.planeStyle ?? 'fighter'}
+                              onChange={(e) => patchVeh({ planeStyle: e.target.value as 'fighter' | 'airliner' })}
+                              className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                            >
+                              <option value="fighter">Caza Acrobático</option>
+                              <option value="airliner">Pasajeros (Estable)</option>
+                            </select>
+                            <NumberField id="veh-lift" label="Sustentación" value={veh.liftFactor ?? 1.0} min={0.2} max={3} step={0.1} onChange={(liftFactor) => patchVeh({ liftFactor })} />
+                          </div>
+                        )}
+
+                        {kind === 'spaceship' && (
+                          <div className="space-y-1.5 rounded border border-purple-500/30 bg-purple-500/5 p-2">
+                            <label className="flex items-center gap-1.5 text-[11px] text-purple-200 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(veh.localGravityBox?.enabled)}
+                                onChange={(e) =>
+                                  patchVeh({
+                                    localGravityBox: {
+                                      enabled: e.target.checked,
+                                      sx: veh.localGravityBox?.sx ?? 5,
+                                      sy: veh.localGravityBox?.sy ?? 2.2,
+                                      sz: veh.localGravityBox?.sz ?? 10,
+                                    },
+                                  })
+                                }
+                                className="accent-purple-500"
+                              />
+                              <span>Gravedad Local Interior</span>
+                            </label>
+                            {veh.localGravityBox?.enabled && (
+                              <div className="grid grid-cols-3 gap-1">
+                                <NumberField id="lgb-x" label="Ancho" value={veh.localGravityBox.sx} min={1} max={40} onChange={(sx) => patchVeh({ localGravityBox: { ...veh.localGravityBox!, sx } })} />
+                                <NumberField id="lgb-y" label="Alto" value={veh.localGravityBox.sy} min={1} max={20} onChange={(sy) => patchVeh({ localGravityBox: { ...veh.localGravityBox!, sy } })} />
+                                <NumberField id="lgb-z" label="Largo" value={veh.localGravityBox.sz} min={1} max={60} onChange={(sz) => patchVeh({ localGravityBox: { ...veh.localGravityBox!, sz } })} />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {(scene.splines3d?.length ?? 0) > 0 && (
+                          <div>
+                            <label className="block text-[10px] text-zinc-400 mb-0.5">
+                              Ruta de Patrulla Automática (Spline 3D)
+                            </label>
+                            <select
+                              aria-label="Ruta Spline de patrulla"
+                              value={veh.patrolSplineId ?? ''}
+                              onChange={(e) => patchVeh({ patrolSplineId: e.target.value || null })}
+                              className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-[11px] text-zinc-100"
+                            >
+                              <option value="">Control manual (Sin piloto automático)</option>
+                              {scene.splines3d!.map((sp) => (
+                                <option key={sp.id} value={sp.id}>{sp.name} ({sp.points.length} pts)</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 );
               })()}
             </InspectorSection>
+
+            {(scene.splines3d?.length ?? 0) > 0 && (
+              <InspectorSection title="Seguir Ruta Spline 3D" defaultOpen={Boolean(obj.followSplineId)}>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <select
+                    aria-label="Spline 3D a seguir"
+                    value={obj.followSplineId ?? ''}
+                    onChange={(e) =>
+                      onUpdateObject(obj.id, (prev) => ({
+                        ...prev,
+                        followSplineId: e.target.value || null,
+                      }))
+                    }
+                    className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                  >
+                    <option value="">Ninguna ruta</option>
+                    {scene.splines3d!.map((sp) => (
+                      <option key={sp.id} value={sp.id}>{sp.name}</option>
+                    ))}
+                  </select>
+                  <NumberField
+                    id="m3-spl-spd"
+                    label="Velocidad"
+                    value={obj.followSplineSpeed ?? 6}
+                    min={0.5}
+                    max={60}
+                    step={0.5}
+                    onChange={(followSplineSpeed) =>
+                      onUpdateObject(obj.id, (prev) => ({ ...prev, followSplineSpeed }))
+                    }
+                  />
+                </div>
+              </InspectorSection>
+            )}
           </>
         );
       })()}
@@ -4250,6 +4701,38 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 <span>Invertir eje Y del ratón (estilo clásico)</span>
               </label>
             </div>
+
+            {(scene.splines3d?.length ?? 0) > 0 && (
+              <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-[#2c2c36]">
+                <select
+                  aria-label="Riel Spline 3D de cámara"
+                  value={obj.followSplineId ?? ''}
+                  onChange={(e) =>
+                    onUpdateObject(obj.id, (prev) => ({
+                      ...prev,
+                      followSplineId: e.target.value || null,
+                    }))
+                  }
+                  className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                >
+                  <option value="">Sin riel Spline</option>
+                  {scene.splines3d!.map((sp) => (
+                    <option key={sp.id} value={sp.id}>{sp.name}</option>
+                  ))}
+                </select>
+                <NumberField
+                  id="cam-spl-spd"
+                  label="Vel. Riel"
+                  value={obj.followSplineSpeed ?? 5}
+                  min={0.5}
+                  max={50}
+                  step={0.5}
+                  onChange={(followSplineSpeed) =>
+                    onUpdateObject(obj.id, (prev) => ({ ...prev, followSplineSpeed }))
+                  }
+                />
+              </div>
+            )}
           </InspectorSection>
         );
       })()}

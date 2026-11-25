@@ -62,6 +62,7 @@ import { InspectorPanel } from '../inspector/InspectorPanel';
 import { LeftSidebar } from '../panels/LeftSidebar';
 import { PreviewModal } from '../preview/PreviewModal';
 import { ThreeStageViewport } from '../three3d/ThreeStageViewport';
+import { VehicleBuilderModal } from '../three3d/VehicleBuilderModal';
 import { ProjectSettingsModal } from '../toolbar/ProjectSettingsModal';
 import { TopToolbar } from '../toolbar/TopToolbar';
 import { BottomStatusBar } from './BottomStatusBar';
@@ -128,6 +129,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isVehicleWizardOpen, setIsVehicleWizardOpen] = useState(false);
   const [isCompilingHtml5, setIsCompilingHtml5] = useState(false);
 
   const project = transientProject ?? history.present;
@@ -466,7 +468,8 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         await nexusStorage.saveProject(nextProject);
         setIsDirty(false);
         setSaveStatus('saved');
-        onNotify('success', `Audio "${meta.filename}" generado y guardado en Recursos.`);
+        const kindLabel = meta.kind === 'audio' ? 'Audio' : meta.kind === 'image' ? 'Textura' : 'Recurso';
+        onNotify('success', `${kindLabel} "${meta.filename}" generado y guardado en Recursos.`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Error al guardar el archivo generado';
         onNotify('error', msg);
@@ -1142,6 +1145,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
           onMoveAssetToFolder={handleMoveAssetToFolder}
           onInstantiatePrefab={handleInstantiatePrefab}
           onDeletePrefab={handleDeletePrefab}
+          onOpenVehicleWizard={() => setIsVehicleWizardOpen(true)}
         />
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1363,6 +1367,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             }
             onApplyDiagnosticFix={handleApplyDiagnosticFix}
             onSelectObjectById={(id) => setSelectedIds([id])}
+            onOpenVehicleWizard={() => setIsVehicleWizardOpen(true)}
           />
         </div>
 
@@ -1421,6 +1426,8 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
                 onUpdateScene={updateActiveSceneCommitted}
                 onActivateTileBrush={() => setActiveTool('tilebrush')}
                 onImportFiles={handleImportFiles}
+                onCreateAsset={handleCreateGeneratedAsset}
+                onOpenVehicleWizard={() => setIsVehicleWizardOpen(true)}
               />
             ) : (
               <AssistantPanel
@@ -1510,6 +1517,24 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
       />
 
       <HelpModal open={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+
+      <VehicleBuilderModal
+        open={isVehicleWizardOpen}
+        objects={activeScene.objects}
+        assets={project.assets}
+        onClose={() => setIsVehicleWizardOpen(false)}
+        onCreateVehicle={(built) => {
+          updateActiveSceneCommitted((s) => ({
+            ...s,
+            objects: [...s.objects, ...built.objects],
+            mechanics: built.addedMechanic
+              ? [...(s.mechanics ?? []), built.addedMechanic]
+              : s.mechanics,
+          }));
+          setSelectedIds([built.parentId]);
+          onNotify('success', `Vehículo compuesto creado (${built.objects.length} nodos vinculados).`);
+        }}
+      />
     </div>
   );
 };

@@ -4,6 +4,7 @@ import {
   ArrowUp,
   Box,
   Camera,
+  Car,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -47,6 +48,7 @@ interface SceneTreePanelProps {
   onGroupSelected?: (ids: string[]) => void;
   onUngroupFolder?: (folderId: string) => void;
   onCreatePrefabFromObject?: (id: string) => void;
+  onOpenVehicleWizard?: () => void;
 }
 
 const TYPE_ICONS: Record<GameObjectType, React.FC<{ className?: string }>> = {
@@ -83,6 +85,7 @@ export const SceneTreePanel: React.FC<SceneTreePanelProps> = ({
   onGroupSelected,
   onUngroupFolder,
   onCreatePrefabFromObject,
+  onOpenVehicleWizard,
 }) => {
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -398,11 +401,21 @@ export const SceneTreePanel: React.FC<SceneTreePanelProps> = ({
             <button
               type="button"
               onClick={() => onCreateObject('ui_widget')}
-              className="col-span-2 flex items-center justify-center gap-1 rounded border border-[#32323c] bg-[#24242a] py-1.5 text-[10px] text-zinc-200 hover:border-cyan-500/50"
+              className="flex items-center justify-center gap-1 rounded border border-[#32323c] bg-[#24242a] py-1.5 text-[10px] text-zinc-200 hover:border-cyan-500/50"
             >
               <Code2 className="h-3.5 w-3.5 text-cyan-400" />
               <span>Interfaz UI</span>
             </button>
+            {onOpenVehicleWizard && (
+              <button
+                type="button"
+                onClick={onOpenVehicleWizard}
+                className="flex items-center justify-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/15 py-1.5 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/25"
+              >
+                <Car className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Agregar Vehículo</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-3 gap-1">

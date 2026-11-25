@@ -25,10 +25,24 @@ function cloneGameObjectLight(obj: GameObjectData): GameObjectData {
       // Mantener referencias compartidas a buffers pesados inmutables al editar transformaciones
       terrainData: m.terrainData ? { ...m.terrainData } : undefined,
       csgGeometryJson: m.csgGeometryJson,
-      waterConfig: m.waterConfig ? { ...m.waterConfig } : undefined,
+      waterConfig: m.waterConfig
+        ? {
+            ...m.waterConfig,
+            interactingEntities: m.waterConfig.interactingEntities
+              ? [...m.waterConfig.interactingEntities]
+              : undefined,
+          }
+        : undefined,
       foliageConfig: m.foliageConfig
         ? { ...m.foliageConfig, instances: m.foliageConfig.instances }
         : undefined,
+    };
+  }
+  if (obj.vehicle) {
+    copy.vehicle = {
+      ...obj.vehicle,
+      localGravityBox: obj.vehicle.localGravityBox ? { ...obj.vehicle.localGravityBox } : undefined,
+      parts: obj.vehicle.parts ? { ...obj.vehicle.parts } : undefined,
     };
   }
   if (obj.physics3d) {
@@ -71,6 +85,9 @@ function cloneSceneLight(scene: SceneData): SceneData {
   return {
     ...scene,
     navMesh,
+    splines3d: scene.splines3d
+      ? scene.splines3d.map((sp) => ({ ...sp, points: sp.points.map((p) => ({ ...p })) }))
+      : undefined,
     lighting: scene.lighting ? { ...scene.lighting } : undefined,
     cameraConfig: scene.cameraConfig ? { ...scene.cameraConfig } : undefined,
     backgroundMusic: scene.backgroundMusic ? { ...scene.backgroundMusic } : undefined,
