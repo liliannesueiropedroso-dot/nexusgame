@@ -7,8 +7,10 @@ import {
   Database,
   Film,
   Globe,
+  Layers,
   MessageSquare,
   Sparkles,
+  Terminal,
   Volume2,
   Zap,
 } from 'lucide-react';
@@ -20,16 +22,20 @@ import type {
   GameMechanic,
   GameObjectData,
   I18nConfig,
+  ProjectSaveSlot,
   ProjectVariable,
   SceneData,
 } from '../../engine/core/types';
 import type {
+  CommandBarHistoryEntry,
+  NexusProject,
   NexusScriptAsset,
   PrefabDefinition,
   ProjectAssetMeta,
 } from '../../project/models/project';
 import { AudioMixerPanel } from './AudioMixerPanel';
 import { CodeStudioPanel } from './CodeStudioPanel';
+import { CommandBarPanel } from './CommandBarPanel';
 import { DataI18nPanel } from './DataI18nPanel';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { DialogueEditorPanel } from './DialogueEditorPanel';
@@ -37,6 +43,7 @@ import { MechanicsPanel } from './MechanicsPanel';
 import { ParticleStudioPanel } from './ParticleStudioPanel';
 import { SceneAnimatorPanel } from './SceneAnimatorPanel';
 import { VariablesPanel } from './VariablesPanel';
+import { WorldStreamingPanel } from './WorldStreamingPanel';
 
 export type DockTab =
   | 'mechanics'
@@ -47,6 +54,8 @@ export type DockTab =
   | 'particles'
   | 'animator'
   | 'audio'
+  | 'streaming'
+  | 'commandbar'
   | 'diagnostics';
 
 interface BottomDockProps {
@@ -89,6 +98,11 @@ interface BottomDockProps {
   onApplyDiagnosticFix: (diag: EngineDiagnostic) => void;
   onSelectObjectById: (id: string) => void;
   onOpenVehicleWizard?: () => void;
+  project?: NexusProject;
+  selectedIds?: string[];
+  onCommitCommandResult?: (nextProject: NexusProject, createdIds: string[], summary: string) => void;
+  onUpdateCommandHistory?: (next: CommandBarHistoryEntry[]) => void;
+  onChangeSaveSlots?: (slots: ProjectSaveSlot[]) => void;
 }
 
 export const BottomDock: React.FC<BottomDockProps> = ({
@@ -131,6 +145,11 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onApplyDiagnosticFix,
   onSelectObjectById,
   onOpenVehicleWizard,
+  project,
+  selectedIds = [],
+  onCommitCommandResult,
+  onUpdateCommandHistory,
+  onChangeSaveSlots,
 }) => {
   const handleTabClick = (tab: DockTab) => {
     if (!open) {
@@ -274,6 +293,36 @@ export const BottomDock: React.FC<BottomDockProps> = ({
           <button
             type="button"
             role="tab"
+            aria-selected={open && activeTab === 'streaming'}
+            onClick={() => handleTabClick('streaming')}
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+              open && activeTab === 'streaming'
+                ? 'bg-[#25252d] text-emerald-400'
+                : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
+            }`}
+          >
+            <Layers className="h-3.5 w-3.5" />
+            <span>Mundo Abierto</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={open && activeTab === 'commandbar'}
+            onClick={() => handleTabClick('commandbar')}
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+              open && activeTab === 'commandbar'
+                ? 'bg-[#25252d] text-cyan-400'
+                : 'text-zinc-400 hover:bg-[#202026] hover:text-zinc-200'
+            }`}
+          >
+            <Terminal className="h-3.5 w-3.5" />
+            <span>Comandos 2.0</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
             aria-selected={open && activeTab === 'diagnostics'}
             onClick={() => handleTabClick('diagnostics')}
             className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
@@ -397,6 +446,24 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               onUpdateScene={onUpdateScene}
               onImportFiles={onImportFiles}
               onCreateAsset={onCreateAsset}
+            />
+          )}
+          {activeTab === 'streaming' && (
+            <WorldStreamingPanel
+              scene={activeScene}
+              assets={assets}
+              saveSlots={project?.saveSlots ?? []}
+              onUpdateScene={onUpdateScene}
+              onChangeSaveSlots={onChangeSaveSlots}
+            />
+          )}
+          {activeTab === 'commandbar' && project && onCommitCommandResult && onUpdateCommandHistory && (
+            <CommandBarPanel
+              project={project}
+              activeSceneId={activeScene?.id ?? project.activeSceneId}
+              selectedIds={selectedIds}
+              onCommitCommandResult={onCommitCommandResult}
+              onUpdateCommandHistory={onUpdateCommandHistory}
             />
           )}
           {activeTab === 'diagnostics' && (

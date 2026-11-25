@@ -22,7 +22,8 @@ export type ProjectTemplateId =
   | 'platformer_multiscene'
   | 'topdown_adventure'
   | 'arena_3d'
-  | 'platformer_3d';
+  | 'platformer_3d'
+  | 'open_world_3d';
 
 export type ResolutionPresetId =
   | '1280x720'
@@ -79,6 +80,8 @@ export interface NexusScriptAsset {
   /** Código JS interactivo asociado al widget (para kind==='interface') */
   js?: string;
   targetScope?: 'object' | 'scene';
+  /** Modo de seguridad del script: 'safe_sandbox' (por defecto) o 'trusted_js' */
+  securityMode?: 'safe_sandbox' | 'trusted_js';
   updatedAt: number;
 }
 
@@ -122,6 +125,22 @@ export interface ProjectSettings {
   touchControls?: TouchControlsConfig;
 }
 
+export interface ProjectSecurityConfig {
+  scriptMode: 'safe_sandbox' | 'trusted_js';
+  allowUnsafeWidgets?: boolean;
+  maxScriptMsPerFrame?: number;
+}
+
+export interface CommandBarHistoryEntry {
+  id: string;
+  timestamp: number;
+  mode: 'dsl' | 'json';
+  summary: string;
+  commandText: string;
+  affectedCount: number;
+  favorite?: boolean;
+}
+
 export interface NexusProject {
   id: string;
   formatVersion: string;
@@ -142,6 +161,10 @@ export interface NexusProject {
   dialogues?: DialogueGraph[];
   dataTables?: DataTableDef[];
   i18n?: I18nConfig;
+  security?: ProjectSecurityConfig;
+  saveSlots?: import('../../engine/core/types').ProjectSaveSlot[];
+  commandHistory?: CommandBarHistoryEntry[];
+  seed?: number;
 }
 
 export interface NexusProjectSummary {
@@ -185,6 +208,10 @@ export interface ExportedProjectManifest {
     dialogues?: DialogueGraph[];
     dataTables?: DataTableDef[];
     i18n?: I18nConfig;
+    security?: ProjectSecurityConfig;
+    saveSlots?: import('../../engine/core/types').ProjectSaveSlot[];
+    commandHistory?: CommandBarHistoryEntry[];
+    seed?: number;
   };
   assets: Array<ProjectAssetMeta & { path: string }>;
 }

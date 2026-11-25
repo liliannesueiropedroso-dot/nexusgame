@@ -926,6 +926,12 @@ export interface SmartCameraConfig {
   offsetZ: number;
   shoulderOffsetX?: number;
   shoulderOffsetY?: number;
+  /** Lado del hombro activo (+1 derecha, -1 izquierda) para shoulder swap */
+  shoulderSide?: 1 | -1;
+  allowShoulderSwap?: boolean;
+  /** Altura mínima de seguridad sobre el terreno */
+  terrainMinClearance?: number;
+  adaptiveMultiplayer?: boolean;
   fovKick?: number;
   distance: number;
   pitchMinDeg: number;
@@ -942,6 +948,97 @@ export interface SmartCameraConfig {
   boundsMaxY: number;
   boundsMinZ: number;
   boundsMaxZ: number;
+}
+
+export type WorldActivityLevel = 'near' | 'medium' | 'far' | 'unloaded';
+export type MemoryBudgetProfile = 'mobile' | 'pc' | 'custom';
+
+export interface MemoryBudgetLimits {
+  texturesMB: number;
+  modelsMB: number;
+  audioMB: number;
+  geometryMB: number;
+  particlesMax: number;
+  shadowLightsMax: number;
+  physicsBodiesMax: number;
+  activeEntitiesMax: number;
+  scriptsMax: number;
+}
+
+export interface WorldStreamingConfig {
+  enabled: boolean;
+  chunkSize: number;
+  loadRadius: number;
+  unloadRadius: number;
+  farProxyRadius: number;
+  maxLoadsPerFrame: number;
+  frustumPreloadWeight: number;
+  velocityPreloadSec: number;
+  enableHlod: boolean;
+  enableOcclusionCulling: boolean;
+  budgetProfile: MemoryBudgetProfile;
+  customBudgets?: Partial<MemoryBudgetLimits>;
+}
+
+export interface CameraVolume3D {
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  zoneType: 'exterior' | 'interior' | 'vehicle' | 'cinematic';
+  mode: SmartCameraMode;
+  blendDurationSec: number;
+  bounds: {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    minZ: number;
+    maxZ: number;
+  };
+  fov?: number;
+  distance?: number;
+  shoulderOffsetX?: number;
+  shoulderOffsetY?: number;
+  terrainMinClearance?: number;
+  targetObjectId?: string | null;
+  lockYawDeg?: number;
+  lockPitchDeg?: number;
+}
+
+export interface OcclusionVolume3D {
+  id: string;
+  name: string;
+  enabled: boolean;
+  kind: 'occluder' | 'sector' | 'portal';
+  bounds: {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    minZ: number;
+    maxZ: number;
+  };
+  connectedSectorIds?: string[];
+}
+
+export interface ObjectStreamingMeta {
+  persistence?: 'persistent' | 'transient';
+  chunkCoord?: string;
+  hlodGroupId?: string;
+}
+
+export interface ProjectSaveSlot {
+  id: string;
+  name: string;
+  savedAt: number;
+  sceneId: string;
+  variables: Record<string, string | number | boolean>;
+  worldSaveState?: {
+    destroyedIds: string[];
+    triggeredIds: string[];
+    objectTransforms: Record<string, { x: number; y: number; z?: number }>;
+  };
 }
 
 export interface AnimStateNode {
@@ -1137,6 +1234,7 @@ export interface GameObjectData {
   prefabId?: string;
   navRole?: NavMeshObjectRole;
   optimization?: ObjectOptimizationConfig;
+  streaming?: ObjectStreamingMeta;
   softBody?: SoftBodyConfig;
   vehicle?: Vehicle4WConfig;
   transform: Transform2D;
@@ -1274,6 +1372,9 @@ export interface SceneData {
   backgroundMusic?: SceneBackgroundMusicConfig;
   lighting?: SceneLightingConfig;
   multiplayer?: SceneMultiplayerConfig;
+  worldStreaming?: WorldStreamingConfig;
+  cameraVolumes?: CameraVolume3D[];
+  occlusionVolumes?: OcclusionVolume3D[];
   wiringLinks?: WiringLink[];
   scriptIds?: string[];
   navMesh?: NavMeshData | null;

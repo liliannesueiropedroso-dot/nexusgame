@@ -4,10 +4,11 @@
  * raycast anti-paredes en 3D, límites de escenario (bounds) y transición suave entre cámaras.
  */
 
-import type { SmartCameraConfig } from '../core/types';
+import type { CameraVolume3D, SmartCameraConfig } from '../core/types';
 
 export interface SmartCameraState {
   activeCameraId: string | null;
+  activeVolumeId?: string | null;
   posX: number;
   posY: number;
   posZ: number;
@@ -17,6 +18,7 @@ export interface SmartCameraState {
   fov: number;
   orbitYawDeg: number;
   orbitPitchDeg: number;
+  shoulderSide?: 1 | -1;
   smoothWallT?: number;
   transitionFrom?: {
     posX: number;
@@ -62,6 +64,7 @@ export function createInitialSmartCameraState(
 ): SmartCameraState {
   return {
     activeCameraId: initialCameraId,
+    activeVolumeId: null,
     posX: pos.x,
     posY: pos.y,
     posZ: pos.z,
@@ -71,6 +74,7 @@ export function createInitialSmartCameraState(
     fov: 55,
     orbitYawDeg: 0,
     orbitPitchDeg: -18,
+    shoulderSide: 1,
     smoothWallT: 1,
     transitionFrom: null,
     transitionElapsed: 0,
@@ -102,6 +106,140 @@ export function beginSmartCameraSwitch(
     state.transitionDuration = 0;
   }
   state.activeCameraId = targetCameraId;
+}
+
+/**
+ * Evalúa qué volumen de cámara 3D de mundo abierto aplica al jugador según posición y prioridad.
+ */
+export function evaluateActiveCameraVolumes(
+  volumes: CameraVolume3D[] | undefined,
+  targetPos: { x: number; y: number; z: number } | null | undefined,
+  isMountedVehicle = false
+): CameraVolume3D | null {
+  if (!volumes || volumes.length === 0 || !targetPos) return null;
+  let best: CameraVolume3D | null = null;
+  for (const v of volumes) {
+    if (!v.enabled) continue;
+    if (v.zoneType === 'vehicle' && !isMountedVehicle) continue;
+    const b = v.bounds;
+    const inside =
+      targetPos.x >= b.minX &&
+      targetPos.x <= b.maxX &&
+      targetPos.y >= b.minY &&
+      targetPos.y <= b.maxY &&
+      targetPos.z >= b.minZ &&
+      targetPos.z <= b.maxZ;
+    if (!inside) continue;
+    if (!best || v.priority > best.priority) {
+      best = v;
+    }
+  }
+  return best;
+}
+
+/**
+ * Aplica mezcla suave al entrar o salir de un CameraVolume3D.
+ */
+export function resolveCameraConfigWithVolume(
+  state: SmartCameraState,
+  baseConfig: SmartCameraConfig,
+  volume: CameraVolume3D | null
+): SmartCameraConfig {
+  const nextVolId = volume?.id ?? null;
+  const prevVolId = state.activeVolumeId ?? null;
+  if (nextVolId !== prevVolId) {
+    const blend = Math.max(0.15, volume?.blendDurationSec ?? 0.55);
+    state.transitionFrom = {
+      posX: state.posX,
+      posY: state.posY,
+      posZ: state.posZ,
+      lookAtX: state.lookAtX,
+      lookAtY: state.lookAtY,
+      lookAtZ: state.lookAtZ,
+      fov: state.fov,
+    };
+    state.transitionElapsed = 0;
+    state.transitionDuration = blend;
+    state.activeVolumeId = nextVolId;
+  }
+  if (!volume) return baseConfig;
+  return {
+    ...baseConfig,
+    mode: volume.mode ?? baseConfig.mode,
+    fov: volume.fov ?? baseConfig.fov,
+    distance: volume.distance ?? baseConfig.distance,
+    shoulderOffsetX: volume.shoulderOffsetX ?? baseConfig.shoulderOffsetX,
+    shoulderOffsetY: volume.shoulderOffsetY ?? baseConfig.shoulderOffsetY,
+    terrainMinClearance: volume.terrainMinClearance ?? baseConfig.terrainMinClearance,
+    targetObjectId: volume.targetObjectId !== undefined ? volume.targetObjectId : baseConfig.targetObjectId,
+  };
+}
+
+/**
+ * Encuadre adaptativo para multijugador local en mundo abierto:
+ * calcula el punto medio entre jugadores y la distancia necesaria para mantenerlos en cuadro.
+ */
+export function computeAdaptiveMultiplayerFraming(
+  targets: CameraTargetPose[],
+  minDistance = 8,
+  maxDistance = 32
+): { center: CameraTargetPose; recommendedDistance: number } | null {
+  if (targets.length === 0) return null;
+  if (targets.length === 1) {
+    return { center: { ...targets[0] }, recommendedDistance: minDistance };
+  }
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  let svx = 0;
+  let svz = 0;
+  for (const t of targets) {
+    sx += t.x;
+    sy += t.y;
+    sz += t.z;
+    svx += t.vx ?? 0;
+    svz += t.vz ?? 0;
+  }
+  const n = targets.length;
+  const cx = sx / n;
+  const cy = sy / n;
+  const cz = sz / n;
+  let maxSpread = 0;
+  for (const t of targets) {
+    const d = Math.hypot(t.x - cx, t.y - cy, t.z - cz);
+    if (d > maxSpread) maxSpread = d;
+  }
+  const recommendedDistance = Math.max(minDistance, Math.min(maxDistance, minDistance + maxSpread * 1.45));
+  return {
+    center: { x: cx, y: cy, z: cz, vx: svx / n, vz: svz / n },
+    recommendedDistance,
+  };
+}
+
+/**
+ * Exporta pistas de cámara (frustum forward + posición + velocidad del jugador)
+ * para priorización anticipada del streaming de chunks en mundo abierto.
+ */
+export function getCameraStreamingCues(
+  state: SmartCameraState,
+  target: CameraTargetPose | null
+): {
+  playerPos: { x: number; y: number; z: number };
+  cameraPos: { x: number; y: number; z: number };
+  cameraForwardXZ: { x: number; z: number };
+  velocityXZ: { x: number; z: number };
+  fovDeg: number;
+} {
+  const fwd = getCameraForwardXZ(state);
+  return {
+    playerPos: target
+      ? { x: target.x, y: target.y, z: target.z }
+      : { x: state.lookAtX, y: state.lookAtY, z: state.lookAtZ },
+    cameraPos: { x: state.posX, y: state.posY, z: state.posZ },
+    cameraForwardXZ: fwd,
+    velocityXZ: { x: target?.vx ?? 0, z: target?.vz ?? 0 },
+    fovDeg: state.fov,
+  };
 }
 
 interface SegmentAabbHit {
@@ -532,7 +670,8 @@ export function stepSmartCamera3D(
   cameraOwnPos: { x: number; y: number; z: number },
   target: CameraTargetPose | null,
   occluders: CameraWallOccluder3D[],
-  dt: number
+  dt: number,
+  sampleFloorY?: (x: number, z: number) => number
 ): void {
   const safeDt = Math.min(0.05, Math.max(0.001, dt));
   const lerpAlpha = 1 - Math.pow(1 - clamp(config.dampingFactor || 0.12, 0.02, 0.99), safeDt * 60);
@@ -549,7 +688,11 @@ export function stepSmartCamera3D(
   const safeAnchorY = (target?.y ?? 1) + 0.95;
   const safeAnchorZ = target?.z ?? desiredLookZ;
 
-  const shoulderX = config.shoulderOffsetX ?? 0;
+  if (state.shoulderSide === undefined) {
+    state.shoulderSide = config.shoulderSide ?? 1;
+  }
+  const effectiveShoulderSide = state.shoulderSide ?? config.shoulderSide ?? 1;
+  const shoulderX = (config.shoulderOffsetX ?? 0) * effectiveShoulderSide;
   const shoulderY = config.shoulderOffsetY ?? 0;
   const horizSpeed = target ? Math.hypot(target.vx ?? 0, target.vz ?? 0) : 0;
 
@@ -693,6 +836,21 @@ export function stepSmartCamera3D(
     state.smoothWallT = 1;
   }
 
+  const floorMinClearance =
+    sampleFloorY &&
+    (config.terrainMinClearance ?? 0) > 0 &&
+    config.mode !== 'fixed' &&
+    config.mode !== 'first_person'
+      ? Number(config.terrainMinClearance)
+      : 0;
+
+  if (floorMinClearance > 0 && sampleFloorY) {
+    const floorH = sampleFloorY(desiredPosX, desiredPosZ);
+    if (Number.isFinite(floorH)) {
+      desiredPosY = Math.max(desiredPosY, floorH + floorMinClearance);
+    }
+  }
+
   if (config.useBounds) {
     desiredPosX = clamp(desiredPosX, config.boundsMinX, config.boundsMaxX);
     desiredPosY = clamp(desiredPosY, config.boundsMinY, config.boundsMaxY);
@@ -727,6 +885,13 @@ export function stepSmartCamera3D(
       nextPosX = safeAnchorX + pDx * postSafeT;
       nextPosY = safeAnchorY + pDy * postSafeT;
       nextPosZ = safeAnchorZ + pDz * postSafeT;
+    }
+  }
+
+  if (floorMinClearance > 0 && sampleFloorY) {
+    const postFloorH = sampleFloorY(nextPosX, nextPosZ);
+    if (Number.isFinite(postFloorH)) {
+      nextPosY = Math.max(nextPosY, postFloorH + floorMinClearance);
     }
   }
 

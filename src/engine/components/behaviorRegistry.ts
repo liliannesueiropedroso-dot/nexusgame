@@ -439,6 +439,9 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
       { key: 'speed', label: 'Velocidad (px/s)', type: 'number', min: 20, max: 800, step: 10, defaultValue: 130 },
       { key: 'detectRadius', label: 'Radio detección (px)', type: 'number', min: 40, max: 2000, step: 20, defaultValue: 420 },
       { key: 'stopDistance', label: 'Distancia parada (px)', type: 'number', min: 0, max: 300, step: 4, defaultValue: 36 },
+      { key: 'requireVisionCone', label: 'Usar cono de visión', type: 'boolean', defaultValue: false },
+      { key: 'visionFovDeg', label: 'Ángulo de visión (°)', type: 'number', min: 30, max: 360, step: 10, defaultValue: 140 },
+      { key: 'targetMemorySec', label: 'Memoria de objetivo (s)', type: 'number', min: 0, max: 15, step: 0.5, defaultValue: 3.5 },
     ],
   }),
   buildEntry({
@@ -452,6 +455,9 @@ export const BEHAVIOR_REGISTRY: BehaviorRegistryEntry[] = [
       { key: 'detectRadius', label: 'Radio detección', type: 'number', min: 50, max: 2000, step: 20, defaultValue: 480 },
       { key: 'contactDamage', label: 'Daño al tocar', type: 'number', min: 0, max: 200, step: 5, defaultValue: 15 },
       { key: 'respectSolids', label: 'Respetar paredes sólidas', type: 'boolean', defaultValue: true },
+      { key: 'requireVisionCone', label: 'Usar cono de visión', type: 'boolean', defaultValue: false },
+      { key: 'visionFovDeg', label: 'Ángulo de visión (°)', type: 'number', min: 30, max: 360, step: 10, defaultValue: 140 },
+      { key: 'targetMemorySec', label: 'Memoria de objetivo (s)', type: 'number', min: 0, max: 15, step: 0.5, defaultValue: 3.5 },
     ],
   }),
   buildEntry({

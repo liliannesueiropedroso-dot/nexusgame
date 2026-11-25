@@ -66,6 +66,9 @@ function cloneGameObjectLight(obj: GameObjectData): GameObjectData {
       frameEvents: obj.sprite.frameEvents ? [...obj.sprite.frameEvents] : undefined,
     };
   }
+  if (obj.streaming) {
+    copy.streaming = { ...obj.streaming };
+  }
   if (obj.components) {
     copy.components = obj.components.map((c) => ({ ...c, config: { ...c.config } }));
   }
@@ -91,6 +94,24 @@ function cloneSceneLight(scene: SceneData): SceneData {
     lighting: scene.lighting ? { ...scene.lighting } : undefined,
     cameraConfig: scene.cameraConfig ? { ...scene.cameraConfig } : undefined,
     backgroundMusic: scene.backgroundMusic ? { ...scene.backgroundMusic } : undefined,
+    worldStreaming: scene.worldStreaming
+      ? {
+          ...scene.worldStreaming,
+          customBudgets: scene.worldStreaming.customBudgets
+            ? { ...scene.worldStreaming.customBudgets }
+            : undefined,
+        }
+      : undefined,
+    cameraVolumes: scene.cameraVolumes
+      ? scene.cameraVolumes.map((v) => ({ ...v, bounds: { ...v.bounds } }))
+      : undefined,
+    occlusionVolumes: scene.occlusionVolumes
+      ? scene.occlusionVolumes.map((v) => ({
+          ...v,
+          bounds: { ...v.bounds },
+          connectedSectorIds: v.connectedSectorIds ? [...v.connectedSectorIds] : undefined,
+        }))
+      : undefined,
     objects: scene.objects.map(cloneGameObjectLight),
     mechanics: scene.mechanics ? structuredClone(scene.mechanics) : undefined,
   };
@@ -115,6 +136,9 @@ export function cloneProjectLight(project: NexusProject): NexusProject {
     dialogues: project.dialogues ? structuredClone(project.dialogues) : undefined,
     dataTables: project.dataTables ? structuredClone(project.dataTables) : undefined,
     i18n: project.i18n ? structuredClone(project.i18n) : undefined,
+    security: project.security ? { ...project.security } : undefined,
+    saveSlots: project.saveSlots ? structuredClone(project.saveSlots) : undefined,
+    commandHistory: project.commandHistory ? structuredClone(project.commandHistory) : undefined,
   };
 }
 

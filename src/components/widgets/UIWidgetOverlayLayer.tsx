@@ -12,6 +12,7 @@ import { queryDataTable, resolveI18nText } from '../../engine/data/dataTableI18n
 import {
   compileInterfaceWidgetScript,
   executeDeclarativeWidgetAction,
+  sanitizeWidgetHtml,
   type WidgetBridgeCallbacks,
 } from '../../engine/scripting/scriptRuntime';
 
@@ -97,7 +98,7 @@ const WidgetHtmlMount: React.FC<WidgetRuntimeMountProps> = ({
     [uiCfg?.css, widget.id]
   );
   const processedHtml = useMemo(() => {
-    let raw = uiCfg?.html ?? '';
+    let raw = sanitizeWidgetHtml(uiCfg?.html ?? '');
     if (i18n) {
       raw = raw.replace(/@t\(([^)]+)\)/g, (_m, k) =>
         resolveI18nText(i18n, String(k).trim(), locale)

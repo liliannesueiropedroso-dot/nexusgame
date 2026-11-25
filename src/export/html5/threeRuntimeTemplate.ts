@@ -800,8 +800,13 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     var sdt = Math.min(0.033, Math.max(0.001, dt));
     st.prevX = st.x; st.prevY = st.y; st.prevZ = st.z;
     var isMoto = cfg.vehicleKind === 'moto';
-    var maxSteer = (cfg.maxSteerDeg || (isMoto ? 36 : 32)) * DEG2RAD;
-    st.steerAngleRad += (Math.max(-1, Math.min(1, str)) * maxSteer - st.steerAngleRad) * Math.min(1, sdt * 10);
+    var maxSpd = Math.max(4, cfg.maxSpeed || (isMoto ? 19 : 16));
+    var speedAbs = Math.abs(st.speedForward), speedNorm = Math.min(1, speedAbs / maxSpd);
+    var maxSteer = (cfg.maxSteerDeg || (isMoto ? 32 : 28)) * DEG2RAD;
+    var speedSteerScale = 1 / (1 + speedAbs * 0.11);
+    var targetSteer = Math.max(-1, Math.min(1, str)) * maxSteer * speedSteerScale;
+    var steerSpeed = Math.abs(str) < 0.02 ? 8.8 : 5.4;
+    st.steerAngleRad += (targetSteer - st.steerAngleRad) * Math.min(1, sdt * steerSpeed);
     var cosY = Math.cos(st.yawRad), sinY = Math.sin(st.yawRad);
     var wheelR = Math.max(0.18, cfg.wheelRadius || 0.42), restLen = Math.max(0.15, cfg.suspensionRestLen || 0.65);
     var groundedCount = 0, totalSpring = 0;
@@ -821,17 +826,35 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
       w.worldX = wx; w.worldZ = wz; w.steerAngleRad = i < 2 ? st.steerAngleRad : 0; w.spinRad += (st.speedForward / wheelR) * sdt;
     }
     var traction = groundedCount / 4;
-    if (Math.abs(thr) > 0.02) st.speedForward += (cfg.maxTorque || 26) * Math.max(-1, Math.min(1, thr)) * traction * sdt;
-    else st.speedForward *= Math.max(0, 1 - 2.4 * sdt);
-    var maxSpd = Math.max(4, cfg.maxSpeed || 22);
-    st.speedForward = Math.max(-maxSpd * 0.55, Math.min(maxSpd, st.speedForward));
-    if (traction > 0 && Math.abs(st.speedForward) > 0.15) {
-      st.yawRad -= (st.speedForward / Math.max(1.2, cfg.wheelBase || 2.6)) * Math.tan(st.steerAngleRad) * sdt;
+    var clampedThr = Math.max(-1, Math.min(1, thr));
+    var baseTorque = cfg.maxTorque || (isMoto ? 15 : 13);
+    var isBraking = (st.speedForward > 0.6 && clampedThr < -0.05) || (st.speedForward < -0.6 && clampedThr > 0.05);
+    if (isBraking && traction > 0) {
+      var brakeDecel = Math.max(18, baseTorque * 1.75) * Math.abs(clampedThr) * traction;
+      var nextSpd = st.speedForward + (clampedThr > 0 ? 1 : -1) * brakeDecel * sdt;
+      st.speedForward = (nextSpd > 0) !== (st.speedForward > 0) ? 0 : nextSpd;
+    } else if (clampedThr > 0.02) {
+      var torqueCurve = 1.15 - 0.72 * Math.pow(speedNorm, 1.3);
+      st.speedForward += baseTorque * clampedThr * torqueCurve * traction * sdt;
+    } else if (clampedThr < -0.02) {
+      st.speedForward += baseTorque * 0.65 * clampedThr * traction * sdt;
+    } else if (traction > 0 && speedAbs > 0.01) {
+      var aeroDrag = 0.035 * st.speedForward * speedAbs;
+      var rollDrag = 1.65 * (st.speedForward > 0 ? 1 : -1);
+      var coastSpd = st.speedForward - (rollDrag + aeroDrag) * sdt;
+      st.speedForward = Math.abs(coastSpd) < 0.08 ? 0 : coastSpd;
+    }
+    st.speedForward = Math.max(-maxSpd * 0.42, Math.min(maxSpd, st.speedForward));
+    if (traction > 0 && speedAbs > 0.12) {
+      var lowSpdRamp = Math.min(1, speedAbs / 1.2);
+      var rawTurnRate = (st.speedForward / Math.max(1.4, cfg.wheelBase || 2.5)) * Math.tan(st.steerAngleRad) * lowSpdRamp;
+      var clampedTurnRate = Math.max(-1.05, Math.min(1.05, rawTurnRate));
+      st.yawRad -= clampedTurnRate * sdt;
     }
     var fwdX = Math.sin(st.yawRad), fwdZ = Math.cos(st.yawRad), rightX = Math.cos(st.yawRad), rightZ = -Math.sin(st.yawRad);
-    var grip = Math.max(0.08, Math.min(1, cfg.gripFactor !== undefined ? cfg.gripFactor : 0.88));
+    var grip = Math.max(0.08, Math.min(1, cfg.gripFactor !== undefined ? cfg.gripFactor : 0.85));
     var curLat = st.vx * rightX + st.vz * rightZ;
-    var dampLat = curLat * Math.max(0, 1 - grip * 14 * sdt);
+    var dampLat = curLat * Math.max(0, 1 - grip * 9.5 * sdt);
     st.vx = fwdX * st.speedForward + rightX * dampLat;
     st.vz = fwdZ * st.speedForward + rightZ * dampLat;
     st.x += st.vx * sdt; st.z += st.vz * sdt;
@@ -840,8 +863,9 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     if (st.y < avgG + restLen * 0.45) { st.y = avgG + restLen * 0.45; if (st.vy < 0) st.vy = 0; }
     var fAvg = (st.wheels[0].worldY + st.wheels[1].worldY) * 0.5, rAvg = (st.wheels[2].worldY + st.wheels[3].worldY) * 0.5;
     var lAvg = (st.wheels[0].worldY + st.wheels[2].worldY) * 0.5, riAvg = (st.wheels[1].worldY + st.wheels[3].worldY) * 0.5;
-    var leanFactor = isMoto ? 0.42 : 0.12;
-    st.pitchRad += (Math.atan2(rAvg - fAvg, Math.max(1, cfg.wheelBase || 2.6)) - thr * 0.04 - st.pitchRad) * Math.min(1, sdt * 10);
+    var leanFactor = isMoto ? 0.42 : -0.075;
+    var accelPitch = isBraking ? 0.055 : -clampedThr * 0.032;
+    st.pitchRad += (Math.atan2(rAvg - fAvg, Math.max(1, cfg.wheelBase || 2.5)) + accelPitch - st.pitchRad) * Math.min(1, sdt * 10);
     st.rollRad += (Math.atan2(lAvg - riAvg, Math.max(0.6, cfg.trackWidth || 1.7)) + str * (st.speedForward / maxSpd) * leanFactor - st.rollRad) * Math.min(1, sdt * 10);
   }
 
@@ -3833,13 +3857,15 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
                   var rawSt = Number(c.config.stopDistance !== undefined ? c.config.stopDistance : 1.1);
                   var chStop = rawSt > 10 ? rawSt / 25 : rawSt;
                   var aiC = o.source.aiAgent || {};
+                  var rawConeRt = Number(c.config.visionFovDeg !== undefined ? c.config.visionFovDeg : (aiC.visionFovDeg !== undefined ? aiC.visionFovDeg : 360));
+                  var useConeRt = c.config.requireVisionCone === true || (Boolean(aiC.enabled) && rawConeRt < 359);
                   var aiRes = steerSmartEnemyRt3D(o, chTgt, {
                     baseSpeed: chSpd,
                     detectRadius: chRad,
                     stopDist: chStop,
-                    visionFovDeg: Number(c.config.visionFovDeg !== undefined ? c.config.visionFovDeg : (aiC.visionFovDeg !== undefined ? aiC.visionFovDeg : 130)),
+                    visionFovDeg: useConeRt ? Math.min(359, Math.max(10, Number(c.config.visionFovDeg !== undefined ? c.config.visionFovDeg : (aiC.visionFovDeg !== undefined ? aiC.visionFovDeg : 130)))) : 360,
                     visionRange: Number(c.config.visionRange !== undefined ? c.config.visionRange : (aiC.visionRange !== undefined ? aiC.visionRange : chRad)),
-                    requireLineOfSight: c.config.requireLineOfSight !== false && aiC.requireLineOfSight !== false,
+                    requireLineOfSight: c.config.requireLineOfSight === true || (Boolean(aiC.enabled) && aiC.requireLineOfSight !== false),
                     canJumpObstacles: c.config.canJumpObstacles !== false && aiC.canJumpObstacles !== false,
                     maxJumpHeight: Number(c.config.maxJumpHeight !== undefined ? c.config.maxJumpHeight : (aiC.maxJumpHeight !== undefined ? aiC.maxJumpHeight : 2.1)),
                     fleeHealthRatio: Number(c.config.fleeHealthRatio !== undefined ? c.config.fleeHealthRatio : (aiC.fleeHealthRatio !== undefined ? aiC.fleeHealthRatio : 0.28)),
@@ -4306,7 +4332,59 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
               } else if (vKind === 'spaceship') {
                 stepSpaceshipVehicle(vState, vCfg, thr, str, ascendIn, yawIn, pitchIn, 0, stepDt);
               } else {
-                stepVehicle4W(vState, vCfg, thr, str, stepDt, function (wx, wz) { return groundHeightAt(objs, wx, wz); });
+                var sampleDriveGroundY = function (wx, wz) {
+                  var bestY = null;
+                  for (var si = 0; si < staticSolids.length; si++) {
+                    var sol = staticSolids[si];
+                    var sm3 = sol.source.mesh3d;
+                    if (sm3 && (sm3.shape === 'water' || sm3.shape === 'grass_field')) continue;
+                    if (sol.source.physics3d && sol.source.physics3d.isTrigger) continue;
+                    if (sm3 && sm3.shape === 'terrain' && sm3.terrainData) {
+                      var th = sampleTerrainHeightAt(sol, wx, wz);
+                      if (th !== null && (bestY === null || th > bestY)) bestY = th;
+                      continue;
+                    }
+                    if (sol.source.navRole === 'ignore') continue;
+                    var solWH = getWorldT3AndHe(sol, objs);
+                    var solW = solWH.w;
+                    var ryRad = (solW.ry || 0) * DEG2RAD;
+                    var cosR = Math.cos(ryRad), sinR = Math.sin(ryRad);
+                    var dxW = wx - solW.x, dzW = wz - solW.z;
+                    var lx = dxW * cosR - dzW * sinR;
+                    var lz = dxW * sinR + dzW * cosR;
+                    if (Math.abs(lx) > solWH.hx || Math.abs(lz) > solWH.hz) continue;
+                    if (sm3 && sm3.shape === 'ramp') {
+                      var frac = Math.max(0, Math.min(1, (lx + solWH.hx) / Math.max(0.01, solWH.hx * 2)));
+                      var rampY = solW.y + solWH.hy - frac * (solWH.hy * 2);
+                      if (rampY <= vState.y + 1.15 && (bestY === null || rampY > bestY)) bestY = rampY;
+                      continue;
+                    }
+                    var topY = solW.y + solWH.hy;
+                    if (topY <= vState.y + 0.72 && (bestY === null || topY > bestY)) bestY = topY;
+                  }
+                  return bestY !== null ? bestY : 0;
+                };
+                stepVehicle4W(vState, vCfg, thr, str, stepDt, sampleDriveGroundY);
+                var vehWH = getWorldT3AndHe(b, objs);
+                var colRx = Math.min(vehWH.hx, vehWH.hz) * 0.85;
+                var colHy = Math.max(0.35, vehWH.hy * 0.75);
+                for (var svi = 0; svi < staticSolids.length; svi++) {
+                  var sSol = staticSolids[svi];
+                  var sM3 = sSol.source.mesh3d;
+                  if (!sM3 || sM3.shape === 'terrain' || sM3.shape === 'water' || sM3.shape === 'ramp' || sM3.shape === 'plane' || (sSol.source.physics3d && sSol.source.physics3d.isTrigger)) continue;
+                  var sWH = getWorldT3AndHe(sSol, objs);
+                  if (sWH.w.y + sWH.hy <= vState.y - vehWH.hy + 0.35) continue;
+                  var oResV = resolveBodyVsOBB3D(vState.x, vState.y, vState.z, colRx, colHy, colRx, sWH.w.x, sWH.w.y, sWH.w.z, sWH.hx, sWH.hy, sWH.hz, sWH.w.rx || 0, sWH.w.ry || 0, sWH.w.rz || 0);
+                  if (oResV && oResV.collided && oResV.hitWall) {
+                    vState.x += oResV.dx; vState.z += oResV.dz;
+                    var vnV = vState.vx * oResV.wallNx + vState.vz * oResV.wallNz;
+                    if (vnV < 0) {
+                      vState.vx -= vnV * oResV.wallNx * 1.15;
+                      vState.vz -= vnV * oResV.wallNz * 1.15;
+                      vState.speedForward = vState.vx * Math.sin(vState.yawRad) + vState.vz * Math.cos(vState.yawRad);
+                    }
+                  }
+                }
               }
               b.t3.x = vState.x; b.t3.y = vState.y; b.t3.z = vState.z;
               b.t3.ry = vState.yawRad / DEG2RAD; b.t3.rx = vState.pitchRad / DEG2RAD; b.t3.rz = vState.rollRad / DEG2RAD;
@@ -4322,7 +4400,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
                 wMs.forEach(function (wm, wi) {
                   var wh = vState.wheels[wSliceStep[wi] !== undefined ? wSliceStep[wi] : wi];
                   wm.position.set(wh.worldX, wh.worldY, wh.worldZ);
-                  wm.rotation.set(wh.spinRad, vState.yawRad + wh.steerAngleRad, 0, 'YXZ');
+                  wm.rotation.set(wh.spinRad, vState.yawRad - wh.steerAngleRad, 0, 'YXZ');
                 });
               }
               if (vCfg.parts) {
@@ -4333,7 +4411,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
                     pn.position.set(ps.t3.x, ps.t3.y + wh.compression * 0.28, ps.t3.z);
                     var bq = new THREE.Quaternion().setFromEuler(new THREE.Euler((ps.t3.rx || 0) * DEG2RAD, (ps.t3.ry || 0) * DEG2RAD, (ps.t3.rz || 0) * DEG2RAD, 'XYZ'));
                     var rq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), wh.spinRad);
-                    var sq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), wh.steerAngleRad);
+                    var sq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -wh.steerAngleRad);
                     pn.quaternion.copy(sq).multiply(rq).multiply(bq);
                   }
                 });
@@ -4854,6 +4932,39 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
         };
         var camTgtObj = (activeSim.cameraFollowOverride3D ? objs.find(function (x) { return x.id === activeSim.cameraFollowOverride3D || x.name === activeSim.cameraFollowOverride3D; }) : null) || (cCfg.targetObjectId ? objs.find(function (x) { return x.id === cCfg.targetObjectId || x.name === cCfg.targetObjectId; }) : null) || primaryPlayer3d;
         var camTgtW = camTgtObj ? getWorldT3(camTgtObj, objs) : null;
+        var activeCamVol = null;
+        if (currentScene.cameraVolumes && currentScene.cameraVolumes.length > 0 && camTgtW) {
+          for (var cvi = 0; cvi < currentScene.cameraVolumes.length; cvi++) {
+            var cv = currentScene.cameraVolumes[cvi];
+            if (!cv.enabled) continue;
+            if (cv.zoneType === 'vehicle' && !activeSim.activeMountedVehicleId) continue;
+            var cvb = cv.bounds;
+            if (camTgtW.x >= cvb.minX && camTgtW.x <= cvb.maxX && camTgtW.y >= cvb.minY && camTgtW.y <= cvb.maxY && camTgtW.z >= cvb.minZ && camTgtW.z <= cvb.maxZ) {
+              if (!activeCamVol || cv.priority > activeCamVol.priority) activeCamVol = cv;
+            }
+          }
+        }
+        var nextVolId = activeCamVol ? activeCamVol.id : null;
+        if (nextVolId !== (cs.activeVolumeId || null)) {
+          cs.transitionFrom = { posX: cs.posX, posY: cs.posY, posZ: cs.posZ, lookAtX: cs.lookAtX, lookAtY: cs.lookAtY, lookAtZ: cs.lookAtZ, fov: cs.fov };
+          cs.transitionElapsed = 0;
+          cs.transitionDuration = Math.max(0.15, (activeCamVol && activeCamVol.blendDurationSec) || 0.55);
+          cs.activeVolumeId = nextVolId;
+        }
+        if (activeCamVol) {
+          cCfg = Object.assign({}, cCfg, {
+            mode: activeCamVol.mode || cCfg.mode,
+            fov: activeCamVol.fov !== undefined ? activeCamVol.fov : cCfg.fov,
+            distance: activeCamVol.distance !== undefined ? activeCamVol.distance : cCfg.distance,
+            shoulderOffsetX: activeCamVol.shoulderOffsetX !== undefined ? activeCamVol.shoulderOffsetX : cCfg.shoulderOffsetX,
+            shoulderOffsetY: activeCamVol.shoulderOffsetY !== undefined ? activeCamVol.shoulderOffsetY : cCfg.shoulderOffsetY,
+            terrainMinClearance: activeCamVol.terrainMinClearance !== undefined ? activeCamVol.terrainMinClearance : cCfg.terrainMinClearance
+          });
+        }
+        if (cs.shoulderSide === undefined) cs.shoulderSide = cCfg.shoulderSide || 1;
+        if (justPressed.has('KeyV') && cCfg.allowShoulderSwap !== false) {
+          cs.shoulderSide = cs.shoulderSide === 1 ? -1 : 1;
+        }
         var camOwnPos = activeCamObj ? getWorldT3(activeCamObj, objs) : { x: 0, y: 7, z: 13 };
 
         if (activeSim.cameraBlend && activeSim.cameraBlend.active) {
@@ -4873,7 +4984,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           var lAlpha = 1 - Math.pow(1 - Math.max(0.02, Math.min(0.99, cCfg.dampingFactor || 0.12)), dt * 60);
           var dPosX = camOwnPos.x, dPosY = camOwnPos.y, dPosZ = camOwnPos.z;
           var dLookX = camTgtW ? camTgtW.x : 0, dLookY = camTgtW ? camTgtW.y + 0.8 : 1, dLookZ = camTgtW ? camTgtW.z : 0;
-          var shX = cCfg.shoulderOffsetX || 0, shY = cCfg.shoulderOffsetY || 0;
+          var shX = (cCfg.shoulderOffsetX || 0) * (cs.shoulderSide || 1), shY = cCfg.shoulderOffsetY || 0;
           var hSpd = camTgtObj ? Math.hypot(camTgtObj.vx || 0, camTgtObj.vz || 0) : 0;
 
           if (cCfg.mode === 'fixed' || !camTgtW) {
@@ -5088,7 +5199,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             cs.posX = npX; cs.posY = npY; cs.posZ = npZ; cs.lookAtX = nlX; cs.lookAtY = nlY; cs.lookAtZ = nlZ; cs.fov = nFov;
           }
 
-          // Post-lerp clamp para que la inercia nunca deje la cámara detrás de un muro
+          // Post-lerp clamp para que la inercia nunca deje la cámara detrás de un muro o bajo el terreno
           if (cCfg.collideWithWalls && camOccluders3D.length > 0) {
             var pdx = cs.posX - safeAnchorX, pdy = cs.posY - safeAnchorY, pdz = cs.posZ - safeAnchorZ;
             var pSafeT = findSafeCamFraction3D(safeAnchorX, safeAnchorY, safeAnchorZ, pdx, pdy, pdz, camOccluders3D, true);
@@ -5096,6 +5207,12 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
               cs.posX = safeAnchorX + pdx * pSafeT;
               cs.posY = safeAnchorY + pdy * pSafeT;
               cs.posZ = safeAnchorZ + pdz * pSafeT;
+            }
+          }
+          if ((cCfg.terrainMinClearance || 0) > 0 && cCfg.mode !== 'fixed' && cCfg.mode !== 'first_person') {
+            var gHCam = groundHeightAt(objs, cs.posX, cs.posZ);
+            if (gHCam !== null && Number.isFinite(gHCam)) {
+              cs.posY = Math.max(cs.posY, gHCam + cCfg.terrainMinClearance);
             }
           }
         }

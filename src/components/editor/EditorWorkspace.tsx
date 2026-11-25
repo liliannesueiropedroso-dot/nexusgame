@@ -25,6 +25,7 @@ import type {
   GameObjectData,
   GameObjectType,
   I18nConfig,
+  ProjectSaveSlot,
   ProjectVariable,
   SceneData,
   SceneKind,
@@ -44,6 +45,7 @@ import {
   type HistoryState,
 } from '../../history/historyManager';
 import type {
+  CommandBarHistoryEntry,
   NexusProject,
   NexusScriptAsset,
   PrefabDefinition,
@@ -1368,6 +1370,19 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             onApplyDiagnosticFix={handleApplyDiagnosticFix}
             onSelectObjectById={(id) => setSelectedIds([id])}
             onOpenVehicleWizard={() => setIsVehicleWizardOpen(true)}
+            project={project}
+            selectedIds={selectedIds}
+            onCommitCommandResult={(nextProject, createdIds, summary) => {
+              commitProjectChange(nextProject);
+              if (createdIds.length > 0) setSelectedIds(createdIds);
+              onNotify('success', summary);
+            }}
+            onUpdateCommandHistory={(commandHistory: CommandBarHistoryEntry[]) =>
+              commitProjectChange({ ...history.present, commandHistory })
+            }
+            onChangeSaveSlots={(saveSlots: ProjectSaveSlot[]) =>
+              commitProjectChange({ ...history.present, saveSlots })
+            }
           />
         </div>
 

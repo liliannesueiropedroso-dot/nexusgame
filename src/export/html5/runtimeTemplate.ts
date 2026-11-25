@@ -3643,11 +3643,19 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
         var ecInsist = Number(cfg.insistDamageRatio !== undefined ? cfg.insistDamageRatio : (obj.aiAgent && obj.aiAgent.insistDamageRatio !== undefined ? obj.aiAgent.insistDamageRatio : 0.45));
         var ecFleeing = (body.maxHealth > 0 ? body.health / body.maxHealth : 1) <= ecFlee;
         var ecInsisting = !ecFleeing && (etB && etB.maxHealth > 0 ? etB.health / etB.maxHealth : 1) <= ecInsist;
-        var ecFov = Number(cfg.visionFovDeg !== undefined ? cfg.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 140));
+        var ecRawFov = Number(cfg.visionFovDeg !== undefined ? cfg.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 360));
+        var ecUseCone = cfg.requireVisionCone === true || (Boolean(obj.aiAgent && obj.aiAgent.enabled) && ecRawFov < 359);
+        var ecFov = ecUseCone ? Math.min(359, Math.max(10, Number(cfg.visionFovDeg !== undefined ? cfg.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 140)))) : 360;
         var ecFace = obj.sprite && obj.sprite.flipX ? -1 : 1;
-        var ecInCone = ecFov >= 359 || (ed > 0.001 ? (edx / ed) * ecFace : 1) >= Math.cos(((Math.min(360, ecFov) * 0.5) * Math.PI) / 180) || ed <= 96;
+        var ecInCone = !ecUseCone || ecFov >= 359 || (ed > 0.001 ? (edx / ed) * ecFace : 1) >= Math.cos(((Math.min(360, ecFov) * 0.5) * Math.PI) / 180) || ed <= 96;
         var ecLos = cfg.requireLineOfSight !== true || hasAiLos2D(obj.transform.x, obj.transform.y, et.transform.x, et.transform.y, solids);
-        if ((ecFleeing || (ecInCone && ecLos)) && ed <= Number(cfg.detectRadius || 480) && (ecFleeing || ed > 4) && ed > 0.001) {
+        var ecMemK = 'chaseMem:' + obj.id;
+        var ecMemDur = Math.max(0, Number(cfg.targetMemorySec !== undefined ? cfg.targetMemorySec : 3.5));
+        var ecSees = ecInCone && ecLos && ed <= Number(cfg.detectRadius || 480);
+        if (ecSees && ecMemDur > 0) sim.runtimeTimers.set(ecMemK, ecMemDur);
+        else if ((sim.runtimeTimers.get(ecMemK) || 0) > 0) sim.runtimeTimers.set(ecMemK, Math.max(0, (sim.runtimeTimers.get(ecMemK) || 0) - dt));
+        var ecHasMem = (sim.runtimeTimers.get(ecMemK) || 0) > 0;
+        if ((ecFleeing || ((ecSees || ecHasMem) && ed <= Number(cfg.detectRadius || 480) * (ecHasMem ? 1.25 : 1))) && (ecFleeing || ed > 4) && ed > 0.001) {
           var ecDirX = ecFleeing ? -edx : edx; var ecDirY = ecFleeing ? -edy : edy;
           var ecLen = Math.hypot(ecDirX, ecDirY) || 1;
           var es = Number(cfg.speed || 145) * (ecFleeing ? 1.12 : ecInsisting ? 1.25 : 1);
@@ -4162,11 +4170,19 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
             var cInsist = Number(c.config.insistDamageRatio !== undefined ? c.config.insistDamageRatio : (obj.aiAgent && obj.aiAgent.insistDamageRatio !== undefined ? obj.aiAgent.insistDamageRatio : 0.45));
             var isFlee2 = (body.maxHealth > 0 ? body.health / body.maxHealth : 1) <= cFlee;
             var isInsist2 = !isFlee2 && (tgB && tgB.maxHealth > 0 ? tgB.health / tgB.maxHealth : 1) <= cInsist;
-            var vFov2 = Number(c.config.visionFovDeg !== undefined ? c.config.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 140));
+            var rawFov2 = Number(c.config.visionFovDeg !== undefined ? c.config.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 360));
+            var useCone2 = c.config.requireVisionCone === true || (Boolean(obj.aiAgent && obj.aiAgent.enabled) && rawFov2 < 359);
+            var vFov2 = useCone2 ? Math.min(359, Math.max(10, Number(c.config.visionFovDeg !== undefined ? c.config.visionFovDeg : (obj.aiAgent && obj.aiAgent.visionFovDeg !== undefined ? obj.aiAgent.visionFovDeg : 140)))) : 360;
             var faceX2 = obj.sprite && obj.sprite.flipX ? -1 : 1;
-            var inCone2 = vFov2 >= 359 || (distP > 0.001 ? (dxP / distP) * faceX2 : 1) >= Math.cos(((Math.min(360, vFov2) * 0.5) * Math.PI) / 180) || distP <= 96;
+            var inCone2 = !useCone2 || vFov2 >= 359 || (distP > 0.001 ? (dxP / distP) * faceX2 : 1) >= Math.cos(((Math.min(360, vFov2) * 0.5) * Math.PI) / 180) || distP <= 96;
             var hasLos2 = c.config.requireLineOfSight !== true || hasAiLos2D(obj.transform.x, obj.transform.y, tgt.transform.x, tgt.transform.y, solids);
-            if ((isFlee2 || (inCone2 && hasLos2)) && distP <= Number(c.config.detectRadius || 420) && (isFlee2 || distP > Number(c.config.stopDistance || 36)) && distP > 0.001) {
+            var memK2 = 'chaseMem:' + obj.id;
+            var memDur2 = Math.max(0, Number(c.config.targetMemorySec !== undefined ? c.config.targetMemorySec : 3.5));
+            var sees2 = inCone2 && hasLos2 && distP <= Number(c.config.detectRadius || 420);
+            if (sees2 && memDur2 > 0) sim.runtimeTimers.set(memK2, memDur2);
+            else if ((sim.runtimeTimers.get(memK2) || 0) > 0) sim.runtimeTimers.set(memK2, Math.max(0, (sim.runtimeTimers.get(memK2) || 0) - dt));
+            var hasMem2 = (sim.runtimeTimers.get(memK2) || 0) > 0;
+            if ((isFlee2 || ((sees2 || hasMem2) && distP <= Number(c.config.detectRadius || 420) * (hasMem2 ? 1.25 : 1))) && (isFlee2 || distP > Number(c.config.stopDistance || 36)) && distP > 0.001) {
               var gxP = isFlee2 ? -dxP : dxP; var gyP = isFlee2 ? -dyP : dyP; var glP = Math.hypot(gxP, gyP) || 1;
               var cSpd = Number(c.config.speed || 130) * (isFlee2 ? 1.12 : isInsist2 ? 1.25 : 1);
               body.vx = (gxP / glP) * cSpd; body.vy = (gyP / glP) * cSpd;

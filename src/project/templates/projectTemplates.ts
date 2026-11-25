@@ -1,5 +1,6 @@
 import { DEFAULT_AUDIO_BUSES } from '../../engine/audio/audioEngine';
 import { buildNavMeshFromScene } from '../../engine/ai3d/navmesh';
+import { generateProceduralTerrain } from '../../engine/three3d/terrainSystem';
 import type { SceneData } from '../../engine/core/types';
 import { createGameObject } from '../../engine/objects/factory';
 import { createId } from '../../utils/id';
@@ -25,7 +26,11 @@ export function buildProjectFromTemplate(input: CreateProjectInput): NexusProjec
   const now = Date.now();
   const mode: ProjectMode =
     input.mode ??
-    (input.template === 'arena_3d' || input.template === 'platformer_3d' ? '3d' : '2d');
+    (input.template === 'arena_3d' ||
+    input.template === 'platformer_3d' ||
+    input.template === 'open_world_3d'
+      ? '3d'
+      : '2d');
 
   const baseProject: NexusProject = {
     id: createId('proj'),
@@ -452,6 +457,246 @@ export function buildProjectFromTemplate(input: CreateProjectInput): NexusProjec
           },
         ],
       };
+      baseProject.scenes = [scene];
+      baseProject.initialSceneId = sceneId;
+      baseProject.activeSceneId = sceneId;
+      return baseProject;
+    }
+
+    if (input.template === 'open_world_3d') {
+      const worldGround = createGameObject('mesh_3d', [], {
+        name: 'Terreno_Mundo_Abierto',
+        shape3d: 'terrain',
+        color: '#2d4a3e',
+      });
+      worldGround.transform3d = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1 };
+      if (worldGround.mesh3d) {
+        worldGround.mesh3d.terrainData = generateProceduralTerrain({
+          width: 260,
+          depth: 260,
+          segments: 24,
+          amplitude: 5.5,
+          seed: 42,
+        });
+      }
+      worldGround.streaming = { persistence: 'persistent' };
+
+      const player = createGameObject('mesh_3d', [worldGround], {
+        name: 'Explorador_3D',
+        shape3d: 'box',
+        color: '#38bdf8',
+      });
+      player.layer = 'Player';
+      player.transform3d = { x: 0, y: 2.2, z: 8, rx: 0, ry: 0, rz: 0, sx: 1.1, sy: 1.7, sz: 1.1 };
+      player.physics3d = {
+        enabled: true,
+        bodyType: 'dynamic',
+        shape: 'box',
+        mass: 1,
+        gravityScale: 1,
+        restitution: 0.05,
+        friction: 0.75,
+      };
+      player.components.push({
+        id: createId('cmp'),
+        type: 'player_3d',
+        enabled: true,
+        config: { speed: 7.5, jumpForce: 9.2 },
+      });
+
+      const car = createGameObject('mesh_3d', [worldGround, player], {
+        name: 'Todo_Terreno',
+        shape3d: 'box',
+        color: '#f97316',
+      });
+      car.layer = 'World';
+      car.tags = ['vehiculo', 'transporte'];
+      car.transform3d = { x: 7, y: 1.8, z: 4, rx: 0, ry: 0, rz: 0, sx: 2.1, sy: 1.2, sz: 4.1 };
+      car.physics3d = {
+        enabled: true,
+        bodyType: 'dynamic',
+        shape: 'box',
+        mass: 12,
+        gravityScale: 1,
+        restitution: 0.05,
+        friction: 0.8,
+      };
+      car.vehicle = {
+        enabled: true,
+        vehicleKind: 'car',
+        maxTorque: 16,
+        maxSpeed: 22,
+        maxSteerDeg: 28,
+        suspensionRestLen: 0.65,
+        suspensionStiffness: 38,
+        suspensionDamping: 5,
+        wheelRadius: 0.45,
+        wheelBase: 2.7,
+        trackWidth: 1.85,
+        driveType: 'awd',
+        gripFactor: 0.85,
+      };
+
+      const outpostRoof = createGameObject('mesh_3d', [worldGround, player, car], {
+        name: 'Base_Interior_Refugio',
+        shape3d: 'arch',
+        color: '#64748b',
+      });
+      outpostRoof.tags = ['refugio', 'interior'];
+      outpostRoof.transform3d = { x: 28, y: 3, z: -24, rx: 0, ry: 0, rz: 0, sx: 14, sy: 6, sz: 14 };
+
+      const westTower = createGameObject('mesh_3d', [worldGround, player, car, outpostRoof], {
+        name: 'Ciudadela_Oeste',
+        shape3d: 'box',
+        color: '#6366f1',
+      });
+      westTower.tags = ['hlod', 'ciudad'];
+      westTower.transform3d = { x: -90, y: 7, z: -90, rx: 0, ry: 0, rz: 0, sx: 10, sy: 14, sz: 10 };
+
+      const westAnnex = createGameObject('mesh_3d', [worldGround, westTower], {
+        name: 'Torre_Oeste_Anexo',
+        shape3d: 'cylinder',
+        color: '#818cf8',
+      });
+      westAnnex.tags = ['hlod', 'ciudad'];
+      westAnnex.transform3d = { x: -82, y: 5, z: -84, rx: 0, ry: 0, rz: 0, sx: 6, sy: 10, sz: 6 };
+
+      const eastCitadel = createGameObject('mesh_3d', [worldGround, westAnnex], {
+        name: 'Fuerte_Este',
+        shape3d: 'box',
+        color: '#ec4899',
+      });
+      eastCitadel.tags = ['hlod', 'fortaleza'];
+      eastCitadel.transform3d = { x: 110, y: 8, z: 110, rx: 0, ry: 0, rz: 0, sx: 12, sy: 16, sz: 12 };
+
+      const eastWatch = createGameObject('mesh_3d', [worldGround, eastCitadel], {
+        name: 'Atalaya_Este',
+        shape3d: 'cylinder',
+        color: '#f43f5e',
+      });
+      eastWatch.tags = ['hlod', 'fortaleza'];
+      eastWatch.transform3d = { x: 118, y: 6, z: 102, rx: 0, ry: 0, rz: 0, sx: 5, sy: 12, sz: 5 };
+
+      const mainCam = createGameObject('camera_3d', [worldGround, player], {
+        name: 'Camara_Mundo_Abierto',
+        x3d: 0,
+        y3d: 6,
+        z3d: 16,
+      });
+      if (mainCam.camera3d) {
+        mainCam.camera3d.isMainCamera = true;
+        mainCam.camera3d.mode = 'third_person_orbit';
+        mainCam.camera3d.targetObjectId = player.id;
+        mainCam.camera3d.distance = 8.5;
+        mainCam.camera3d.shoulderOffsetX = 0.7;
+        mainCam.camera3d.shoulderOffsetY = 0.45;
+        mainCam.camera3d.shoulderSide = 1;
+        mainCam.camera3d.allowShoulderSwap = true;
+        mainCam.camera3d.terrainMinClearance = 1.5;
+        mainCam.camera3d.collideWithWalls = true;
+        mainCam.camera3d.fov = 64;
+      }
+
+      const scene: SceneData = {
+        id: sceneId,
+        name: 'Mundo_Abierto_01',
+        kind: 'level',
+        backgroundColor: input.backgroundColor,
+        gridVisible: true,
+        gridSize: 2,
+        snapToGrid: true,
+        activeCameraId: mainCam.id,
+        worldStreaming: {
+          enabled: true,
+          chunkSize: 48,
+          loadRadius: 110,
+          unloadRadius: 165,
+          farProxyRadius: 280,
+          maxLoadsPerFrame: 2,
+          frustumPreloadWeight: 1.35,
+          velocityPreloadSec: 1.6,
+          enableHlod: true,
+          enableOcclusionCulling: true,
+          budgetProfile: 'pc',
+        },
+        cameraVolumes: [
+          {
+            id: createId('cvol'),
+            name: 'Camara_Refugio_Interior',
+            enabled: true,
+            priority: 10,
+            zoneType: 'interior',
+            mode: 'third_person_orbit',
+            blendDurationSec: 0.6,
+            bounds: { minX: 20, maxX: 36, minY: -2, maxY: 10, minZ: -32, maxZ: -16 },
+            distance: 5.5,
+            fov: 58,
+            shoulderOffsetX: 0.55,
+            shoulderOffsetY: 0.3,
+            terrainMinClearance: 1.2,
+          },
+        ],
+        occlusionVolumes: [
+          {
+            id: createId('occ'),
+            name: 'Oclusor_Refugio',
+            enabled: true,
+            kind: 'occluder',
+            bounds: { minX: 21, maxX: 35, minY: 0, maxY: 6, minZ: -31, maxZ: -17 },
+          },
+        ],
+        lighting: {
+          ambientColor: '#94a3b8',
+          ambientIntensity: 0.72,
+          smartBounce: true,
+          bounceIntensity: 0.45,
+          skyColor: '#7dd3fc',
+          groundColor: '#1e293b',
+          sunColor: '#fffbeb',
+          sunIntensity: 1.5,
+          fogEnabled: true,
+          fogColor: '#93c5fd',
+          fogNear: 65,
+          fogFar: 240,
+          dayNightEnabled: true,
+          timeOfDay: 14.5,
+          dayCycleSpeed: 0,
+          cloudsEnabled: true,
+        },
+        objects: [
+          worldGround,
+          player,
+          car,
+          outpostRoof,
+          westTower,
+          westAnnex,
+          eastCitadel,
+          eastWatch,
+          mainCam,
+        ],
+        mechanics: [
+          {
+            id: createId('mech'),
+            name: 'Entrar o Salir del Todo Terreno (Tecla F)',
+            enabled: true,
+            priority: 12,
+            trigger: {
+              event: 'input.pressed',
+              key: 'KeyF',
+            },
+            conditions: [],
+            actions: [
+              {
+                id: createId('act'),
+                type: 'vehicle.enterExit',
+                parameters: { vehicleId: car.id, playerId: player.id },
+              },
+            ],
+          },
+        ],
+      };
+
+      baseProject.seed = 4201;
       baseProject.scenes = [scene];
       baseProject.initialSceneId = sceneId;
       baseProject.activeSceneId = sceneId;

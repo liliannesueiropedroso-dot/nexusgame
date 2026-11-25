@@ -27,12 +27,29 @@ import { compareValues, evaluateNumericExpression, type VariableMap } from '../r
 import {
   beginSmartCameraSwitch,
   createInitialSmartCameraState,
+  evaluateActiveCameraVolumes,
   getCameraForwardXZ,
   getCameraRightXZ,
+  getCameraStreamingCues,
+  resolveCameraConfigWithVolume,
   stepSmartCamera3D,
   type CameraWallOccluder3D,
   type SmartCameraState,
 } from '../camera/smartCamera';
+import {
+  buildChunkManifest,
+  buildStreamingProfilerReport,
+  createStreamingControllerState,
+  createWorldSaveState,
+  getActivationPolicy,
+  stepStreamingController,
+  type ActivationPolicy,
+  type ChunkManifest,
+  type StreamingControllerState,
+  type StreamingProfilerReport,
+  type WorldSaveState,
+} from '../streaming/worldStreaming';
+import type { ProjectAssetMeta } from '../../project/models/project';
 import { buildNavMeshFromScene, findNavMeshPath, type NavMeshPoint3D } from '../ai3d/navmesh';
 import {
   buildWorldTrimeshData,
@@ -385,6 +402,33 @@ export function createSimulation3DState(
   let started = false;
   let cameraShakeTimer = 0;
   let cameraShakeIntensity = 0;
+
+  let streamingFrame = 0;
+  const chunkManifest: ChunkManifest | null = scene.worldStreaming?.enabled
+    ? buildChunkManifest(scene, scene.worldStreaming)
+    : null;
+  const streamingState: StreamingControllerState | null = chunkManifest
+    ? createStreamingControllerState(scene, chunkManifest)
+    : null;
+  const worldSaveState: WorldSaveState | null = chunkManifest ? createWorldSaveState() : null;
+  const streamingSceneView: SceneData | null = chunkManifest
+    ? {
+        ...scene,
+        objects: objects.map((o) => ({
+          ...o.source,
+          get visible() {
+            return o.visible;
+          },
+          get transform3d() {
+            return o.t3;
+          },
+        })),
+      }
+    : null;
+  const getObjectPolicy = (objId: string): ActivationPolicy | null => {
+    if (!streamingState || !scene.worldStreaming?.enabled) return null;
+    return getActivationPolicy(streamingState.objectActivity.get(objId) ?? 'near');
+  };
 
   const logScriptError = (errorKey: string, scriptName: string, err: unknown) => {
     if (loggedScriptErrors.has(errorKey)) return;
@@ -1897,6 +1941,31 @@ export function createSimulation3DState(
 
     // 1. Controlador Player 3D y Comportamientos 3D (Jugador, Perseguir IA Inteligente, Patrulla, Waypoints, Spin, Luz parpadeante, etc.)
     const primaryPlayer = resolvePlayerActor();
+    streamingFrame += 1;
+    if (chunkManifest && streamingState && streamingSceneView && scene.worldStreaming?.enabled) {
+      const playerWorld = primaryPlayer ? getWorldT3(primaryPlayer) : null;
+      const cue = getCameraStreamingCues(
+        cameraState,
+        primaryPlayer && playerWorld
+          ? {
+              x: playerWorld.x,
+              y: playerWorld.y,
+              z: playerWorld.z,
+              vx: primaryPlayer.vx,
+              vy: primaryPlayer.vy,
+              vz: primaryPlayer.vz,
+            }
+          : null
+      );
+      stepStreamingController(
+        streamingState,
+        streamingSceneView,
+        chunkManifest,
+        cue,
+        scene.worldStreaming,
+        worldSaveState ?? undefined
+      );
+    }
     const aiObstacleBoxes = objects
       .filter(
         (o) =>
@@ -2176,6 +2245,10 @@ export function createSimulation3DState(
 
     for (const obj of objects) {
       if (!obj.visible) continue;
+      const actPolicy = obj.id === primaryPlayer?.id ? null : getObjectPolicy(obj.id);
+      if (actPolicy && actPolicy.ai === 'saved') {
+        continue;
+      }
       if (obj._prevHp !== undefined && obj.hp < obj._prevHp) {
         obj.alertTimer = Math.max(obj.alertTimer ?? 0, 5.0);
       }
@@ -2305,6 +2378,9 @@ export function createSimulation3DState(
             audioHooks?.playSfx?.(jmpSnd || 'jump', 0.8);
           }
         } else if (comp.type === 'chase_player' || comp.type === 'ai.enemy_chaser') {
+          if (actPolicy && actPolicy.aiStride > 1 && streamingFrame % actPolicy.aiStride !== 0) {
+            continue;
+          }
           const targetObj =
             (comp.config.targetObjectId ? resolveObjectRef(String(comp.config.targetObjectId)) : null) ??
             (primaryPlayer && primaryPlayer.id !== obj.id ? primaryPlayer : null);
@@ -2316,14 +2392,19 @@ export function createSimulation3DState(
             const rawStop = Number(comp.config.stopDistance ?? 1.1);
             const chStop = rawStop > 10 ? rawStop / 25 : rawStop;
             const aiCfg = obj.source.aiAgent;
+            const rawCone = Number(comp.config.visionFovDeg ?? aiCfg?.visionFovDeg ?? 360);
+            const useCone3d =
+              comp.config.requireVisionCone === true ||
+              (comp.config.visionFovDeg !== undefined && rawCone < 359) ||
+              (Boolean(aiCfg?.enabled) && rawCone < 359);
 
             const aiRes = steerSmartEnemy3D(obj, targetObj, {
               baseSpeed: chSpd,
               detectRadius: chRad,
               stopDist: chStop,
-              visionFovDeg: Number(comp.config.visionFovDeg ?? aiCfg?.visionFovDeg ?? 130),
+              visionFovDeg: useCone3d ? Math.min(359, Math.max(10, Number(comp.config.visionFovDeg ?? aiCfg?.visionFovDeg ?? 130))) : 360,
               visionRange: Number(comp.config.visionRange ?? aiCfg?.visionRange ?? chRad),
-              requireLineOfSight: comp.config.requireLineOfSight !== false && (aiCfg?.requireLineOfSight !== false),
+              requireLineOfSight: comp.config.requireLineOfSight === true || (Boolean(aiCfg?.enabled) && aiCfg?.requireLineOfSight !== false),
               canJumpObstacles: comp.config.canJumpObstacles !== false && (aiCfg?.canJumpObstacles !== false),
               maxJumpHeight: Number(comp.config.maxJumpHeight ?? aiCfg?.maxJumpHeight ?? 2.1),
               fleeHealthRatio: Number(comp.config.fleeHealthRatio ?? aiCfg?.fleeHealthRatio ?? 0.28),
@@ -2944,7 +3025,8 @@ export function createSimulation3DState(
 
       // 2. Agentes NavMesh A* + Cono de Visión + Vaulting/Táctica
       const ai = obj.source.aiAgent;
-      if (ai?.enabled && ai.mode !== 'idle') {
+      const aiThrottled = Boolean(actPolicy && actPolicy.aiStride > 1 && streamingFrame % actPolicy.aiStride !== 0);
+      if (ai?.enabled && ai.mode !== 'idle' && !aiThrottled) {
         const targetObj = ai.targetObjectId
           ? resolveObjectRef(ai.targetObjectId)
           : primaryPlayer;
@@ -3032,6 +3114,12 @@ export function createSimulation3DState(
     const dynamicBodies = objects.filter((o) => {
       if (mountedActorId === o.id && activeMountedVehicleId) return false;
       if (!o.visible || hasParentInScene(o)) return false;
+      if (o.id !== primaryPlayer?.id && o.id !== activeMountedVehicleId) {
+        const physPolicy = getObjectPolicy(o.id);
+        if (physPolicy && (physPolicy.physics === 'none' || physPolicy.physics === 'sleeping')) {
+          return false;
+        }
+      }
       if (o.type !== 'mesh_3d' && o.type !== 'container') return false;
       if (
         o.type === 'mesh_3d' &&
@@ -3181,7 +3269,108 @@ export function createSimulation3DState(
         } else if (kind === 'spaceship') {
           stepSpaceshipVehicle(vState, vCfg, thr, str, ascendIn, yawIn, pitchIn, 0, dt);
         } else {
-          stepVehicle4W(vState, vCfg, thr, str, dt, (wx, wz) => groundHeightAt(scene, wx, wz));
+          const sampleDriveGroundY = (wx: number, wz: number): number => {
+            let bestY: number | null = null;
+            for (const sol of staticSolids) {
+              const sm3 = sol.source.mesh3d;
+              if (sm3?.shape === 'water' || sm3?.shape === 'grass_field' || sol.source.physics3d?.isTrigger) continue;
+              if (sm3?.shape === 'terrain' && sm3.terrainData) {
+                const th = sampleTerrainHeightAt({ ...sol.source, transform3d: getWorldT3(sol) }, wx, wz);
+                if (th !== null && (bestY === null || th > bestY)) bestY = th;
+                continue;
+              }
+              if (sol.source.navRole === 'ignore') continue;
+              const solW = getWorldT3(sol);
+              const heB = getHalfExtents3D({ ...sol, t3: solW });
+              const ryRad = ((solW.ry ?? 0) * Math.PI) / 180;
+              const cosR = Math.cos(ryRad);
+              const sinR = Math.sin(ryRad);
+              const dxW = wx - solW.x;
+              const dzW = wz - solW.z;
+              const lx = dxW * cosR - dzW * sinR;
+              const lz = dxW * sinR + dzW * cosR;
+              if (Math.abs(lx) > heB.x || Math.abs(lz) > heB.z) continue;
+              if (sm3?.shape === 'ramp') {
+                const frac = Math.max(0, Math.min(1, (lx + heB.x) / Math.max(0.01, heB.x * 2)));
+                const rampY = solW.y + heB.y - frac * (heB.y * 2);
+                if (rampY <= vState.y + 1.15 && (bestY === null || rampY > bestY)) bestY = rampY;
+                continue;
+              }
+              const topY = solW.y + heB.y;
+              if (topY <= vState.y + 0.72 && (bestY === null || topY > bestY)) {
+                bestY = topY;
+              }
+            }
+            return bestY ?? 0;
+          };
+
+          stepVehicle4W(vState, vCfg, thr, str, dt, sampleDriveGroundY);
+
+          // Colisión horizontal del vehículo contra pilares, muros y arcos sólidos
+          const heVeh = getHalfExtents3D(body);
+          const colRx = Math.min(heVeh.x, heVeh.z) * 0.85;
+          const colHy = Math.max(0.35, heVeh.y * 0.75);
+          for (const sol of staticSolids) {
+            const sm3 = sol.source.mesh3d;
+            if (!sm3 || sm3.shape === 'terrain' || sm3.shape === 'water' || sm3.shape === 'ramp' || sm3.shape === 'plane' || sol.source.physics3d?.isTrigger) continue;
+            const solW = getWorldT3(sol);
+            const heB = getHalfExtents3D({ ...sol, t3: solW });
+            const solTop = solW.y + heB.y;
+            if (solTop <= vState.y - heVeh.y + 0.35) continue; // Suelo bajo transitable
+            const solShape = sol.source.physics3d?.shape;
+            if (solShape === 'mesh_exact' || sm3.shape === 'arch' || sm3.shape === 'stairs') {
+              let tri = trimeshCache.get(sol.id);
+              if (tri === undefined) {
+                tri = buildWorldTrimeshData({ ...sol.source, transform3d: solW });
+                trimeshCache.set(sol.id, tri);
+              }
+              if (tri) {
+                const tRes = resolveBodyVsTrimesh(vState.x, vState.y, vState.z, colRx, colHy, colRx, tri);
+                if (tRes.collided && tRes.hitWall) {
+                  vState.x += tRes.dx;
+                  vState.z += tRes.dz;
+                  const vn = vState.vx * tRes.wallNx + vState.vz * tRes.wallNz;
+                  if (vn < 0) {
+                    vState.vx -= vn * tRes.wallNx * 1.15;
+                    vState.vz -= vn * tRes.wallNz * 1.15;
+                    const fwdX = Math.sin(vState.yawRad);
+                    const fwdZ = Math.cos(vState.yawRad);
+                    vState.speedForward = vState.vx * fwdX + vState.vz * fwdZ;
+                  }
+                }
+                continue;
+              }
+            }
+            const oRes = resolveBodyVsOBB3D(
+              vState.x,
+              vState.y,
+              vState.z,
+              colRx,
+              colHy,
+              colRx,
+              solW.x,
+              solW.y,
+              solW.z,
+              heB.x,
+              heB.y,
+              heB.z,
+              solW.rx ?? 0,
+              solW.ry ?? 0,
+              solW.rz ?? 0
+            );
+            if (oRes.collided && oRes.hitWall) {
+              vState.x += oRes.dx;
+              vState.z += oRes.dz;
+              const vn = vState.vx * oRes.wallNx + vState.vz * oRes.wallNz;
+              if (vn < 0) {
+                vState.vx -= vn * oRes.wallNx * 1.15;
+                vState.vz -= vn * oRes.wallNz * 1.15;
+                const fwdX = Math.sin(vState.yawRad);
+                const fwdZ = Math.cos(vState.yawRad);
+                vState.speedForward = vState.vx * fwdX + vState.vz * fwdZ;
+              }
+            }
+          }
         }
 
         body.t3.x = vState.x;
@@ -3510,18 +3699,28 @@ export function createSimulation3DState(
     }
     for (const obj of [...objects]) {
       if (!obj.visible) continue;
-      for (const b of obj.source.scriptBindings ?? []) {
-        if (!b.enabled) continue;
-        const e = compiledScripts.get(b.scriptId);
-        if (e?.hooks.onUpdate) {
-          try {
-            e.hooks.onUpdate(makeHandle(obj, { ...(e.hooks.params ?? {}), ...(b.params ?? {}) }), dt, api);
-          } catch (err) {
-            logScriptError(`${obj.id}:${b.scriptId}:onUpdate`, e.name, err);
+      const scPolicy = obj.id === primaryPlayer?.id ? null : getObjectPolicy(obj.id);
+      const skipScriptsByActivity =
+        scPolicy !== null &&
+        (scPolicy.scripts === 'none' ||
+          scPolicy.scripts === 'suspended' ||
+          (scPolicy.scriptStride > 1 && streamingFrame % scPolicy.scriptStride !== 0));
+      if (!skipScriptsByActivity) {
+        for (const b of obj.source.scriptBindings ?? []) {
+          if (!b.enabled) continue;
+          const e = compiledScripts.get(b.scriptId);
+          if (e?.hooks.onUpdate) {
+            try {
+              e.hooks.onUpdate(makeHandle(obj, { ...(e.hooks.params ?? {}), ...(b.params ?? {}) }), dt, api);
+            } catch (err) {
+              logScriptError(`${obj.id}:${b.scriptId}:onUpdate`, e.name, err);
+            }
           }
         }
       }
-      evaluateAnimFSM(obj, dt);
+      if (!scPolicy || scPolicy.level === 'near' || scPolicy.level === 'medium') {
+        evaluateAnimFSM(obj, dt);
+      }
 
       // Emisor continuo 3D (soporta emisor base + capas múltiples VFX)
       const em = obj.source.particleEmitter;
@@ -3777,6 +3976,17 @@ export function createSimulation3DState(
     }
 
     const camTargetWorld = camTarget ? getWorldT3(camTarget) : null;
+    const activeVol = evaluateActiveCameraVolumes(
+      scene.cameraVolumes,
+      camTargetWorld,
+      Boolean(activeMountedVehicleId)
+    );
+    const effectiveCamCfg = resolveCameraConfigWithVolume(cameraState, camCfg, activeVol);
+    if (activeJustPressedKeys.has('KeyV') && effectiveCamCfg.allowShoulderSwap !== false) {
+      cameraState.shoulderSide =
+        (cameraState.shoulderSide ?? effectiveCamCfg.shoulderSide ?? 1) === 1 ? -1 : 1;
+    }
+
     if (cameraBlend?.active) {
       cameraBlend.elapsed += dt;
       const ratio = Math.min(1, cameraBlend.elapsed / cameraBlend.duration);
@@ -3795,7 +4005,7 @@ export function createSimulation3DState(
     } else if (!cameraManualLock) {
       stepSmartCamera3D(
         cameraState,
-        camCfg,
+        effectiveCamCfg,
         activeCamObj ? getWorldT3(activeCamObj) : { x: 0, y: 7, z: 13 },
         camTarget && camTargetWorld
           ? {
@@ -3808,7 +4018,8 @@ export function createSimulation3DState(
             }
           : null,
         occluders,
-        dt
+        dt,
+        (wx, wz) => groundHeightAt(scene, wx, wz)
       );
     }
 
@@ -3835,6 +4046,12 @@ export function createSimulation3DState(
     navMesh,
     wiringSys,
     getCameraFollowOverrideId: () => cameraFollowOverride3D,
+    getStreamingState: () => streamingState,
+    getWorldSaveState: () => worldSaveState,
+    getStreamingReport: (assets: ProjectAssetMeta[] = []): StreamingProfilerReport | null =>
+      chunkManifest && streamingState && streamingSceneView
+        ? buildStreamingProfilerReport(streamingSceneView, assets, chunkManifest, streamingState)
+        : null,
     logs,
     step,
     registerObjectTrimesh: (id: string, data: WorldTrimeshData | null) => {

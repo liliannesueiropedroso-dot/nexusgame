@@ -23,6 +23,8 @@ import type {
 } from '../../engine/core/types';
 import {
   extractScriptParamsSchema,
+  sanitizeWidgetHtml,
+  scanScriptSecurity,
   validateScriptSyntax,
 } from '../../engine/scripting/scriptRuntime';
 import type { NexusScriptAsset } from '../../project/models/project';
@@ -529,6 +531,13 @@ export const CodeStudioPanel: React.FC<CodeStudioPanelProps> = ({
     return validateScriptSyntax(activeScript.code);
   }, [activeScript]);
 
+  const securityStatus = useMemo(() => {
+    if (!activeScript || activeScript.kind !== 'script') {
+      return { safe: true, blockedIdentifiers: [] as string[] };
+    }
+    return scanScriptSecurity(activeScript.code ?? '');
+  }, [activeScript]);
+
   const parsedParams = useMemo(() => {
     if (!activeScript || activeScript.kind !== 'script') return [];
     return extractScriptParamsSchema(activeScript.code);
@@ -832,6 +841,34 @@ export const CodeStudioPanel: React.FC<CodeStudioPanelProps> = ({
                     <span className="truncate">{syntaxStatus.error}</span>
                   </span>
                 )}
+
+                {activeScript.kind === 'script' && (
+                  <>
+                    <select
+                      aria-label="Modo de seguridad del script"
+                      value={activeScript.securityMode ?? 'safe_sandbox'}
+                      onChange={(e) =>
+                        updateActive({
+                          securityMode: e.target.value as 'safe_sandbox' | 'trusted_js',
+                        })
+                      }
+                      className="rounded border border-[#32323c] bg-[#121216] px-1.5 py-0.5 text-[10px] text-zinc-200 focus:border-cyan-500 focus:outline-none"
+                    >
+                      <option value="safe_sandbox">Sandbox Seguro</option>
+                      <option value="trusted_js">JS Avanzado con Permisos</option>
+                    </select>
+                    {(activeScript.securityMode ?? 'safe_sandbox') === 'safe_sandbox' &&
+                      !securityStatus.safe && (
+                        <span
+                          title={`Bloqueado en Sandbox Seguro: ${securityStatus.blockedIdentifiers.join(', ')}`}
+                          className="inline-flex items-center gap-1 rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300"
+                        >
+                          <AlertCircle className="h-3 w-3 shrink-0" />
+                          <span>Bloqueado: {securityStatus.blockedIdentifiers.slice(0, 2).join(', ')}</span>
+                        </span>
+                      )}
+                  </>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5">
@@ -1044,7 +1081,9 @@ export const CodeStudioPanel: React.FC<CodeStudioPanelProps> = ({
                     <style>{scopeWidgetCss(activeScript.css ?? '', 'code-studio-preview')}</style>
                     <div
                       className="h-full w-full"
-                      dangerouslySetInnerHTML={{ __html: activeScript.code ?? '' }}
+                      dangerouslySetInnerHTML={{
+                        __html: sanitizeWidgetHtml(activeScript.code ?? ''),
+                      }}
                     />
                   </div>
                 </div>

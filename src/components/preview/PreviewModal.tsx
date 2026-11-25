@@ -1242,6 +1242,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       { nodes: THREE.Mesh[]; lines?: THREE.LineSegments }
     >();
     const vehicleWheelVisuals = new Map<string, THREE.Mesh[]>();
+    const hlodProxyVisuals = new Map<string, THREE.Mesh>();
 
     // Pool de anillos de ondas en agua (zero-GC) + estelas Ribbon Trail
     const ripplePool = createRippleRingPool(24);
@@ -1348,6 +1349,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       activeFoliageUniforms.length = 0;
       softBodyVisuals.clear();
       vehicleWheelVisuals.clear();
+      hlodProxyVisuals.clear();
       wakeTrails.clear();
       for (const rm of rippleMeshes) rm.visible = false;
       for (const r of ripplePool) r.active = false;
@@ -2486,7 +2488,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               const w = vState.wheels[idxMap[i] ?? i];
               const wm = wMeshes[i];
               wm.position.set(w.worldX, w.worldY, w.worldZ);
-              wm.rotation.set(w.spinRad, vState.yawRad + w.steerAngleRad, 0, 'YXZ');
+              wm.rotation.set(w.spinRad, vState.yawRad - w.steerAngleRad, 0, 'YXZ');
             }
           }
           if (parts) {
@@ -2510,7 +2512,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                 );
                 wBaseQ.setFromEuler(wBaseEuler);
                 wSpinQ.setFromAxisAngle(wAxisX, w.spinRad);
-                wSteerQ.setFromAxisAngle(wAxisY, w.steerAngleRad);
+                wSteerQ.setFromAxisAngle(wAxisY, -w.steerAngleRad);
                 pNode.quaternion.copy(wSteerQ).multiply(wSpinQ).multiply(wBaseQ);
               }
             });
@@ -2604,11 +2606,50 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           }
         }
 
-        // Sincronizar mallas 3D, optimización (Frustum/Fade/LOD real), colisionadores dinámicos, luces y mixers
+        // Sincronizar mallas 3D, WorldStreaming (HLOD / Actividad / Oclusión), optimización y mixers
+        const stState = sim3d.getStreamingState();
+        const streamingOn = Boolean(currentScene3d.worldStreaming?.enabled && stState);
+        if (streamingOn && stState && currentScene3d.worldStreaming?.enableHlod !== false) {
+          for (const [cKey, proxy] of stState.hlodProxies.entries()) {
+            let pMesh = hlodProxyVisuals.get(cKey);
+            if (!pMesh) {
+              const pGeo = disposer.trackGeometry(
+                new THREE.BoxGeometry(proxy.width, proxy.height, proxy.depth)
+              );
+              const pMat = disposer.trackMaterial(
+                new THREE.MeshStandardMaterial({
+                  color: new THREE.Color(proxy.color || '#64748b'),
+                  roughness: 0.85,
+                  metalness: 0.05,
+                })
+              );
+              pMesh = new THREE.Mesh(pGeo, pMat);
+              pMesh.position.set(proxy.centerX, proxy.centerY, proxy.centerZ);
+              pMesh.visible = false;
+              worldGroup.add(pMesh);
+              hlodProxyVisuals.set(cKey, pMesh);
+            }
+            const loadedChunk = stState.loaded.get(cKey);
+            const distToProxy = Math.hypot(proxy.centerX - camPos.posX, proxy.centerZ - camPos.posZ);
+            const farLimit = currentScene3d.worldStreaming?.farProxyRadius ?? 340;
+            pMesh.visible = !loadedChunk && distToProxy <= farLimit;
+          }
+        } else {
+          for (const pMesh of hlodProxyVisuals.values()) pMesh.visible = false;
+        }
+
         for (const objState of sim3d.objects) {
           const mesh = meshBindings.get(objState.id);
           if (mesh) {
             let showObj = objState.visible;
+            if (showObj && streamingOn && stState) {
+              const act = stState.objectActivity.get(objState.id) ?? 'near';
+              if (act === 'unloaded' || (act === 'far' && currentScene3d.worldStreaming?.enableHlod !== false)) {
+                showObj = false;
+              } else if (stState.culledObjectIds.has(objState.id)) {
+                showObj = false;
+              }
+            }
             const opt = objState.source.optimization;
             const lodEntry = lodBindings.get(objState.id);
             if (showObj && opt) {

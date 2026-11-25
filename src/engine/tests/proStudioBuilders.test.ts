@@ -39,23 +39,44 @@ test('Multi-mode vehicles: Car grip, Moto lean, Boat pontoons (4/6/12), Plane li
     suspensionRestLen: 0.65,
     suspensionStiffness: 38,
     suspensionDamping: 5,
-    maxTorque: 30,
-    maxSpeed: 28,
-    maxSteerDeg: 32,
-    wheelBase: 2.6,
-    trackWidth: 1.7,
+    maxTorque: 13,
+    maxSpeed: 16,
+    maxSteerDeg: 28,
+    wheelBase: 2.5,
+    trackWidth: 1.92,
     driveType: 'awd',
-    gripFactor: 0.9,
+    gripFactor: 0.85,
   };
   const car = createVehicle4WState(0, 1.5, 0, 0, carCfg);
   for (let i = 0; i < 30; i++) stepVehicle4W(car, carCfg, 1, 0.4, 0.016, () => 0);
   assert.ok(car.z > 0.2, 'Auto acelera hacia adelante');
-  assert.ok(Math.abs(car.yawRad) > 0.01, 'Auto gira con dirección');
+  assert.ok(car.speedForward > 2 && car.speedForward < 9, 'Aceleración progresiva realista sin disparo instantáneo');
+  assert.ok(car.yawRad < -0.01, 'Girar a la derecha (+steer) disminuye yawRad hacia -X (derecha)');
+  assert.ok(car.wheels[0].steerAngleRad > 0 && -car.wheels[0].steerAngleRad < 0, 'Signo visual -steerAngleRad apunta hacia la derecha');
+  assert.ok(car.rollRad < 0, 'Auto inclina suavemente su carrocería hacia afuera en curva a la derecha');
 
-  const motoCfg: Vehicle4WConfig = { ...carCfg, vehicleKind: 'moto' };
+  // Dirección sensible a velocidad: a máxima velocidad el ángulo máximo de giro es menor que a baja velocidad
+  const lowSpdCar = createVehicle4WState(0, 1.0, 0, 0, carCfg);
+  lowSpdCar.speedForward = 2;
+  for (let i = 0; i < 40; i++) stepVehicle4W(lowSpdCar, carCfg, 0.1, 1, 0.016, () => 0);
+  const highSpdCar = createVehicle4WState(0, 1.0, 0, 0, carCfg);
+  highSpdCar.speedForward = 16;
+  for (let i = 0; i < 40; i++) stepVehicle4W(highSpdCar, carCfg, 1, 1, 0.016, () => 0);
+  assert.ok(
+    Math.abs(highSpdCar.steerAngleRad) < Math.abs(lowSpdCar.steerAngleRad) * 0.65,
+    'Dirección sensible a la velocidad reduce ángulo de giro a alta velocidad'
+  );
+
+  // Frenado antes de reversa
+  const brakingCar = createVehicle4WState(0, 1.0, 0, 0, carCfg);
+  brakingCar.speedForward = 10;
+  for (let i = 0; i < 15; i++) stepVehicle4W(brakingCar, carCfg, -1, 0, 0.016, () => 0);
+  assert.ok(brakingCar.speedForward >= 0 && brakingCar.speedForward < 6, 'Frena progresivamente hacia 0 antes de entrar en reversa');
+
+  const motoCfg: Vehicle4WConfig = { ...carCfg, vehicleKind: 'moto', maxTorque: 15, maxSpeed: 19 };
   const moto = createVehicle4WState(0, 1.5, 0, 0, motoCfg);
   for (let i = 0; i < 30; i++) stepVehicle4W(moto, motoCfg, 1, 0.8, 0.016, () => 0);
-  assert.ok(Math.abs(moto.rollRad) > 0.02, 'Moto se inclina en curva');
+  assert.ok(moto.rollRad > 0.02, 'Moto se inclina hacia adentro de la curva');
 
   assert.equal(getBoatPontoonLocalOffsets('speedboat', 2.2, 4.4).length, 4);
   assert.equal(getBoatPontoonLocalOffsets('medium', 2.8, 6.2).length, 6);

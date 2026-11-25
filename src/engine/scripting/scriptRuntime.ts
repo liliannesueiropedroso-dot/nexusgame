@@ -230,6 +230,71 @@ export interface CompiledScriptEntry {
   name: string;
   hooks: NexusScriptHooks;
   error: string | null;
+  securityMode?: 'safe_sandbox' | 'trusted_js';
+  securityViolations?: string[];
+  watchdogDisabled?: boolean;
+  watchdogReason?: string;
+}
+
+export const FORBIDDEN_SCRIPT_GLOBALS = [
+  'window',
+  'document',
+  'globalThis',
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'fetch',
+  'XMLHttpRequest',
+  'WebSocket',
+  'eval',
+  'Function',
+  'importScripts',
+  'top',
+  'parent',
+  'opener',
+  'cookie',
+] as const;
+
+/**
+ * Elimina comentarios y literales de cadena simples para evitar falsos positivos
+ * al analizar identificadores globales prohibidos en modo sandbox.
+ */
+function stripCommentsAndStringsForScan(source: string): string {
+  return source.replace(
+    /\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|(["'`])(?:\\.|(?!\1)[^\\])*\1/g,
+    (_match, quote) => (quote ? '""' : ' ')
+  );
+}
+
+export function scanScriptSecurity(rawCode: string): {
+  safe: boolean;
+  blockedIdentifiers: string[];
+} {
+  const cleaned = stripCommentsAndStringsForScan(rawCode);
+  const found = new Set<string>();
+  for (const ident of FORBIDDEN_SCRIPT_GLOBALS) {
+    const re = new RegExp(`(^|[^a-zA-Z0-9_$.])${ident}([^a-zA-Z0-9_$]|$)`);
+    if (re.test(cleaned)) {
+      found.add(ident);
+    }
+  }
+  return {
+    safe: found.size === 0,
+    blockedIdentifiers: Array.from(found),
+  };
+}
+
+/**
+ * Sanitiza HTML de widgets visuales eliminando <script>, <iframe>, atributos on*= y URLs javascript:.
+ * Mantiene intactos los atributos declarativos data-nexus-* y clases CSS del diseñador.
+ */
+export function sanitizeWidgetHtml(rawHtml: string): string {
+  if (!rawHtml) return '';
+  return rawHtml
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src|action|formaction)\s*=\s*(["'])\s*javascript:[\s\S]*?\2/gi, '$1=$2#$2');
 }
 
 const STANDARD_LIFECYCLE_NAMES = [
@@ -292,16 +357,88 @@ function parseCommentParams(code: string): Record<string, number | boolean | str
   return result;
 }
 
+function wrapHooksWithWatchdog(
+  hooks: NexusScriptHooks,
+  entry: CompiledScriptEntry,
+  maxMsPerFrame: number
+): NexusScriptHooks {
+  let consecutiveErrors = 0;
+  const wrapped: NexusScriptHooks = { ...hooks };
+  const budgetMs = Math.max(4, maxMsPerFrame * 4);
+
+  for (const key of STANDARD_LIFECYCLE_NAMES) {
+    const fn = hooks[key];
+    if (typeof fn !== 'function') continue;
+    wrapped[key] = (...args: unknown[]) => {
+      if (entry.watchdogDisabled) return;
+      const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      try {
+        const res = (fn as (...a: unknown[]) => unknown).apply(hooks, args);
+        consecutiveErrors = 0;
+        const elapsed =
+          (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
+        if (elapsed > budgetMs) {
+          entry.watchdogDisabled = true;
+          entry.watchdogReason = `Script "${entry.name}" detenido por watchdog (${elapsed.toFixed(1)} ms > ${budgetMs} ms).`;
+        }
+        return res;
+      } catch (err) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 3) {
+          entry.watchdogDisabled = true;
+          entry.watchdogReason = `Script "${entry.name}" desactivado tras 3 errores consecutivos.`;
+        }
+        throw err;
+      }
+    };
+  }
+  return wrapped;
+}
+
+const SANDBOX_SHADOW_PARAMS = [
+  'window',
+  'document',
+  'globalThis',
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'fetch',
+  'XMLHttpRequest',
+  'WebSocket',
+  'Function',
+  'importScripts',
+] as const;
+
 /**
  * Compila un script JS de NEXUS sin usar eval().
- * Soporta `export default { ... }`, `export default function`, `export default class`,
- * `export function ...`, `export const onUpdate = ...`, y funciones top-level sin export.
+ * En modo `safe_sandbox` (por defecto), bloquea acceso a APIs globales del navegador/DOM
+ * y envuelve los hooks con un watchdog anti-bucle infinito y anti-errores repetidos.
  */
-export function compileNexusScript(script: NexusScriptAsset): CompiledScriptEntry {
+export function compileNexusScript(
+  script: NexusScriptAsset,
+  opts?: { mode?: 'safe_sandbox' | 'trusted_js'; maxMsPerFrame?: number }
+): CompiledScriptEntry {
   const rawCode = script.code ?? '';
+  const securityMode = opts?.mode ?? script.securityMode ?? 'safe_sandbox';
+  const maxMsPerFrame = opts?.maxMsPerFrame ?? 12;
+  const commentParams = parseCommentParams(rawCode);
+
+  if (securityMode === 'safe_sandbox') {
+    const sec = scanScriptSecurity(rawCode);
+    if (!sec.safe) {
+      return {
+        scriptId: script.id,
+        name: script.name,
+        hooks: Object.keys(commentParams).length > 0 ? { params: commentParams } : {},
+        error: `Bloqueado por Sandbox Seguro: acceso prohibido a ${sec.blockedIdentifiers.join(', ')}. Cambia el modo a "JS Avanzado con Permisos" si realmente lo necesitas.`,
+        securityMode,
+        securityViolations: sec.blockedIdentifiers,
+      };
+    }
+  }
+
   const code = preprocessScriptSource(rawCode);
   const fnNames = collectTopLevelIdentifiers(rawCode);
-  const commentParams = parseCommentParams(rawCode);
   const autoExpose = fnNames
     .map(
       (n) =>
@@ -348,30 +485,38 @@ export function compileNexusScript(script: NexusScriptAsset): CompiledScriptEntr
       ${autoExpose}
       return result;
     `;
-    const factory = new Function(wrapped);
-    const evaluated = factory();
-    const hooks: NexusScriptHooks =
+    const evaluated =
+      securityMode === 'safe_sandbox'
+        ? new Function(...SANDBOX_SHADOW_PARAMS, wrapped)(
+            ...SANDBOX_SHADOW_PARAMS.map(() => undefined)
+          )
+        : new Function(wrapped)();
+    const rawHooks: NexusScriptHooks =
       evaluated && typeof evaluated === 'object' ? (evaluated as NexusScriptHooks) : {};
 
     if (Object.keys(commentParams).length > 0) {
-      hooks.params = {
+      rawHooks.params = {
         ...commentParams,
-        ...(hooks.params && typeof hooks.params === 'object' ? hooks.params : {}),
+        ...(rawHooks.params && typeof rawHooks.params === 'object' ? rawHooks.params : {}),
       };
     }
 
-    return {
+    const entry: CompiledScriptEntry = {
       scriptId: script.id,
       name: script.name,
-      hooks,
+      hooks: rawHooks,
       error: null,
+      securityMode,
     };
+    entry.hooks = wrapHooksWithWatchdog(rawHooks, entry, maxMsPerFrame);
+    return entry;
   } catch (err) {
     return {
       scriptId: script.id,
       name: script.name,
       hooks: Object.keys(commentParams).length > 0 ? { params: commentParams } : {},
       error: err instanceof Error ? err.message : String(err),
+      securityMode,
     };
   }
 }

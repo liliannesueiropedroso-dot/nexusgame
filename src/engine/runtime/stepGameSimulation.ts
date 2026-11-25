@@ -2393,11 +2393,16 @@ export function stepSimulation(
         const dy = target.transform.y - obj.transform.y;
         const dist = Math.hypot(dx, dy);
 
-        const visionFov = Number(comp.config.visionFovDeg ?? obj.aiAgent?.visionFovDeg ?? 140);
+        const rawConeDeg = Number(comp.config.visionFovDeg ?? obj.aiAgent?.visionFovDeg ?? 360);
+        const useCone =
+          comp.config.requireVisionCone === true ||
+          (comp.config.visionFovDeg !== undefined && rawConeDeg < 359) ||
+          (Boolean(obj.aiAgent?.enabled) && rawConeDeg < 359);
+        const visionFov = useCone ? Math.min(359, Math.max(10, Number(comp.config.visionFovDeg ?? obj.aiAgent?.visionFovDeg ?? 140))) : 360;
         const facingX = obj.sprite?.flipX ? -1 : 1;
         const cosHalfFov = Math.cos(((Math.min(360, visionFov) * 0.5) * Math.PI) / 180);
         const dot = dist > 0.001 ? (dx / dist) * facingX : 1;
-        const inCone = visionFov >= 359 || dot >= cosHalfFov || dist <= 96;
+        const inCone = !useCone || visionFov >= 359 || dot >= cosHalfFov || dist <= 96;
         const { nav, solidObjs } = ensureNav2d();
         const requireLos = comp.config.requireLineOfSight === true;
         const hasLos =
@@ -2408,7 +2413,20 @@ export function stepSimulation(
             solidObjs
           );
 
-        if ((isFleeing || (inCone && hasLos)) && dist <= detectRadius && (isFleeing || dist > stopDistance) && dist > 0.001) {
+        const memKey = `chaseMem:${obj.id}`;
+        const memDuration = Math.max(0, Number(comp.config.targetMemorySec ?? 3.5));
+        const seesNow = inCone && hasLos && dist <= detectRadius;
+        if (seesNow && memDuration > 0) {
+          state.runtimeTimers.set(memKey, memDuration);
+        } else {
+          const prevMem = state.runtimeTimers.get(memKey) ?? 0;
+          if (prevMem > 0) {
+            state.runtimeTimers.set(memKey, Math.max(0, prevMem - dt));
+          }
+        }
+        const hasMemory = (state.runtimeTimers.get(memKey) ?? 0) > 0;
+
+        if ((isFleeing || ((seesNow || hasMemory) && dist <= detectRadius * (hasMemory ? 1.25 : 1))) && (isFleeing || dist > stopDistance) && dist > 0.001) {
           let goalX = isFleeing ? obj.transform.x - dx : target.transform.x;
           let goalY = isFleeing ? obj.transform.y - dy : target.transform.y;
           if (!isFleeing && !hasLineOfSight2D({ x: obj.transform.x, y: obj.transform.y }, { x: target.transform.x, y: target.transform.y }, solidObjs)) {

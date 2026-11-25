@@ -1,5 +1,7 @@
 import type { GameObjectData, ProjectVariable, SceneData } from '../../engine/core/types';
+import { scanScriptSecurity } from '../../engine/scripting/scriptRuntime';
 import type { NexusProject, ProjectAssetMeta } from '../../project/models/project';
+import { validateProjectData } from '../../project/validation/projectValidator';
 import { createId } from '../../utils/id';
 
 export type DiagnosticSeverity = 'error' | 'warning' | 'info';
@@ -597,6 +599,27 @@ export function analyzeProjectDiagnostics(
         }
       }
     }
+    if ((sc.securityMode ?? 'safe_sandbox') === 'safe_sandbox') {
+      const sec = scanScriptSecurity(code);
+      if (!sec.safe) {
+        diagnostics.push({
+          id: `diag-script-sec-${sc.id}`,
+          severity: 'error',
+          code: 'SCRIPT_SANDBOX_VIOLATION',
+          title: `Script "${sc.name}" usa globales bloqueados por Sandbox Seguro`,
+          detail: `Acceso restringido detectado (${sec.blockedIdentifiers.join(', ')}). Usa la API "nexus.*" o cambia el script a "JS Avanzado con Permisos".`,
+          fix: {
+            label: 'Permitir JS Avanzado',
+            apply: (proj) => ({
+              ...proj,
+              scripts: (proj.scripts ?? []).map((s) =>
+                s.id === sc.id ? { ...s, securityMode: 'trusted_js' } : s
+              ),
+            }),
+          },
+        });
+      }
+    }
   }
 
   for (const obj of scene.objects) {
@@ -632,6 +655,22 @@ export function analyzeProjectDiagnostics(
           },
         });
       }
+    }
+  }
+
+  // 8. Validación semántica estructural de proyecto (ciclos, NaN, masa <= 0, IDs duplicados)
+  const semanticCheck = validateProjectData(project);
+  for (const issue of semanticCheck.issues) {
+    if (issue.sceneId && issue.sceneId !== scene.id) continue;
+    if (issue.severity === 'error') {
+      diagnostics.push({
+        id: `diag-sem-${issue.path}`,
+        severity: 'error',
+        code: 'SEMANTIC_VALIDATION_ERROR',
+        title: issue.message,
+        detail: `Ruta detectada: ${issue.path}`,
+        objectId: issue.objectId,
+      });
     }
   }
 

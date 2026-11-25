@@ -8,6 +8,7 @@ import {
   type ProjectAssetMeta,
 } from '../project/models/project';
 import { validateExportManifest } from '../project/validation/projectValidator';
+import { normalizeProjectData } from '../project/serialization/projectSerializer';
 
 export interface ImportedZipProjectResult {
   project: NexusProject;
@@ -112,7 +113,7 @@ export async function importProjectFromZip(
     ? createId('proj')
     : manifest.project.id;
 
-  const project: NexusProject = {
+  const project: NexusProject = normalizeProjectData({
     id: finalProjectId,
     formatVersion: manifest.formatVersion || NEXUS_FORMAT_VERSION,
     mode: manifest.project.mode ?? '2d',
@@ -123,7 +124,10 @@ export async function importProjectFromZip(
     updatedAt: Date.now(),
     settings: structuredClone(manifest.project.settings),
     activeSceneId: manifest.project.activeSceneId || manifest.project.scenes[0].id,
-    initialSceneId: manifest.project.initialSceneId || manifest.project.activeSceneId || manifest.project.scenes[0].id,
+    initialSceneId:
+      manifest.project.initialSceneId ||
+      manifest.project.activeSceneId ||
+      manifest.project.scenes[0].id,
     scenes: structuredClone(manifest.project.scenes),
     assets: restoredAssets,
     scripts: manifest.project.scripts ? structuredClone(manifest.project.scripts) : undefined,
@@ -135,7 +139,24 @@ export async function importProjectFromZip(
     audioBuses: manifest.project.audioBuses
       ? structuredClone(manifest.project.audioBuses)
       : undefined,
-  };
+    dialogues: manifest.project.dialogues
+      ? structuredClone(manifest.project.dialogues)
+      : undefined,
+    dataTables: manifest.project.dataTables
+      ? structuredClone(manifest.project.dataTables)
+      : undefined,
+    i18n: manifest.project.i18n ? structuredClone(manifest.project.i18n) : undefined,
+    security: manifest.project.security
+      ? structuredClone(manifest.project.security)
+      : undefined,
+    saveSlots: manifest.project.saveSlots
+      ? structuredClone(manifest.project.saveSlots)
+      : undefined,
+    commandHistory: manifest.project.commandHistory
+      ? structuredClone(manifest.project.commandHistory)
+      : undefined,
+    seed: manifest.project.seed,
+  });
 
   return { project, assetBlobs };
 }

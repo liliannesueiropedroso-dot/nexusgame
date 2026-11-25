@@ -386,9 +386,16 @@ export function stepVehicle4W(
   st.prevZ = st.z;
 
   const isMoto = cfg.vehicleKind === 'moto';
-  const maxSteer = ((cfg.maxSteerDeg || (isMoto ? 36 : 32)) * Math.PI) / 180;
-  const targetSteer = Math.max(-1, Math.min(1, steerInput)) * maxSteer;
-  st.steerAngleRad += (targetSteer - st.steerAngleRad) * Math.min(1, safeDt * 10);
+  const maxSpd = Math.max(4, cfg.maxSpeed || (isMoto ? 19 : 16));
+  const speedAbs = Math.abs(st.speedForward);
+  const speedNorm = Math.min(1, speedAbs / maxSpd);
+
+  // Dirección sensible a la velocidad: giro amplio a baja velocidad y estable en alta velocidad
+  const maxSteer = ((cfg.maxSteerDeg || (isMoto ? 32 : 28)) * Math.PI) / 180;
+  const speedSteerScale = 1 / (1 + speedAbs * 0.11);
+  const targetSteer = Math.max(-1, Math.min(1, steerInput)) * maxSteer * speedSteerScale;
+  const steerSpeed = Math.abs(steerInput) < 0.02 ? 8.8 : 5.4;
+  st.steerAngleRad += (targetSteer - st.steerAngleRad) * Math.min(1, safeDt * steerSpeed);
 
   const cosY = Math.cos(st.yawRad);
   const sinY = Math.sin(st.yawRad);
@@ -427,30 +434,53 @@ export function stepVehicle4W(
   }
 
   const traction = groundedCount / 4;
-  const accel = (cfg.maxTorque || 26) * Math.max(-1, Math.min(1, throttleInput)) * traction;
-  if (Math.abs(throttleInput) > 0.02) {
-    st.speedForward += accel * safeDt;
-  } else {
-    st.speedForward *= Math.max(0, 1 - 2.4 * safeDt);
-  }
-  const maxSpd = Math.max(4, cfg.maxSpeed || 22);
-  st.speedForward = Math.max(-maxSpd * 0.55, Math.min(maxSpd, st.speedForward));
+  const clampedThr = Math.max(-1, Math.min(1, throttleInput));
+  const baseTorque = cfg.maxTorque || (isMoto ? 15 : 13);
+  const isBraking =
+    (st.speedForward > 0.6 && clampedThr < -0.05) ||
+    (st.speedForward < -0.6 && clampedThr > 0.05);
 
-  if (traction > 0 && Math.abs(st.speedForward) > 0.15) {
-    const turnRate =
-      (st.speedForward / Math.max(1.2, cfg.wheelBase || 2.6)) * Math.tan(st.steerAngleRad);
+  if (isBraking && traction > 0) {
+    // Frenado firme y progresivo hasta detenerse antes de engranar reversa
+    const brakeDecel = Math.max(18, baseTorque * 1.75) * Math.abs(clampedThr) * traction;
+    const nextSpd = st.speedForward + Math.sign(clampedThr) * brakeDecel * safeDt;
+    st.speedForward = Math.sign(nextSpd) !== Math.sign(st.speedForward) ? 0 : nextSpd;
+  } else if (clampedThr > 0.02) {
+    // Empuje inicial ágil con caída progresiva hacia velocidad punta
+    const torqueCurve = 1.15 - 0.72 * Math.pow(speedNorm, 1.3);
+    st.speedForward += baseTorque * clampedThr * torqueCurve * traction * safeDt;
+  } else if (clampedThr < -0.02) {
+    // Reversa suave y controlada
+    st.speedForward += baseTorque * 0.65 * clampedThr * traction * safeDt;
+  } else if (traction > 0) {
+    // Inercia natural de rodamiento + resistencia aerodinámica suave al soltar acelerador
+    const aeroDrag = 0.035 * st.speedForward * speedAbs;
+    const rollDrag = 1.65 * Math.sign(st.speedForward);
+    const nextSpd = st.speedForward - (rollDrag + aeroDrag) * safeDt;
+    st.speedForward = Math.abs(nextSpd) < 0.08 ? 0 : nextSpd;
+  }
+
+  st.speedForward = Math.max(-maxSpd * 0.42, Math.min(maxSpd, st.speedForward));
+
+  if (traction > 0 && speedAbs > 0.12) {
+    const lowSpeedRamp = Math.min(1, speedAbs / 1.2);
+    const rawTurnRate =
+      (st.speedForward / Math.max(1.4, cfg.wheelBase || 2.5)) *
+      Math.tan(st.steerAngleRad) *
+      lowSpeedRamp;
+    const turnRate = Math.max(-1.05, Math.min(1.05, rawTurnRate));
     st.yawRad -= turnRate * safeDt;
   }
 
-  // Dirección forward + control de agarre lateral / derrape (gripFactor)
+  // Dirección forward + control de agarre lateral / micro-derrape (gripFactor)
   const fwdX = Math.sin(st.yawRad);
   const fwdZ = Math.cos(st.yawRad);
   const rightX = Math.cos(st.yawRad);
   const rightZ = -Math.sin(st.yawRad);
 
-  const grip = Math.max(0.08, Math.min(1, cfg.gripFactor ?? 0.88));
+  const grip = Math.max(0.08, Math.min(1, cfg.gripFactor ?? 0.85));
   const curLateral = st.vx * rightX + st.vz * rightZ;
-  const dampedLateral = curLateral * Math.max(0, 1 - grip * 14 * safeDt);
+  const dampedLateral = curLateral * Math.max(0, 1 - grip * 9.5 * safeDt);
   st.vx = fwdX * st.speedForward + rightX * dampedLateral;
   st.vz = fwdZ * st.speedForward + rightZ * dampedLateral;
   st.x += st.vx * safeDt;
@@ -473,9 +503,11 @@ export function stepVehicle4W(
   const leftAvg = (st.wheels[0].worldY + st.wheels[2].worldY) * 0.5;
   const rightAvg = (st.wheels[1].worldY + st.wheels[3].worldY) * 0.5;
 
+  const accelPitch = isBraking ? 0.055 : -clampedThr * 0.032;
   const targetPitch =
-    Math.atan2(rearAvg - frontAvg, Math.max(1, cfg.wheelBase || 2.6)) - throttleInput * 0.04;
-  const leanFactor = isMoto ? 0.42 : 0.12;
+    Math.atan2(rearAvg - frontAvg, Math.max(1, cfg.wheelBase || 2.5)) + accelPitch;
+  // Moto inclina hacia adentro de la curva (+); Auto balancea suavemente hacia afuera (-)
+  const leanFactor = isMoto ? 0.42 : -0.075;
   const targetRoll =
     Math.atan2(leftAvg - rightAvg, Math.max(0.6, cfg.trackWidth || 1.7)) +
     steerInput * (st.speedForward / maxSpd) * leanFactor;

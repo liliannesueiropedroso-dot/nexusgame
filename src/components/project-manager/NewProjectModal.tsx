@@ -56,7 +56,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
       }
     } else {
       if (name === 'Mi Proyecto 3D') setName('Mi Proyecto 2D');
-      if (template === 'arena_3d' || template === 'platformer_3d') {
+      if (template === 'arena_3d' || template === 'platformer_3d' || template === 'open_world_3d') {
         setTemplate('empty_single');
       }
     }
@@ -196,7 +196,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
               Plantilla inicial
             </span>
             {mode === '3d' ? (
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <button
                   type="button"
                   onClick={() => setTemplate('arena_3d')}
@@ -220,6 +220,18 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
                 >
                   <div className="font-semibold text-[11px]">Plataformas 3D</div>
                   <div className="mt-0.5 text-[10px] opacity-80">Saltos + Cámara 3D</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTemplate('open_world_3d')}
+                  className={`rounded border p-2 text-left transition-colors ${
+                    template === 'open_world_3d'
+                      ? 'border-emerald-500 bg-emerald-600/15 text-zinc-100'
+                      : 'border-[#383844] bg-[#232328] text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <div className="font-semibold text-[11px]">Mundo Abierto 3D</div>
+                  <div className="mt-0.5 text-[10px] opacity-80">Chunks + HLOD + Auto</div>
                 </button>
                 <button
                   type="button"
