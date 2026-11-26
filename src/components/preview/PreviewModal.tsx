@@ -68,6 +68,15 @@ import {
   ResourceDisposer,
 } from '../../engine/three3d/resourceDisposer';
 import {
+  buildHlodProxyVisual,
+  type BuiltHlodVisual,
+} from '../../engine/three3d/hlodBuilder';
+import {
+  AssetStreamingManager,
+  getBudgetLimitsForProfile,
+  resolveStreamingConfig,
+} from '../../engine/streaming/worldStreaming';
+import {
   advanceDialogueChoice,
   createActiveDialogueState,
   stepDialogueTypewriter,
@@ -78,6 +87,7 @@ import {
   resolveI18nText,
 } from '../../engine/data/dataTableI18n';
 import type {
+  NexusPluginPackage,
   NexusScriptAsset,
   PrefabDefinition,
   ProjectMode,
@@ -94,6 +104,7 @@ interface PreviewModalProps {
   initialSceneId?: string;
   prefabs?: PrefabDefinition[];
   scripts?: NexusScriptAsset[];
+  plugins?: NexusPluginPackage[];
   stage: StageResolution;
   assetBlobs: Map<string, Blob>;
   variables?: ProjectVariable[];
@@ -107,6 +118,7 @@ interface PreviewModalProps {
 
 const EMPTY_PREFABS: PrefabDefinition[] = [];
 const EMPTY_SCRIPTS: NexusScriptAsset[] = [];
+const EMPTY_PLUGINS: NexusPluginPackage[] = [];
 const EMPTY_VARS: ProjectVariable[] = [];
 
 function createGroundGridTexture(baseHex: string): THREE.CanvasTexture | null {
@@ -153,6 +165,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
   initialSceneId,
   prefabs = EMPTY_PREFABS,
   scripts = EMPTY_SCRIPTS,
+  plugins = EMPTY_PLUGINS,
   stage,
   assetBlobs,
   variables = EMPTY_VARS,
@@ -185,11 +198,13 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     jump: false,
     prevJump: false,
     action: false,
+    prevAction: false,
     dash: false,
     prevDash: false,
   });
 
   const [paused, setPaused] = useState(false);
+  const [vehicleHudPrompt, setVehicleHudPrompt] = useState<string | null>(null);
   const [showDebugColliders, setShowDebugColliders] = useState(false);
   const [showTouchOverlay, setShowTouchOverlay] = useState(() => Boolean(touchControls?.enabledByDefault));
   const [showDebugger, setShowDebugger] = useState(false);
@@ -268,6 +283,21 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     objectCount: scene.objects.length,
     varsList: [] as Array<[string, string]>,
     runtimeLogs: [] as string[],
+  });
+  const [streamingHud, setStreamingHud] = useState<{
+    enabled: boolean;
+    loadedChunks: number;
+    hlodActive: number;
+    residentAssets: number;
+    residentMB: number;
+    unloadedAssets: number;
+  }>({
+    enabled: false,
+    loadedChunks: 0,
+    hlodActive: 0,
+    residentAssets: 0,
+    residentMB: 0,
+    unloadedAssets: 0,
   });
   const [mpStatus, setMpStatus] = useState<{ connected: boolean; roomId: string; playerCount: number }>({
     connected: false,
@@ -382,6 +412,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     sceneList,
     prefabs,
     scripts,
+    plugins,
     stage,
     assetBlobs,
     variables,
@@ -396,6 +427,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     sceneList,
     prefabs,
     scripts,
+    plugins,
     stage,
     assetBlobs,
     variables,
@@ -777,6 +809,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       variables: snap.variables,
       prefabs: snap.prefabs,
       scripts: snap.scripts,
+      plugins: snap.plugins,
       stage: snap.stage,
       storageAdapter,
     });
@@ -1106,12 +1139,29 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     setHostSize({ w: width0, h: height0 });
 
     const disposer = new ResourceDisposer();
+    const probeCanvas = document.createElement('canvas');
+    const probeGl =
+      probeCanvas.getContext('webgl2') || probeCanvas.getContext('webgl');
+    let isSoftwareProbe = false;
+    try {
+      const dbg = probeGl?.getExtension('WEBGL_debug_renderer_info');
+      if (probeGl && dbg) {
+        const rStr = String(probeGl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) ?? '').toLowerCase();
+        isSoftwareProbe =
+          rStr.includes('swiftshader') || rStr.includes('llvmpipe') || rStr.includes('software');
+      }
+    } catch {
+      isSoftwareProbe = false;
+    }
+    const initPerf =
+      (sceneList.find((s) => s.id === startId) ?? sceneList[0])?.performanceProfile ??
+      'balanced_60';
     const webgl = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !isSoftwareProbe && initPerf !== 'ultra_fast',
       powerPreference: 'high-performance',
     });
-    const software = detectSoftwareWebGL(webgl);
-    webgl.setPixelRatio(software ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    const software = detectSoftwareWebGL(webgl) || isSoftwareProbe;
+    webgl.setPixelRatio(software ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
     webgl.setSize(width0, height0);
     webgl.outputColorSpace = THREE.SRGBColorSpace;
     webgl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -1242,7 +1292,120 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       { nodes: THREE.Mesh[]; lines?: THREE.LineSegments }
     >();
     const vehicleWheelVisuals = new Map<string, THREE.Mesh[]>();
-    const hlodProxyVisuals = new Map<string, THREE.Mesh>();
+    const hlodProxyVisuals = new Map<string, BuiltHlodVisual>();
+    const assetStreamer = new AssetStreamingManager({ unloadGraceFrames: 18 });
+    type StreamTexSlot = 'map' | 'normalMap' | 'roughnessMap' | 'metalnessMap' | 'emissiveMap' | 'aoMap';
+    const streamedTexTargets = new Map<
+      string,
+      Array<{
+        mat: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial;
+        slot: StreamTexSlot;
+        isColor: boolean;
+      }>
+    >();
+    const streamedGlbTargets = new Map<
+      string,
+      Array<{
+        obj: GameObjectData;
+        objState: ReturnType<typeof createSimulation3DState>['objects'][number];
+        holder: THREE.Group;
+        addPreviewColWireframe: (targetObj: GameObjectData, loadedGroup?: THREE.Object3D) => void;
+      }>
+    >();
+    const cachedWaterObjs: Array<ReturnType<typeof createSimulation3DState>['objects'][number]> = [];
+    let lastAssetSyncChunkGen = -1;
+    let lastStreamingHudSig = '';
+    let sceneTargetMaxDpr = 1.5;
+    let activeAdaptiveDpr = 1.5;
+    let adaptiveQualityEnabled = false;
+    let lowFpsStreak = 0;
+    let highFpsStreak = 0;
+    const assetStreamerHooks = {
+      getAssetInfo: (assetId: string) => {
+        const blob = assetBlobs.get(assetId);
+        const isModel = streamedGlbTargets.has(assetId);
+        return {
+          kind: isModel ? ('model3d' as const) : ('texture' as const),
+          bytes: blob?.size ?? (isModel ? 650_000 : 262_144),
+        };
+      },
+      onLoadAsset: async (assetId: string) => {
+        const blob = assetBlobs.get(assetId);
+        if (!blob) return;
+        const cleanups: Array<() => void> = [];
+
+        const texTargets = streamedTexTargets.get(assetId);
+        if (texTargets && texTargets.length > 0) {
+          const url = URL.createObjectURL(blob);
+          try {
+            const loadedTex = await new Promise<THREE.Texture>((resolve, reject) => {
+              textureLoader.load(
+                url,
+                (t) => resolve(t),
+                undefined,
+                (err) => reject(err)
+              );
+            });
+            URL.revokeObjectURL(url);
+            if (texTargets.some((tg) => tg.isColor)) {
+              loadedTex.colorSpace = THREE.SRGBColorSpace;
+            }
+            for (const tg of texTargets) {
+              tg.mat[tg.slot] = loadedTex;
+              if (tg.slot === 'aoMap') tg.mat.aoMapIntensity = 0.9;
+              tg.mat.needsUpdate = true;
+            }
+            cleanups.push(() => {
+              for (const tg of texTargets) {
+                if (tg.mat[tg.slot] === loadedTex) {
+                  tg.mat[tg.slot] = null;
+                  tg.mat.needsUpdate = true;
+                }
+              }
+              loadedTex.dispose();
+            });
+          } catch {
+            URL.revokeObjectURL(url);
+          }
+        }
+
+        const glbTargets = streamedGlbTargets.get(assetId);
+        if (glbTargets && glbTargets.length > 0) {
+          for (const gt of glbTargets) {
+            const hyd = gt.holder.userData.hydrateGlb as
+              | ((b: Blob) => Promise<(() => void) | void>)
+              | undefined;
+            if (hyd) {
+              const fn = await hyd(blob);
+              if (typeof fn === 'function') cleanups.push(fn);
+            }
+          }
+        }
+
+        return () => {
+          for (const c of cleanups) c();
+        };
+      },
+    };
+    const disposeObject3DTree = (root: THREE.Object3D) => {
+      root.traverse((node) => {
+        const m = node as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) {
+          const mats = Array.isArray(m.material) ? m.material : [m.material];
+          for (const mat of mats) {
+            const rec = mat as unknown as Record<string, unknown>;
+            for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'alphaMap', 'aoMap']) {
+              const t = rec[k];
+              if (t && typeof (t as THREE.Texture).dispose === 'function') {
+                (t as THREE.Texture).dispose();
+              }
+            }
+            mat.dispose();
+          }
+        }
+      });
+    };
 
     // Pool de anillos de ondas en agua (zero-GC) + estelas Ribbon Trail
     const ripplePool = createRippleRingPool(24);
@@ -1328,7 +1491,18 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     const buildThreeWorldForScene = (targetScene: SceneData) => {
       const perfProfile = targetScene.performanceProfile ?? 'balanced_60';
       const maxDpr = perfProfile === 'ultra_fast' ? 1 : perfProfile === 'high_quality' ? 2 : 1.5;
-      webgl.setPixelRatio(software ? 1 : Math.min(window.devicePixelRatio || 1, maxDpr));
+      sceneTargetMaxDpr = software ? 1 : Math.min(window.devicePixelRatio || 1, maxDpr);
+      activeAdaptiveDpr = sceneTargetMaxDpr;
+      adaptiveQualityEnabled =
+        perfProfile === 'balanced_60' ||
+        targetScene.objects.some((o) =>
+          o.components.some((c) => c.enabled && c.type === 'portal.adaptive_quality')
+        );
+      lowFpsStreak = 0;
+      highFpsStreak = 0;
+      lastAssetSyncChunkGen = -1;
+      lastStreamingHudSig = '';
+      webgl.setPixelRatio(sceneTargetMaxDpr);
 
       // Limpiar mundo anterior sin destruir renderer
       while (worldGroup.children.length > 0) {
@@ -1349,7 +1523,14 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       activeFoliageUniforms.length = 0;
       softBodyVisuals.clear();
       vehicleWheelVisuals.clear();
+      for (const hv of hlodProxyVisuals.values()) {
+        worldGroup.remove(hv.group);
+        hv.dispose();
+      }
       hlodProxyVisuals.clear();
+      assetStreamer.disposeAll();
+      streamedTexTargets.clear();
+      streamedGlbTargets.clear();
       wakeTrails.clear();
       for (const rm of rippleMeshes) rm.visible = false;
       for (const r of ripplePool) r.active = false;
@@ -1560,9 +1741,16 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           uiControl: (op, target) => applyUiCommand(op, target, targetScene.objects),
           startDialogue: (dialogueId) => openDialogueById(dialogueId),
           setLocale: (loc) => setActiveLocale(loc),
-        }
+        },
+        runtimePropsRef.current.plugins
       );
       sim3dRef.current = sim3d;
+      cachedWaterObjs.length = 0;
+      for (const stObj of sim3d.objects) {
+        if (stObj.source.type === 'mesh_3d' && stObj.source.mesh3d?.shape === 'water' && stObj.source.mesh3d.waterConfig) {
+          cachedWaterObjs.push(stObj);
+        }
+      }
 
       const initH = new Set<string>();
       for (const o of targetScene.objects) {
@@ -1753,40 +1941,56 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               collidersGroup3d.add(wire);
             };
             addPreviewColWireframe(obj);
-            const blob = assetBlobs.get(m3.glbAssetId);
-            if (blob) {
-              void loadModel3DFromBlob(blob, undefined, { normalizeSize: 1.0 })
+            const hydrateGlbForHolder = (
+              targetObj: GameObjectData,
+              targetState: typeof objState,
+              holder: THREE.Group,
+              blob: Blob
+            ): Promise<(() => void) | void> => {
+              let cancelled = false;
+              let mountedRoot: THREE.Object3D | null = null;
+              let mountedLodRoot: THREE.Object3D | null = null;
+              return loadModel3DFromBlob(blob, undefined, { normalizeSize: 1.0 })
                 .then((loaded) => {
+                  if (cancelled) {
+                    disposeObject3DTree(loaded.root);
+                    return;
+                  }
                   loaded.root.traverse((child) => {
                     if ((child as THREE.Mesh).isMesh) {
                       const cm = child as THREE.Mesh;
                       cm.castShadow = m3.castShadow && !software;
                       cm.receiveShadow = m3.receiveShadow && !software;
-                      cm.frustumCulled = obj.optimization?.frustumCulling ?? true;
-                      cm.userData.objectId = obj.id;
+                      cm.frustumCulled = targetObj.optimization?.frustumCulling ?? true;
+                      cm.userData.objectId = targetObj.id;
                     }
                   });
                   if (loaded.stats.meshes === 0 && loaded.stats.bones > 0) {
                     const skel = new THREE.SkeletonHelper(loaded.root);
-                    glbHolder.add(skel);
+                    holder.add(skel);
                   }
-                  glbHolder.add(loaded.root);
-                  loadedRoots.set(obj.id, loaded.root);
-                  // Cargar malla LOD real si está configurada
-                  if (obj.optimization?.lodEnabled && obj.optimization.lodAssetId) {
-                    const lodBlob = assetBlobs.get(obj.optimization.lodAssetId);
+                  holder.add(loaded.root);
+                  mountedRoot = loaded.root;
+                  loadedRoots.set(targetObj.id, loaded.root);
+                  if (targetObj.optimization?.lodEnabled && targetObj.optimization.lodAssetId) {
+                    const lodBlob = assetBlobs.get(targetObj.optimization.lodAssetId);
                     if (lodBlob) {
                       void loadModel3DFromBlob(lodBlob, undefined, { normalizeSize: 1.0 })
                         .then((lodRes) => {
+                          if (cancelled) {
+                            disposeObject3DTree(lodRes.root);
+                            return;
+                          }
                           lodRes.root.visible = false;
                           lodRes.root.traverse((ch) => {
-                            if ((ch as THREE.Mesh).isMesh) ch.userData.objectId = obj.id;
+                            if ((ch as THREE.Mesh).isMesh) ch.userData.objectId = targetObj.id;
                           });
-                          glbHolder.add(lodRes.root);
-                          lodBindings.set(obj.id, {
+                          holder.add(lodRes.root);
+                          mountedLodRoot = lodRes.root;
+                          lodBindings.set(targetObj.id, {
                             high: loaded.root,
                             low: lodRes.root,
-                            dist: Math.max(5, obj.optimization?.lodDistance ?? 35),
+                            dist: Math.max(5, targetObj.optimization?.lodDistance ?? 35),
                             usingLow: false,
                           });
                         })
@@ -1794,27 +1998,27 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                     }
                   }
                   const needsExactOrCamTri =
-                    obj.physics3d?.shape === 'mesh_exact' ||
+                    targetObj.physics3d?.shape === 'mesh_exact' ||
                     m3.shape === 'arch' ||
-                    ((obj.physics3d?.bodyType ?? 'static') !== 'dynamic' &&
-                      obj.physics3d?.cameraCollision !== 'never');
+                    ((targetObj.physics3d?.bodyType ?? 'static') !== 'dynamic' &&
+                      targetObj.physics3d?.cameraCollision !== 'never');
                   if (needsExactOrCamTri) {
-                    glbHolder.position.set(objState.t3.x, objState.t3.y, objState.t3.z);
-                    glbHolder.rotation.set(
-                      THREE.MathUtils.degToRad(objState.t3.rx),
-                      THREE.MathUtils.degToRad(objState.t3.ry),
-                      THREE.MathUtils.degToRad(objState.t3.rz)
+                    holder.position.set(targetState.t3.x, targetState.t3.y, targetState.t3.z);
+                    holder.rotation.set(
+                      THREE.MathUtils.degToRad(targetState.t3.rx),
+                      THREE.MathUtils.degToRad(targetState.t3.ry),
+                      THREE.MathUtils.degToRad(targetState.t3.rz)
                     );
-                    glbHolder.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
-                    sim3d.registerObjectTrimesh(obj.id, extractWorldTrimeshFromObject3D(glbHolder));
-                    if (obj.physics3d?.shape === 'mesh_exact' || m3.shape === 'arch') {
-                      addPreviewColWireframe(obj, glbHolder);
+                    holder.scale.set(targetState.t3.sx, targetState.t3.sy, targetState.t3.sz);
+                    sim3d.registerObjectTrimesh(targetObj.id, extractWorldTrimeshFromObject3D(holder));
+                    if (targetObj.physics3d?.shape === 'mesh_exact' || m3.shape === 'arch') {
+                      addPreviewColWireframe(targetObj, holder);
                     }
                   }
 
                   const stateAssetIds = Array.from(
                     new Set(
-                      (obj.animStateMachine?.states ?? [])
+                      (targetObj.animStateMachine?.states ?? [])
                         .map((st) => st.assetId)
                         .filter((id): id is string => Boolean(id && id !== m3.glbAssetId))
                     )
@@ -1853,13 +2057,13 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                       return undefined;
                     };
 
-                    const initKey = `${objState.activeAnimAssetId ?? ''}:${objState.activeClip || loaded.animations[0]?.name || ''}`;
+                    const initKey = `${targetState.activeAnimAssetId ?? ''}:${targetState.activeClip || loaded.animations[0]?.name || ''}`;
                     const initAct =
-                      resolveAction(objState.activeAnimAssetId, objState.activeClip) ??
+                      resolveAction(targetState.activeAnimAssetId, targetState.activeClip) ??
                       (loaded.animations[0] ? actionMap.get(loaded.animations[0].name) : undefined);
                     if (initAct) {
-                      applyLoopModeToAction(initAct, objState.animLoopMode);
-                      initAct.timeScale = objState.animTimeScale ?? 1;
+                      applyLoopModeToAction(initAct, targetState.animLoopMode);
+                      initAct.timeScale = targetState.animTimeScale ?? 1;
                       initAct.reset().play();
                     }
 
@@ -1869,14 +2073,14 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                       activeActionKey: initAct ? initKey : null,
                       activeAction: initAct ?? null,
                     };
-                    mixerMap.set(obj.id, mixerEntry);
+                    mixerMap.set(targetObj.id, mixerEntry);
 
-                    // Cargar clips adicionales desde otros archivos .glb / .gltf / .fbx asignados a estados
                     for (const extraId of stateAssetIds) {
                       const extraBlob = assetBlobs.get(extraId);
                       if (!extraBlob) continue;
                       void loadModel3DFromBlob(extraBlob, undefined, { normalizeSize: false })
                         .then((extraLoaded) => {
+                          if (cancelled) return;
                           for (const rawClip of extraLoaded.animations) {
                             const clip = retargetClipForRoot(rawClip, loaded.root);
                             const act = mixer.clipAction(clip);
@@ -1888,15 +2092,53 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                               actionMap.set(`__asset_first__:${extraId}`, act);
                             }
                           }
-                          if (objState.activeAnimAssetId === extraId) {
+                          if (targetState.activeAnimAssetId === extraId) {
                             mixerEntry.activeActionKey = null;
                           }
                         })
                         .catch(() => {});
                     }
                   }
+                  return () => {
+                    cancelled = true;
+                    const mx = mixerMap.get(targetObj.id);
+                    if (mx) {
+                      mx.mixer.stopAllAction();
+                      mixerMap.delete(targetObj.id);
+                    }
+                    lodBindings.delete(targetObj.id);
+                    loadedRoots.delete(targetObj.id);
+                    if (mountedRoot) {
+                      holder.remove(mountedRoot);
+                      disposeObject3DTree(mountedRoot);
+                      mountedRoot = null;
+                    }
+                    if (mountedLodRoot) {
+                      holder.remove(mountedLodRoot);
+                      disposeObject3DTree(mountedLodRoot);
+                      mountedLodRoot = null;
+                    }
+                    while (holder.children.length > 0) {
+                      const rem = holder.children[0];
+                      holder.remove(rem);
+                      disposeObject3DTree(rem);
+                    }
+                  };
                 })
                 .catch(() => {});
+            };
+
+            if (targetScene.worldStreaming?.enabled) {
+              const list = streamedGlbTargets.get(m3.glbAssetId) ?? [];
+              list.push({ obj, objState, holder: glbHolder, addPreviewColWireframe });
+              streamedGlbTargets.set(m3.glbAssetId, list);
+              glbHolder.userData.hydrateGlb = (b: Blob) =>
+                hydrateGlbForHolder(obj, objState, glbHolder, b);
+            } else {
+              const blob = assetBlobs.get(m3.glbAssetId);
+              if (blob) {
+                void hydrateGlbForHolder(obj, objState, glbHolder, blob);
+              }
             }
             nodeMap3d.set(obj.id, glbHolder);
             meshBindings.set(obj.id, glbHolder);
@@ -1931,12 +2173,19 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                 })
               : new THREE.MeshStandardMaterial(matParams);
 
-            const bindAsyncTex = (
+            const registerOrBindTex = (
               assetId: string | null | undefined,
+              slot: StreamTexSlot,
               isColor: boolean,
               assign: (tex: THREE.Texture) => void
             ) => {
               if (!assetId) return;
+              if (targetScene.worldStreaming?.enabled) {
+                const list = streamedTexTargets.get(assetId) ?? [];
+                list.push({ mat, slot, isColor });
+                streamedTexTargets.set(assetId, list);
+                return;
+              }
               const blob = assetBlobs.get(assetId);
               if (!blob) return;
               const url = URL.createObjectURL(blob);
@@ -1950,7 +2199,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
             };
 
             if (m3.textureAssetId) {
-              bindAsyncTex(m3.textureAssetId, true, (tex) => { mat.map = tex; });
+              registerOrBindTex(m3.textureAssetId, 'map', true, (tex) => { mat.map = tex; });
             } else if (m3.shape === 'plane') {
               const gridTex = createGroundGridTexture(m3.color || '#334155');
               if (gridTex) {
@@ -1959,15 +2208,15 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                 disposer.trackTexture(gridTex);
               }
             }
-            bindAsyncTex(m3.normalAssetId, false, (tex) => { mat.normalMap = tex; });
-            bindAsyncTex(m3.roughnessAssetId, false, (tex) => { mat.roughnessMap = tex; });
-            bindAsyncTex(m3.metalnessAssetId, false, (tex) => { mat.metalnessMap = tex; });
-            bindAsyncTex(m3.emissiveAssetId, true, (tex) => { mat.emissiveMap = tex; });
+            registerOrBindTex(m3.normalAssetId, 'normalMap', false, (tex) => { mat.normalMap = tex; });
+            registerOrBindTex(m3.roughnessAssetId, 'roughnessMap', false, (tex) => { mat.roughnessMap = tex; });
+            registerOrBindTex(m3.metalnessAssetId, 'metalnessMap', false, (tex) => { mat.metalnessMap = tex; });
+            registerOrBindTex(m3.emissiveAssetId, 'emissiveMap', true, (tex) => { mat.emissiveMap = tex; });
             if (m3.aoAssetId) {
               if (geom.attributes.uv && !geom.attributes.uv2) {
                 geom.setAttribute('uv2', geom.attributes.uv);
               }
-              bindAsyncTex(m3.aoAssetId, false, (tex) => {
+              registerOrBindTex(m3.aoAssetId, 'aoMap', false, (tex) => {
                 mat.aoMap = tex;
                 mat.aoMapIntensity = 0.9;
               });
@@ -2094,7 +2343,14 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
         const kind = vCfg?.vehicleKind ?? 'car';
         const parts = vCfg?.parts;
         if (parts) {
-          for (const partId of [parts.wheelFL, parts.wheelFR, parts.wheelRL, parts.wheelRR, parts.propellerId]) {
+          for (const partId of [
+            parts.wheelFL,
+            parts.wheelFR,
+            parts.wheelRL,
+            parts.wheelRR,
+            parts.propellerId,
+            parts.tailRotorId,
+          ]) {
             if (!partId) continue;
             const partNode = nodeMap3d.get(partId);
             if (partNode) partNode.userData.vehicleAnimatedPart = true;
@@ -2102,8 +2358,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
         }
         // Solo crear ruedas procedurales de respaldo si es auto/moto sin hijos de rueda asignados
         if ((kind === 'car' || kind === 'moto') && !parts?.wheelFL) {
-          const wRadius = vCfg?.wheelRadius ?? 0.42;
-          const wGeo = disposer.trackGeometry(new THREE.CylinderGeometry(wRadius, wRadius, 0.28, 12));
+          const wRadius = Math.max(0.18, vCfg?.wheelRadius ?? 0.42);
+          const wWidth = Math.max(0.12, vCfg?.wheelWidth ?? (kind === 'moto' ? 0.22 : 0.3));
+          const wGeo = disposer.trackGeometry(new THREE.CylinderGeometry(wRadius, wRadius, wWidth, 12));
           wGeo.rotateZ(Math.PI / 2);
           const wMat = disposer.trackMaterial(
             new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.85, metalness: 0.15 })
@@ -2304,7 +2561,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
         if (jumpPressedNow) heldKeys.add('Space');
         else if (!kbHeldKeys.has('Space')) heldKeys.delete('Space');
 
-        if (touchBtnsRef.current.action || pad.action) justPressedKeys.add('KeyE');
+        const actionNow = touchBtnsRef.current.action || pad.action;
+        if (actionNow && !touchBtnsRef.current.prevAction) justPressedKeys.add('KeyE');
+        touchBtnsRef.current.prevAction = actionNow;
         const dashNow = touchBtnsRef.current.dash || pad.dash;
         if (dashNow && !touchBtnsRef.current.prevDash) justPressedKeys.add('ShiftLeft');
         touchBtnsRef.current.prevDash = dashNow;
@@ -2431,10 +2690,8 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           }
         }
 
-        const waterObjs = sim3d.objects.filter(
-          (o) => o.visible && o.source.type === 'mesh_3d' && o.source.mesh3d?.shape === 'water' && o.source.mesh3d.waterConfig
-        );
-        for (const wObj of waterObjs) {
+        for (const wObj of cachedWaterObjs) {
+          if (!wObj.visible) continue;
           const wCfg = wObj.source.mesh3d!.waterConfig!;
           if (wCfg.enableWakeTrail === false) continue;
           const targetIds = new Set<string>(wCfg.interactingEntities ?? []);
@@ -2488,22 +2745,29 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               const w = vState.wheels[idxMap[i] ?? i];
               const wm = wMeshes[i];
               wm.position.set(w.worldX, w.worldY, w.worldZ);
-              wm.rotation.set(w.spinRad, vState.yawRad - w.steerAngleRad, 0, 'YXZ');
+              wm.rotation.set(w.spinRad, vState.yawRad - w.steerAngleRad, vState.rollRad, 'YZX');
             }
           }
           if (parts) {
             const partIds = [parts.wheelFL, parts.wheelFR, parts.wheelRL, parts.wheelRR];
+            const restLen = Math.max(0.2, vObj?.source.vehicle?.suspensionRestLen ?? 0.65);
+            const cosP = Math.cos(vState.pitchRad);
+            const sinP = Math.sin(vState.pitchRad);
+            const cosR = Math.cos(vState.rollRad);
+            const sinR = Math.sin(vState.rollRad);
+            const cosTilt = Math.max(0.35, cosR * cosP);
+            const minLocalY = -(restLen * 1.45 + 0.35);
+            const maxLocalY = restLen * 0.45 + 0.35;
             partIds.forEach((pid, idx) => {
               if (!pid) return;
               const pNode = meshBindings.get(pid);
               const pState = sim3d.objects.find((o) => o.id === pid);
               const w = vState.wheels[idx];
               if (pNode && pState && w) {
-                pNode.position.set(
-                  pState.t3.x,
-                  pState.t3.y + w.compression * 0.28,
-                  pState.t3.z
-                );
+                const targetLocalY =
+                  (w.worldY - vState.y - pState.t3.x * sinR * cosP + pState.t3.z * sinP) / cosTilt;
+                const clampedLocalY = Math.max(minLocalY, Math.min(maxLocalY, targetLocalY));
+                pNode.position.set(pState.t3.x, clampedLocalY, pState.t3.z);
                 wBaseEuler.set(
                   THREE.MathUtils.degToRad(pState.t3.rx),
                   THREE.MathUtils.degToRad(pState.t3.ry),
@@ -2520,10 +2784,31 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               const propNode = meshBindings.get(parts.propellerId);
               const propState = sim3d.objects.find((o) => o.id === parts.propellerId);
               if (propNode && propState) {
-                propNode.rotation.set(
-                  THREE.MathUtils.degToRad(propState.t3.rx),
-                  THREE.MathUtils.degToRad(propState.t3.ry),
-                  vState.propellerSpinRad,
+                if (vObj?.source.vehicle?.vehicleKind === 'helicopter') {
+                  propNode.rotation.set(
+                    THREE.MathUtils.degToRad(propState.t3.rx),
+                    vState.propellerSpinRad,
+                    THREE.MathUtils.degToRad(propState.t3.rz),
+                    'YXZ'
+                  );
+                } else {
+                  propNode.rotation.set(
+                    THREE.MathUtils.degToRad(propState.t3.rx),
+                    THREE.MathUtils.degToRad(propState.t3.ry),
+                    vState.propellerSpinRad,
+                    'XYZ'
+                  );
+                }
+              }
+            }
+            if (parts.tailRotorId) {
+              const tailNode = meshBindings.get(parts.tailRotorId);
+              const tailState = sim3d.objects.find((o) => o.id === parts.tailRotorId);
+              if (tailNode && tailState) {
+                tailNode.rotation.set(
+                  vState.propellerSpinRad * 2.1,
+                  THREE.MathUtils.degToRad(tailState.t3.ry),
+                  THREE.MathUtils.degToRad(tailState.t3.rz),
                   'XYZ'
                 );
               }
@@ -2606,40 +2891,64 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           }
         }
 
-        // Sincronizar mallas 3D, WorldStreaming (HLOD / Actividad / Oclusión), optimización y mixers
+        // Sincronizar mallas 3D, WorldStreaming (Streaming Real de Assets + HLOD Combinado/Impostors + Oclusión), optimización y mixers
         const stState = sim3d.getStreamingState();
+        const stManifest = sim3d.getChunkManifest();
         const streamingOn = Boolean(currentScene3d.worldStreaming?.enabled && stState);
+        if (streamingOn && stState && stManifest) {
+          const chunkGen = stState.totalLoads + stState.totalUnloads;
+          if (chunkGen !== lastAssetSyncChunkGen || assetStreamer.hasPendingWork()) {
+            lastAssetSyncChunkGen = chunkGen;
+            const sCfg = resolveStreamingConfig(currentScene3d.worldStreaming);
+            const limits = getBudgetLimitsForProfile(sCfg.budgetProfile, sCfg.customBudgets);
+            assetStreamer.syncChunks(
+              currentScene3d,
+              stManifest,
+              stState,
+              assetStreamerHooks,
+              {
+                maxAssetLoadsPerFrame: Math.max(2, sCfg.maxLoadsPerFrame * 2),
+                budgetLimits: limits,
+              }
+            );
+          }
+        }
+
         if (streamingOn && stState && currentScene3d.worldStreaming?.enableHlod !== false) {
+          const farLimit = currentScene3d.worldStreaming?.farProxyRadius ?? 340;
           for (const [cKey, proxy] of stState.hlodProxies.entries()) {
-            let pMesh = hlodProxyVisuals.get(cKey);
-            if (!pMesh) {
-              const pGeo = disposer.trackGeometry(
-                new THREE.BoxGeometry(proxy.width, proxy.height, proxy.depth)
-              );
-              const pMat = disposer.trackMaterial(
-                new THREE.MeshStandardMaterial({
-                  color: new THREE.Color(proxy.color || '#64748b'),
-                  roughness: 0.85,
-                  metalness: 0.05,
-                })
-              );
-              pMesh = new THREE.Mesh(pGeo, pMat);
-              pMesh.position.set(proxy.centerX, proxy.centerY, proxy.centerZ);
-              pMesh.visible = false;
-              worldGroup.add(pMesh);
-              hlodProxyVisuals.set(cKey, pMesh);
-            }
             const loadedChunk = stState.loaded.get(cKey);
             const distToProxy = Math.hypot(proxy.centerX - camPos.posX, proxy.centerZ - camPos.posZ);
-            const farLimit = currentScene3d.worldStreaming?.farProxyRadius ?? 340;
-            pMesh.visible = !loadedChunk && distToProxy <= farLimit;
+            const shouldShow = !loadedChunk && distToProxy <= farLimit;
+            let pVis = hlodProxyVisuals.get(cKey);
+            if (!shouldShow && distToProxy > farLimit * 1.15 && pVis) {
+              worldGroup.remove(pVis.group);
+              pVis.dispose();
+              hlodProxyVisuals.delete(cKey);
+              continue;
+            }
+            if (shouldShow && !pVis) {
+              pVis = buildHlodProxyVisual(proxy);
+              worldGroup.add(pVis.group);
+              hlodProxyVisuals.set(cKey, pVis);
+            }
+            if (pVis) {
+              pVis.group.visible = shouldShow;
+              if (shouldShow && pVis.billboardMesh) {
+                pVis.billboardMesh.rotation.y = Math.atan2(
+                  camPos.posX - proxy.centerX,
+                  camPos.posZ - proxy.centerZ
+                );
+              }
+            }
           }
-        } else {
-          for (const pMesh of hlodProxyVisuals.values()) pMesh.visible = false;
+        } else if (hlodProxyVisuals.size > 0) {
+          for (const pVis of hlodProxyVisuals.values()) pVis.group.visible = false;
         }
 
         for (const objState of sim3d.objects) {
           const mesh = meshBindings.get(objState.id);
+          let objShown = objState.visible;
           if (mesh) {
             let showObj = objState.visible;
             if (showObj && streamingOn && stState) {
@@ -2657,7 +2966,8 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               const dy = objState.t3.y - camPos.posY;
               const dz = objState.t3.z - camPos.posZ;
               const dist = Math.hypot(dx, dy, dz);
-              if (opt.lodEnabled && opt.lodDistance && dist > opt.lodDistance * 2.2) {
+              const cullD = opt.cullDistance || (opt.lodEnabled && opt.lodDistance ? opt.lodDistance * 2.2 : 0);
+              if (cullD > 0 && dist > cullD) {
                 showObj = false;
               } else {
                 if (lodEntry) {
@@ -2691,27 +3001,34 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               }
             }
             mesh.visible = showObj;
-            if (mesh.userData.vehicleAnimatedPart) {
-              mesh.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
-            } else if (!mesh.userData.boneAttached) {
-              mesh.position.set(objState.t3.x, objState.t3.y, objState.t3.z);
-              mesh.rotation.set(
-                THREE.MathUtils.degToRad(objState.t3.rx),
-                THREE.MathUtils.degToRad(objState.t3.ry),
-                THREE.MathUtils.degToRad(objState.t3.rz)
-              );
-              mesh.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
-            } else {
-              const sock = objState.source.boneSocket;
-              if (sock) {
-                mesh.position.set(sock.offsetX ?? 0, sock.offsetY ?? 0, sock.offsetZ ?? 0);
+            objShown = showObj;
+            if (showObj) {
+              if (mesh.userData.vehicleAnimatedPart) {
+                mesh.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
+              } else if (!mesh.userData.boneAttached) {
+                mesh.position.set(objState.t3.x, objState.t3.y, objState.t3.z);
+                const useYxzOrder =
+                  Boolean(objState.source.vehicle?.enabled) ||
+                  sim3d.getMountedActorId?.() === objState.id;
                 mesh.rotation.set(
-                  THREE.MathUtils.degToRad(sock.rotX ?? 0),
-                  THREE.MathUtils.degToRad(sock.rotY ?? 0),
-                  THREE.MathUtils.degToRad(sock.rotZ ?? 0)
+                  THREE.MathUtils.degToRad(objState.t3.rx),
+                  THREE.MathUtils.degToRad(objState.t3.ry),
+                  THREE.MathUtils.degToRad(objState.t3.rz),
+                  useYxzOrder ? 'YXZ' : 'XYZ'
                 );
+                mesh.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
+              } else {
+                const sock = objState.source.boneSocket;
+                if (sock) {
+                  mesh.position.set(sock.offsetX ?? 0, sock.offsetY ?? 0, sock.offsetZ ?? 0);
+                  mesh.rotation.set(
+                    THREE.MathUtils.degToRad(sock.rotX ?? 0),
+                    THREE.MathUtils.degToRad(sock.rotY ?? 0),
+                    THREE.MathUtils.degToRad(sock.rotZ ?? 0)
+                  );
+                }
+                mesh.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
               }
-              mesh.scale.set(objState.t3.sx, objState.t3.sy, objState.t3.sz);
             }
           }
           if (collidersGroup3d.visible) {
@@ -2724,7 +3041,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                   THREE.MathUtils.degToRad(objState.t3.rx),
                   THREE.MathUtils.degToRad(objState.t3.ry),
                   THREE.MathUtils.degToRad(objState.t3.rz),
-                  'XYZ'
+                  objState.source.vehicle?.enabled || sim3d.getMountedActorId?.() === objState.id ? 'YXZ' : 'XYZ'
                 );
                 scratchVec.set(off.x, off.y, off.z).applyEuler(scratchEuler);
                 cNode.position.set(
@@ -2757,7 +3074,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               }
             }
           }
-          const mixerInfo = mixerMap.get(objState.id);
+          const mixerInfo = objShown ? mixerMap.get(objState.id) : undefined;
           if (mixerInfo) {
             const desiredKey = `${objState.activeAnimAssetId ?? ''}:${objState.activeClip}`;
             if ((objState.activeClip || objState.activeAnimAssetId) && desiredKey !== mixerInfo.activeActionKey) {
@@ -2932,6 +3249,54 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           setScriptOverlayUi({ toasts: [...uiOv.toasts], widgets: [...uiOv.widgets] });
         }
 
+        if (!software && adaptiveQualityEnabled) {
+          if (fpsVal < 48) {
+            lowFpsStreak += 1;
+            highFpsStreak = 0;
+            if (lowFpsStreak >= 4 && activeAdaptiveDpr > 1) {
+              lowFpsStreak = 0;
+              activeAdaptiveDpr = Math.max(1, Number((activeAdaptiveDpr - 0.25).toFixed(2)));
+              webgl.setPixelRatio(activeAdaptiveDpr);
+            }
+          } else if (fpsVal >= 58) {
+            highFpsStreak += 1;
+            lowFpsStreak = 0;
+            if (highFpsStreak >= 12 && activeAdaptiveDpr < sceneTargetMaxDpr) {
+              highFpsStreak = 0;
+              activeAdaptiveDpr = Math.min(sceneTargetMaxDpr, Number((activeAdaptiveDpr + 0.25).toFixed(2)));
+              webgl.setPixelRatio(activeAdaptiveDpr);
+            }
+          } else {
+            lowFpsStreak = 0;
+            highFpsStreak = 0;
+          }
+        }
+
+        if (currentScene3d.worldStreaming?.enabled) {
+          const stNow = sim3d.getStreamingState();
+          const aStats = assetStreamer.getStats();
+          let hlodAct = 0;
+          for (const hv of hlodProxyVisuals.values()) {
+            if (hv.group.visible) hlodAct += 1;
+          }
+          const loadedChunks = stNow?.loaded.size ?? 0;
+          const sSig = `1|${loadedChunks}|${hlodAct}|${aStats.residentCount}|${aStats.residentMB}|${aStats.totalUnloads}`;
+          if (sSig !== lastStreamingHudSig) {
+            lastStreamingHudSig = sSig;
+            setStreamingHud({
+              enabled: true,
+              loadedChunks,
+              hlodActive: hlodAct,
+              residentAssets: aStats.residentCount,
+              residentMB: aStats.residentMB,
+              unloadedAssets: aStats.totalUnloads,
+            });
+          }
+        } else if (lastStreamingHudSig !== '0') {
+          lastStreamingHudSig = '0';
+          setStreamingHud((prev) => (prev.enabled ? { ...prev, enabled: false } : prev));
+        }
+
         if (showLiveInspectorRef.current) {
           setLiveObjectSnapshots(
             sim3d.objects.map((o) => ({
@@ -2953,6 +3318,66 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
             }))
           );
         }
+
+        const mountedVId = sim3d.getMountedVehicleId?.() ?? null;
+        let nextPrompt: string | null = null;
+        if (mountedVId) {
+          const mv = sim3d.objects.find((o) => o.id === mountedVId);
+          const vKindP = mv?.source.vehicle?.vehicleKind ?? 'car';
+          const vLabel = mv?.name ?? 'Vehículo';
+          if (vKindP === 'helicopter') {
+            nextPrompt = `[E] Bajar de ${vLabel} · Espacio/Shift Altura · W/S Inclinar · A/D/Q Virar`;
+          } else if (vKindP === 'horse') {
+            nextPrompt = `[E] Desmontar de ${vLabel} · W/S Galopar · A/D Girar · Espacio Saltar`;
+          } else if (vKindP === 'plane') {
+            nextPrompt = `[E] Bajar de ${vLabel} · W/S Empuje · A/D Alabeo · Q Virar`;
+          } else if (vKindP === 'spaceship') {
+            nextPrompt = `[E] Bajar de ${vLabel} · WASD Mover · Espacio/Shift Altura`;
+          } else if (vKindP === 'boat') {
+            nextPrompt = `[E] Bajar de ${vLabel} · WASD Navegar`;
+          } else {
+            nextPrompt = `[E] Bajar de ${vLabel} · W/S Acelerar · A/D Girar`;
+          }
+        } else {
+          const pAct = sim3d.objects.find(
+            (o) =>
+              o.visible &&
+              o.source.components.some(
+                (c) =>
+                  c.enabled &&
+                  (c.type === 'player_3d' ||
+                    c.type === 'player_platformer' ||
+                    c.type === 'player_topdown' ||
+                    c.type === 'movement.platformer_pro' ||
+                    c.type === 'movement.topdown_8dir')
+              )
+          );
+          if (pAct) {
+            let bestVeh: typeof pAct | null = null;
+            let bestD = Infinity;
+            for (const cand of sim3d.objects) {
+              if (
+                !cand.visible ||
+                cand.id === pAct.id ||
+                !cand.source.vehicle?.enabled ||
+                cand.source.vehicle.allowQuickEnterExit === false
+              ) {
+                continue;
+              }
+              const xz = Math.hypot(pAct.t3.x - cand.t3.x, pAct.t3.z - cand.t3.z);
+              if (xz <= 12 && xz < bestD) {
+                bestD = xz;
+                bestVeh = cand;
+              }
+            }
+            if (bestVeh) {
+              const vk = bestVeh.source.vehicle?.vehicleKind;
+              const verb = vk === 'horse' || vk === 'moto' ? 'Montar' : 'Subir a';
+              nextPrompt = `[E] ${verb} ${bestVeh.name}`;
+            }
+          }
+        }
+        setVehicleHudPrompt((prev) => (prev === nextPrompt ? prev : nextPrompt));
 
         const hudSig = `${score}|${currentScene3d.name}|${sim3d.objects.length}|${sim3d.logs.length}|${showDebuggerRef.current ? varsSig : ''}`;
         if (hudSig !== last3dHudSig) {
@@ -3007,6 +3432,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
       sim3dRef.current = null;
       switch3dSceneRef.current = null;
       restart3dSceneRef.current = null;
+      setVehicleHudPrompt(null);
     };
   }, [open, projectMode]);
 
@@ -3148,6 +3574,14 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           >
             {hudState.fps} FPS
           </span>
+          {streamingHud.enabled && (
+            <span
+              className="hidden lg:inline rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300"
+              title="Streaming de Chunks, Proxies HLOD y Residencia VRAM"
+            >
+              Chunks: {streamingHud.loadedChunks} · HLOD: {streamingHud.hlodActive} · Assets: {streamingHud.residentAssets} ({streamingHud.residentMB}MB · ↓{streamingHud.unloadedAssets})
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
@@ -3386,6 +3820,15 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               if (btn === 'dash') touchBtnsRef.current.dash = pressed;
             }}
           />
+
+          {projectMode === '3d' && vehicleHudPrompt && !activeDialogue && (
+            <div
+              data-testid="nexus-vehicle-hud-prompt"
+              className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-lg border border-white/15 bg-[#0e121b]/85 px-3.5 py-1.5 text-xs font-medium text-zinc-100 shadow-lg backdrop-blur"
+            >
+              {vehicleHudPrompt}
+            </div>
+          )}
 
           {/* Overlay de Diálogos Ramificados en Preview */}
           {activeDialogue && (

@@ -35,7 +35,7 @@ import type {
 } from '../../project/models/project';
 import { AudioMixerPanel } from './AudioMixerPanel';
 import { CodeStudioPanel } from './CodeStudioPanel';
-import { CommandBarPanel } from './CommandBarPanel';
+import { CommandBarPanel, type CommandBarDraftSignal } from './CommandBarPanel';
 import { DataI18nPanel } from './DataI18nPanel';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { DialogueEditorPanel } from './DialogueEditorPanel';
@@ -103,6 +103,7 @@ interface BottomDockProps {
   onCommitCommandResult?: (nextProject: NexusProject, createdIds: string[], summary: string) => void;
   onUpdateCommandHistory?: (next: CommandBarHistoryEntry[]) => void;
   onChangeSaveSlots?: (slots: ProjectSaveSlot[]) => void;
+  externalCommandDraft?: CommandBarDraftSignal | null;
 }
 
 export const BottomDock: React.FC<BottomDockProps> = ({
@@ -150,6 +151,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onCommitCommandResult,
   onUpdateCommandHistory,
   onChangeSaveSlots,
+  externalCommandDraft,
 }) => {
   const handleTabClick = (tab: DockTab) => {
     if (!open) {
@@ -462,6 +464,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               project={project}
               activeSceneId={activeScene?.id ?? project.activeSceneId}
               selectedIds={selectedIds}
+              externalCommandDraft={externalCommandDraft}
               onCommitCommandResult={onCommitCommandResult}
               onUpdateCommandHistory={onUpdateCommandHistory}
             />

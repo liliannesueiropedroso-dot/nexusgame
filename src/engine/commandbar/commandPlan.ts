@@ -1,16 +1,26 @@
 import type {
+  ActionType,
+  GameMechanic,
   GameObjectData,
   GameObjectType,
+  MechanicTriggerEvent,
   MemoryBudgetProfile,
   Mesh3DShape,
   ProjectVariable,
   SceneData,
+  SceneLightingConfig,
+  SmartCameraMode,
 } from '../core/types';
 import { createGameObject } from '../objects/factory';
 import { getBehaviorEntry } from '../components/behaviorRegistry';
+import {
+  extractScriptParamsSchema,
+  scanScriptSecurity,
+} from '../scripting/scriptRuntime';
 import type {
   CommandBarHistoryEntry,
   NexusProject,
+  NexusScriptAsset,
 } from '../../project/models/project';
 import { createId } from '../../utils/id';
 
@@ -70,6 +80,17 @@ export type CommandOp =
       targetRef: string;
     }
   | {
+      op: 'duplicate_object';
+      targetRef: string;
+      newName?: string;
+      x?: number;
+      y?: number;
+      z?: number;
+      dx?: number;
+      dy?: number;
+      dz?: number;
+    }
+  | {
       op: 'set_variable';
       name: string;
       value: number | boolean | string;
@@ -82,11 +103,53 @@ export type CommandOp =
       unloadRadius?: number;
       farProxyRadius?: number;
       budgetProfile?: MemoryBudgetProfile;
+    }
+  | {
+      op: 'add_mechanic';
+      name: string;
+      triggerEvent: MechanicTriggerEvent;
+      sourceRef?: string;
+      tag?: string;
+      key?: string;
+      intervalSec?: number;
+      variable?: string;
+      eventName?: string;
+      actionType: ActionType;
+      actionParams?: Record<string, unknown>;
+    }
+  | {
+      op: 'create_script';
+      name: string;
+      code: string;
+      targetRef?: string;
+      securityMode?: 'safe_sandbox' | 'trusted_js';
+    }
+  | {
+      op: 'set_lighting';
+      sunIntensity?: number;
+      ambientIntensity?: number;
+      fogEnabled?: boolean;
+      fogNear?: number;
+      fogFar?: number;
+      timeOfDay?: number;
+      dayCycleSpeed?: number;
+      dayNightEnabled?: boolean;
+      sunColor?: string;
+      ambientColor?: string;
+    }
+  | {
+      op: 'configure_camera';
+      targetRef?: string;
+      mode?: SmartCameraMode;
+      distance?: number;
+      fov?: number;
+      collideWithWalls?: boolean;
+      allowShoulderSwap?: boolean;
     };
 
 export interface CommandDiffEntry {
   kind: 'add' | 'modify' | 'delete';
-  scope: 'object' | 'variable' | 'scene';
+  scope: 'object' | 'variable' | 'scene' | 'mechanic' | 'script';
   targetId: string;
   targetLabel: string;
   before?: string;
@@ -143,6 +206,141 @@ const VALID_3D_SHAPES = new Set<Mesh3DShape>([
   'grass_field',
   'glb',
   'csg',
+]);
+
+const VALID_TRIGGER_EVENTS = new Set<MechanicTriggerEvent>([
+  'scene.start',
+  'scene.paused',
+  'tick',
+  'collision.enter',
+  'collision.stay',
+  'collision.exit',
+  'trigger.enter',
+  'trigger.exit',
+  'input.pressed',
+  'input.held',
+  'input.released',
+  'ui.click',
+  'mouse.clickGlobal',
+  'mouse.hold',
+  'mouse.release',
+  'touch.swipe',
+  'timer.elapsed',
+  'countdown.zero',
+  'variable.changed',
+  'health.zero',
+  'portal.adClosed',
+  'portal.rewarded',
+  'custom.event',
+]);
+
+const TRIGGER_EVENT_ALIASES: Record<string, MechanicTriggerEvent> = {
+  inicio: 'scene.start',
+  start: 'scene.start',
+  frame: 'tick',
+  update: 'tick',
+  cada_frame: 'tick',
+  colision: 'collision.enter',
+  collision: 'collision.enter',
+  tocar: 'trigger.enter',
+  trigger: 'trigger.enter',
+  tecla: 'input.pressed',
+  key: 'input.pressed',
+  tecla_mantenida: 'input.held',
+  click: 'ui.click',
+  temporizador: 'timer.elapsed',
+  timer: 'timer.elapsed',
+  evento: 'custom.event',
+};
+
+const VALID_ACTION_TYPES = new Set<ActionType>([
+  'variable.add',
+  'variable.set',
+  'audio.play',
+  'audio.beep',
+  'audio.setVolume',
+  'audio.stopAll',
+  'music.play',
+  'music.stop',
+  'object.destroy',
+  'object.show',
+  'object.hide',
+  'object.move',
+  'object.teleport',
+  'object.spawn',
+  'object.setProperty',
+  'object.rotateToward',
+  'object.flash',
+  'component.toggle',
+  'physics.impulse',
+  'physics.force',
+  'physics.setVelocity',
+  'health.damage',
+  'health.heal',
+  'animation.play',
+  'tween.play',
+  'state.set',
+  'scene.load',
+  'scene.overlay',
+  'scene.pop',
+  'scene.restart',
+  'scene.nextLevel',
+  'scene.pause',
+  'checkpoint.save',
+  'prefab.spawn',
+  'camera.shake',
+  'particles.burst',
+  'particles.emit',
+  'storage.save',
+  'storage.load',
+  'leaderboard.submit',
+  'event.emit',
+  'script.call',
+  'ui.openInterface',
+  'ui.closeInterface',
+  'ui.toggleInterface',
+  'camera.switch',
+  'anim3d.setState',
+  'vfx.emit',
+  'ai.chase',
+  'ai.moveTo',
+  'ai.stop',
+  'dialogue.start',
+  'i18n.setLocale',
+  'vehicle.enterExit',
+  'wait',
+]);
+
+const ACTION_TYPE_ALIASES: Record<string, ActionType> = {
+  sumar_variable: 'variable.add',
+  add_variable: 'variable.add',
+  fijar_variable: 'variable.set',
+  set_variable: 'variable.set',
+  sonido: 'audio.play',
+  beep: 'audio.beep',
+  destruir: 'object.destroy',
+  ocultar: 'object.hide',
+  mostrar: 'object.show',
+  teletransportar: 'object.teleport',
+  impulso: 'physics.impulse',
+  velocidad: 'physics.setVelocity',
+  dañar: 'health.damage',
+  curar: 'health.heal',
+  particulas: 'particles.burst',
+  vibrar: 'camera.shake',
+  escena: 'scene.load',
+  reiniciar: 'scene.restart',
+  evento: 'event.emit',
+  vehiculo: 'vehicle.enterExit',
+};
+
+const VALID_CAMERA_MODES = new Set<SmartCameraMode>([
+  'fixed',
+  'smooth_follow',
+  'third_person_orbit',
+  'first_person',
+  'top_down',
+  'deadzone',
 ]);
 
 const TYPE_ALIASES: Record<string, GameObjectType> = {
@@ -213,6 +411,19 @@ function tokenizeDslLine(line: string): string[] {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (quote) {
+      if (ch === '\\' && i + 1 < line.length) {
+        const next = line[i + 1];
+        if (next === 'n') {
+          cur += '\n';
+          i += 1;
+          continue;
+        }
+        if (next === quote || next === '\\') {
+          cur += next;
+          i += 1;
+          continue;
+        }
+      }
       if (ch === quote) {
         quote = null;
       } else {
@@ -237,12 +448,62 @@ function tokenizeDslLine(line: string): string[] {
   return tokens;
 }
 
+/**
+ * Divide texto DSL en sentencias lógicas sin romper `;` que estén dentro de comillas
+ * (necesario para snippets JS dentro de `script codigo="..."`).
+ */
+function splitDslStatements(rawText: string): string[] {
+  const statements: string[] = [];
+  let cur = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < rawText.length; i++) {
+    const ch = rawText[i];
+    if (quote) {
+      cur += ch;
+      if (ch === '\\' && i + 1 < rawText.length) {
+        cur += rawText[i + 1];
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === '\n' || ch === '\r' || ch === ';') {
+      const trimmed = cur.trim();
+      if (trimmed.length > 0 && !trimmed.startsWith('//') && !trimmed.startsWith('#comment')) {
+        statements.push(trimmed);
+      }
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  const tail = cur.trim();
+  if (tail.length > 0 && !tail.startsWith('//') && !tail.startsWith('#comment')) {
+    statements.push(tail);
+  }
+  return statements;
+}
+
 function parseScalar(raw: string): number | boolean | string {
   const t = raw.trim();
   if (t === 'true' || t === 'si' || t === 'sí') return true;
   if (t === 'false' || t === 'no') return false;
   if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
   return t;
+}
+
+function parseBoolOpt(v: string | undefined): boolean | undefined {
+  if (v === undefined) return undefined;
+  const s = v.trim().toLowerCase();
+  if (s === 'true' || s === 'si' || s === 'sí' || s === '1' || s === 'on') return true;
+  if (s === 'false' || s === 'no' || s === '0' || s === 'off') return false;
+  return undefined;
 }
 
 function parseKvArgs(tokens: string[]): { kv: Record<string, string>; positional: string[] } {
@@ -267,14 +528,83 @@ function parseNum(v: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function normalizeTriggerEvent(raw: string): MechanicTriggerEvent | null {
+  const low = raw.trim().toLowerCase();
+  if (VALID_TRIGGER_EVENTS.has(raw.trim() as MechanicTriggerEvent)) {
+    return raw.trim() as MechanicTriggerEvent;
+  }
+  for (const ev of VALID_TRIGGER_EVENTS) {
+    if (ev.toLowerCase() === low) return ev;
+  }
+  return TRIGGER_EVENT_ALIASES[low] ?? null;
+}
+
+function normalizeActionType(raw: string): ActionType | null {
+  const low = raw.trim().toLowerCase();
+  if (VALID_ACTION_TYPES.has(raw.trim() as ActionType)) {
+    return raw.trim() as ActionType;
+  }
+  for (const act of VALID_ACTION_TYPES) {
+    if (act.toLowerCase() === low) return act;
+  }
+  return ACTION_TYPE_ALIASES[low] ?? null;
+}
+
+function normalizeActionParams(
+  actionType: ActionType,
+  rawParams: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...rawParams };
+  if (out.var !== undefined && out.variable === undefined) {
+    out.variable = out.var;
+    delete out.var;
+  }
+  if (out.objetivo !== undefined && out.target === undefined) {
+    out.target = out.objetivo;
+    delete out.objetivo;
+  }
+  if (actionType === 'variable.add') {
+    const val = out.amount ?? out.cantidad ?? out.delta ?? out.valor ?? out.value;
+    if (val !== undefined) out.amount = val;
+    delete out.cantidad;
+    delete out.delta;
+    delete out.valor;
+  } else if (actionType === 'variable.set') {
+    const val = out.value ?? out.valor ?? out.amount ?? out.cantidad;
+    if (val !== undefined) out.value = val;
+    delete out.valor;
+    delete out.cantidad;
+  }
+  return out;
+}
+
+const MECHANIC_RESERVED_KV = new Set([
+  'nombre',
+  'name',
+  'evento',
+  'event',
+  'trigger',
+  'fuente',
+  'source',
+  'origen',
+  'tag',
+  'tecla',
+  'key',
+  'intervalo',
+  'interval',
+  'intervalsec',
+  'trigvar',
+  'evento_nombre',
+  'eventname',
+  'accion',
+  'action',
+]);
+
 function parseDslToOps(
   rawText: string,
   sceneObjects: GameObjectData[]
 ): { ops: CommandOp[]; errors: string[] } {
-  const lines = rawText
-    .split(/\r?\n|;/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith('//') && !l.startsWith('#comment'));
+  const lines = splitDslStatements(rawText);
 
   const ops: CommandOp[] = [];
   const errors: string[] = [];
@@ -418,6 +748,24 @@ function parseDslToOps(
         continue;
       }
       ops.push({ op: 'rename_object', targetRef, newName });
+    } else if (verb === 'duplicar' || verb === 'duplicate') {
+      const { kv, positional } = parseKvArgs(tokens.slice(1));
+      const targetRef = positional[0] ?? kv.objetivo ?? kv.target;
+      if (!targetRef) {
+        errors.push(`${lineTag}Formato: duplicar <objeto> [nombre=Copia] [dx=2 dy=0 dz=0]`);
+        continue;
+      }
+      ops.push({
+        op: 'duplicate_object',
+        targetRef,
+        newName: kv.nombre ?? kv.name ?? positional[1],
+        x: parseNum(kv.x),
+        y: parseNum(kv.y),
+        z: parseNum(kv.z),
+        dx: parseNum(kv.dx),
+        dy: parseNum(kv.dy),
+        dz: parseNum(kv.dz),
+      });
     } else if (verb === 'etiquetar' || verb === 'tag') {
       const targetRef = tokens[1];
       const tagArgs = tokens.slice(2);
@@ -475,9 +823,153 @@ function parseDslToOps(
         farProxyRadius: parseNum(kv.hlod ?? kv.farproxyradius),
         budgetProfile,
       });
+    } else if (verb === 'mecanica' || verb === 'mecánica' || verb === 'mechanic') {
+      const { kv, positional } = parseKvArgs(tokens.slice(1));
+      const rawTrigger = kv.evento ?? kv.event ?? kv.trigger ?? positional[0];
+      const rawAction = kv.accion ?? kv.acción ?? kv.action ?? positional[1];
+      if (!rawTrigger || !rawAction) {
+        errors.push(
+          `${lineTag}Formato: mecanica nombre="Saltar" evento=input.pressed tecla=Space accion=physics.impulse target=@selected iy=10`
+        );
+        continue;
+      }
+      const triggerEvent = normalizeTriggerEvent(rawTrigger);
+      if (!triggerEvent) {
+        errors.push(`${lineTag}Evento de mecánica desconocido "${rawTrigger}".`);
+        continue;
+      }
+      const actionType = normalizeActionType(rawAction);
+      if (!actionType) {
+        errors.push(`${lineTag}Acción de mecánica desconocida "${rawAction}".`);
+        continue;
+      }
+      const rawParams: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(kv)) {
+        if (MECHANIC_RESERVED_KV.has(k)) continue;
+        rawParams[k] = parseScalar(v);
+      }
+      const name = kv.nombre ?? kv.name ?? `${triggerEvent} → ${actionType}`;
+      ops.push({
+        op: 'add_mechanic',
+        name,
+        triggerEvent,
+        sourceRef: kv.fuente ?? kv.source ?? kv.origen,
+        tag: kv.tag,
+        key: kv.tecla ?? kv.key,
+        intervalSec: parseNum(kv.intervalo ?? kv.interval ?? kv.intervalsec),
+        variable: kv.trigvar,
+        eventName: kv.evento_nombre ?? kv.eventname,
+        actionType,
+        actionParams: normalizeActionParams(actionType, rawParams),
+      });
+    } else if (verb === 'script') {
+      const { kv, positional } = parseKvArgs(tokens.slice(1));
+      const name = kv.nombre ?? kv.name ?? positional[0] ?? 'Script_Comando';
+      const code = kv.codigo ?? kv.código ?? kv.code ?? positional[1] ?? '';
+      if (!code.trim()) {
+        errors.push(
+          `${lineTag}Formato: script nombre=Rotar objeto=@lastCreated codigo="export function onUpdate(self, dt){ self.ry += 60 * dt; }"`
+        );
+        continue;
+      }
+      const modeRaw = (kv.modo ?? kv.mode ?? kv.securitymode ?? '').toLowerCase();
+      const securityMode =
+        modeRaw === 'trusted' || modeRaw === 'trusted_js'
+          ? 'trusted_js'
+          : modeRaw === 'safe' || modeRaw === 'safe_sandbox'
+            ? 'safe_sandbox'
+            : undefined;
+      ops.push({
+        op: 'create_script',
+        name,
+        code,
+        targetRef: kv.objeto ?? kv.object ?? kv.target ?? kv.objetivo,
+        securityMode,
+      });
+    } else if (verb === 'iluminacion' || verb === 'iluminación' || verb === 'lighting') {
+      const { kv } = parseKvArgs(tokens.slice(1));
+      const sunIntensity = parseNum(kv.sol ?? kv.sun ?? kv.sunintensity);
+      const ambientIntensity = parseNum(kv.ambiente ?? kv.ambient ?? kv.ambientintensity);
+      const fogEnabled = parseBoolOpt(kv.niebla ?? kv.fog ?? kv.fogenabled);
+      const fogNear = parseNum(kv.niebla_cerca ?? kv.fognear);
+      const fogFar = parseNum(kv.niebla_lejos ?? kv.fogfar);
+      const timeOfDay = parseNum(kv.hora ?? kv.timeofday ?? kv.time);
+      const dayCycleSpeed = parseNum(kv.velocidad_dia ?? kv.daycyclespeed ?? kv.speed);
+      const dayNightEnabled = parseBoolOpt(kv.ciclo ?? kv.daynight ?? kv.daynightenabled);
+      const sunColor = kv.color_sol ?? kv.suncolor;
+      const ambientColor = kv.color_ambiente ?? kv.ambientcolor;
+      if (
+        sunIntensity === undefined &&
+        ambientIntensity === undefined &&
+        fogEnabled === undefined &&
+        fogNear === undefined &&
+        fogFar === undefined &&
+        timeOfDay === undefined &&
+        dayCycleSpeed === undefined &&
+        dayNightEnabled === undefined &&
+        sunColor === undefined &&
+        ambientColor === undefined
+      ) {
+        errors.push(
+          `${lineTag}Indica al menos un parámetro de iluminación (sol=, ambiente=, hora=, ciclo=, niebla=).`
+        );
+        continue;
+      }
+      ops.push({
+        op: 'set_lighting',
+        sunIntensity,
+        ambientIntensity,
+        fogEnabled,
+        fogNear,
+        fogFar,
+        timeOfDay,
+        dayCycleSpeed,
+        dayNightEnabled,
+        sunColor,
+        ambientColor,
+      });
+    } else if (verb === 'camara' || verb === 'cámara' || verb === 'camera_config') {
+      const { kv, positional } = parseKvArgs(tokens.slice(1));
+      const rawMode = (kv.modo ?? kv.mode ?? '').toLowerCase();
+      let mode: SmartCameraMode | undefined;
+      if (rawMode) {
+        if (!VALID_CAMERA_MODES.has(rawMode as SmartCameraMode)) {
+          errors.push(
+            `${lineTag}Modo de cámara desconocido "${rawMode}". Usa: fixed, smooth_follow, third_person_orbit, first_person, top_down o deadzone.`
+          );
+          continue;
+        }
+        mode = rawMode as SmartCameraMode;
+      }
+      const distance = parseNum(kv.distancia ?? kv.distance);
+      const fov = parseNum(kv.fov);
+      const collideWithWalls = parseBoolOpt(kv.colision ?? kv.colisionar ?? kv.collidewithwalls);
+      const allowShoulderSwap = parseBoolOpt(kv.hombro ?? kv.shoulderswap ?? kv.allowshoulderswap);
+      const targetRef = kv.objeto ?? kv.objetivo ?? kv.target ?? positional[0];
+      if (
+        mode === undefined &&
+        distance === undefined &&
+        fov === undefined &&
+        collideWithWalls === undefined &&
+        allowShoulderSwap === undefined
+      ) {
+        errors.push(
+          `${lineTag}Indica modo=, distancia=, fov=, colision= o hombro= para configurar la cámara.`
+        );
+        continue;
+      }
+      ops.push({
+        op: 'configure_camera',
+        targetRef,
+        mode,
+        distance,
+        fov,
+        collideWithWalls,
+        allowShoulderSwap,
+      });
     } else if (sceneObjects.length >= 0) {
       errors.push(
-        `${lineTag}Verbo "${tokens[0]}" no reconocido. Usa: crear, mover, escalar, rotar, agregar componente, renombrar, etiquetar, variable, eliminar o streaming.`
+        `${lineTag}Verbo "${tokens[0]}" no reconocido. Usa: crear, mover, escalar, rotar, duplicar, agregar componente, renombrar, etiquetar, variable, mecanica, script, iluminacion, camara, eliminar o streaming.`
       );
     }
   }
@@ -581,6 +1073,23 @@ function parseJsonToOps(rawText: string): { ops: CommandOp[]; errors: string[] }
         continue;
       }
       ops.push({ op: 'rename_object', targetRef, newName });
+    } else if (kind === 'duplicate_object') {
+      const targetRef = String(item.target ?? item.targetRef ?? '').trim();
+      if (!targetRef) {
+        errors.push(`Operación #${i + 1} (duplicate_object): requiere "target".`);
+        continue;
+      }
+      ops.push({
+        op: 'duplicate_object',
+        targetRef,
+        newName: typeof item.newName === 'string' ? item.newName : undefined,
+        x: typeof item.x === 'number' ? item.x : undefined,
+        y: typeof item.y === 'number' ? item.y : undefined,
+        z: typeof item.z === 'number' ? item.z : undefined,
+        dx: typeof item.dx === 'number' ? item.dx : undefined,
+        dy: typeof item.dy === 'number' ? item.dy : undefined,
+        dz: typeof item.dz === 'number' ? item.dz : undefined,
+      });
     } else if (kind === 'tag_object') {
       const targetRef = String(item.target ?? item.targetRef ?? '').trim();
       if (!targetRef) {
@@ -623,6 +1132,91 @@ function parseJsonToOps(rawText: string): { ops: CommandOp[]; errors: string[] }
           item.budgetProfile === 'pc' || item.budgetProfile === 'mobile' || item.budgetProfile === 'custom'
             ? item.budgetProfile
             : undefined,
+      });
+    } else if (kind === 'add_mechanic') {
+      const rawTrigger = String(item.triggerEvent ?? item.event ?? '').trim();
+      const rawAction = String(item.actionType ?? item.action ?? '').trim();
+      const triggerEvent = normalizeTriggerEvent(rawTrigger);
+      const actionType = normalizeActionType(rawAction);
+      if (!triggerEvent || !actionType) {
+        errors.push(
+          `Operación #${i + 1} (add_mechanic): requiere "triggerEvent" y "actionType" válidos.`
+        );
+        continue;
+      }
+      const rawParams =
+        item.actionParams && typeof item.actionParams === 'object'
+          ? (item.actionParams as Record<string, unknown>)
+          : {};
+      ops.push({
+        op: 'add_mechanic',
+        name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : `${triggerEvent} → ${actionType}`,
+        triggerEvent,
+        sourceRef: typeof item.sourceRef === 'string' ? item.sourceRef : undefined,
+        tag: typeof item.tag === 'string' ? item.tag : undefined,
+        key: typeof item.key === 'string' ? item.key : undefined,
+        intervalSec: typeof item.intervalSec === 'number' ? item.intervalSec : undefined,
+        variable: typeof item.variable === 'string' ? item.variable : undefined,
+        eventName: typeof item.eventName === 'string' ? item.eventName : undefined,
+        actionType,
+        actionParams: normalizeActionParams(actionType, rawParams),
+      });
+    } else if (kind === 'create_script') {
+      const name = String(item.name ?? 'Script_Comando').trim();
+      const code = String(item.code ?? '');
+      if (!code.trim()) {
+        errors.push(`Operación #${i + 1} (create_script): requiere "code" no vacío.`);
+        continue;
+      }
+      const secMode =
+        item.securityMode === 'trusted_js' || item.securityMode === 'safe_sandbox'
+          ? item.securityMode
+          : undefined;
+      ops.push({
+        op: 'create_script',
+        name,
+        code,
+        targetRef:
+          typeof item.targetRef === 'string'
+            ? item.targetRef
+            : typeof item.target === 'string'
+              ? item.target
+              : undefined,
+        securityMode: secMode,
+      });
+    } else if (kind === 'set_lighting') {
+      ops.push({
+        op: 'set_lighting',
+        sunIntensity: typeof item.sunIntensity === 'number' ? item.sunIntensity : undefined,
+        ambientIntensity: typeof item.ambientIntensity === 'number' ? item.ambientIntensity : undefined,
+        fogEnabled: typeof item.fogEnabled === 'boolean' ? item.fogEnabled : undefined,
+        fogNear: typeof item.fogNear === 'number' ? item.fogNear : undefined,
+        fogFar: typeof item.fogFar === 'number' ? item.fogFar : undefined,
+        timeOfDay: typeof item.timeOfDay === 'number' ? item.timeOfDay : undefined,
+        dayCycleSpeed: typeof item.dayCycleSpeed === 'number' ? item.dayCycleSpeed : undefined,
+        dayNightEnabled: typeof item.dayNightEnabled === 'boolean' ? item.dayNightEnabled : undefined,
+        sunColor: typeof item.sunColor === 'string' ? item.sunColor : undefined,
+        ambientColor: typeof item.ambientColor === 'string' ? item.ambientColor : undefined,
+      });
+    } else if (kind === 'configure_camera') {
+      const rawMode = typeof item.mode === 'string' ? item.mode : undefined;
+      if (rawMode && !VALID_CAMERA_MODES.has(rawMode as SmartCameraMode)) {
+        errors.push(`Operación #${i + 1} (configure_camera): modo "${rawMode}" inválido.`);
+        continue;
+      }
+      ops.push({
+        op: 'configure_camera',
+        targetRef:
+          typeof item.targetRef === 'string'
+            ? item.targetRef
+            : typeof item.target === 'string'
+              ? item.target
+              : undefined,
+        mode: rawMode as SmartCameraMode | undefined,
+        distance: typeof item.distance === 'number' ? item.distance : undefined,
+        fov: typeof item.fov === 'number' ? item.fov : undefined,
+        collideWithWalls: typeof item.collideWithWalls === 'boolean' ? item.collideWithWalls : undefined,
+        allowShoulderSwap: typeof item.allowShoulderSwap === 'boolean' ? item.allowShoulderSwap : undefined,
       });
     } else {
       errors.push(`Operación #${i + 1}: op "${kind}" no soportada.`);
@@ -689,11 +1283,67 @@ function resolveTargetsStrict(
   return { targets: [], error: `No se encontró ningún objeto con ID o nombre "${ref}".` };
 }
 
+function resolveCameraTargets(
+  targetRef: string | undefined,
+  scene: SceneData,
+  objects: GameObjectData[],
+  selectedIds: string[],
+  lastCreatedId: string | null
+): { targets: GameObjectData[]; error?: string } {
+  if (targetRef) {
+    const res = resolveTargetsStrict(targetRef, objects, selectedIds, lastCreatedId);
+    if (res.error) return res;
+    const cams = res.targets.filter((o) => o.type === 'camera_3d' || Boolean(o.camera3d));
+    if (cams.length === 0) {
+      return { targets: [], error: `El objeto "${targetRef}" no es una cámara 3D.` };
+    }
+    return { targets: cams };
+  }
+  const activeCam =
+    (scene.activeCameraId && objects.find((o) => o.id === scene.activeCameraId)) ||
+    objects.find((o) => o.type === 'camera_3d' && o.camera3d?.isMainCamera) ||
+    objects.find((o) => o.type === 'camera_3d');
+  if (activeCam) return { targets: [activeCam] };
+  if (scene.cameraConfig?.smartCamera) return { targets: [] };
+  return { targets: [], error: 'No hay ninguna cámara 3D en la escena actual para configurar.' };
+}
+
+function makeUniqueObjectName(baseName: string, objects: GameObjectData[]): string {
+  const existing = new Set(objects.map((o) => o.name.toLowerCase()));
+  if (!existing.has(baseName.toLowerCase())) return baseName;
+  let idx = 2;
+  while (existing.has(`${baseName}_${idx}`.toLowerCase())) idx += 1;
+  return `${baseName}_${idx}`;
+}
+
 function formatObjCoord(o: GameObjectData): string {
   if (o.transform3d) {
     return `(${o.transform3d.x.toFixed(1)}, ${o.transform3d.y.toFixed(1)}, ${o.transform3d.z.toFixed(1)}) S(${o.transform3d.sx.toFixed(1)}, ${o.transform3d.sy.toFixed(1)}, ${o.transform3d.sz.toFixed(1)})`;
   }
   return `(${Math.round(o.transform.x)}, ${Math.round(o.transform.y)}) R=${Math.round(o.transform.rotation)}° S(${o.transform.scaleX.toFixed(2)}, ${o.transform.scaleY.toFixed(2)})`;
+}
+
+function defaultSceneLighting(prev?: SceneLightingConfig): SceneLightingConfig {
+  return {
+    ambientColor: prev?.ambientColor ?? '#94a3b8',
+    ambientIntensity: prev?.ambientIntensity ?? 0.7,
+    smartBounce: prev?.smartBounce ?? true,
+    bounceIntensity: prev?.bounceIntensity ?? 0.35,
+    skyColor: prev?.skyColor ?? '#7dd3fc',
+    groundColor: prev?.groundColor ?? '#1e293b',
+    sunColor: prev?.sunColor ?? '#ffffff',
+    sunIntensity: prev?.sunIntensity ?? 1.4,
+    fogEnabled: prev?.fogEnabled ?? false,
+    fogColor: prev?.fogColor ?? '#93c5fd',
+    fogNear: prev?.fogNear ?? 35,
+    fogFar: prev?.fogFar ?? 160,
+    dayNightEnabled: prev?.dayNightEnabled ?? false,
+    timeOfDay: prev?.timeOfDay ?? 13,
+    dayCycleSpeed: prev?.dayCycleSpeed ?? 0,
+    skyDomeAssetId: prev?.skyDomeAssetId ?? null,
+    cloudsEnabled: prev?.cloudsEnabled ?? true,
+    cloudDensity: prev?.cloudDensity,
+  };
 }
 
 export function planCommandBarInput(
@@ -733,6 +1383,9 @@ export function planCommandBarInput(
   let simObjects: GameObjectData[] = structuredClone(scene.objects);
   let simVars: ProjectVariable[] = structuredClone(project.variables ?? []);
   let simStreaming = structuredClone(scene.worldStreaming);
+  let simLighting = defaultSceneLighting(scene.lighting);
+  let simMechanics: GameMechanic[] = structuredClone(scene.mechanics ?? []);
+  let simScripts: NexusScriptAsset[] = structuredClone(project.scripts ?? []);
   let lastCreatedId: string | null = null;
 
   for (const op of parsed.ops) {
@@ -855,6 +1508,45 @@ export function planCommandBarInput(
         before: prevName,
         after: op.newName,
       });
+    } else if (op.op === 'duplicate_object') {
+      const res = resolveTargetsStrict(op.targetRef, simObjects, selectedIds, lastCreatedId);
+      if (res.error) {
+        errors.push(res.error);
+        continue;
+      }
+      for (let i = 0; i < res.targets.length; i++) {
+        const src = res.targets[i];
+        const clone = structuredClone(src);
+        clone.id = createId('obj');
+        clone.name =
+          op.newName && res.targets.length === 1
+            ? op.newName
+            : makeUniqueObjectName(`${src.name}_Copia`, simObjects);
+        const hasExplicitPos = op.x !== undefined || op.y !== undefined || op.z !== undefined;
+        const hasDelta = op.dx !== undefined || op.dy !== undefined || op.dz !== undefined;
+        if (clone.transform3d) {
+          if (op.x !== undefined) clone.transform3d.x = op.x;
+          if (op.y !== undefined) clone.transform3d.y = op.y;
+          if (op.z !== undefined) clone.transform3d.z = op.z;
+          clone.transform3d.x += op.dx ?? (hasExplicitPos || hasDelta ? 0 : 2 * (i + 1));
+          clone.transform3d.y += op.dy ?? 0;
+          clone.transform3d.z += op.dz ?? 0;
+        } else {
+          if (op.x !== undefined) clone.transform.x = op.x;
+          if (op.y !== undefined) clone.transform.y = op.y;
+          clone.transform.x += op.dx ?? (hasExplicitPos || hasDelta ? 0 : 32 * (i + 1));
+          clone.transform.y += op.dy ?? 0;
+        }
+        simObjects.push(clone);
+        lastCreatedId = clone.id;
+        diffs.push({
+          kind: 'add',
+          scope: 'object',
+          targetId: clone.id,
+          targetLabel: `${clone.name} (copia de ${src.name})`,
+          after: formatObjCoord(clone),
+        });
+      }
     } else if (op.op === 'tag_object') {
       const res = resolveTargetsStrict(op.targetRef, simObjects, selectedIds, lastCreatedId);
       if (res.error) {
@@ -948,6 +1640,171 @@ export function planCommandBarInput(
         before,
         after: `${simStreaming.enabled ? 'Activo' : 'Inactivo'} (${simStreaming.chunkSize}m, ${simStreaming.budgetProfile})`,
       });
+    } else if (op.op === 'add_mechanic') {
+      let sourceObjectId: string | undefined;
+      if (op.sourceRef) {
+        const res = resolveTargetsStrict(op.sourceRef, simObjects, selectedIds, lastCreatedId);
+        if (res.error) {
+          errors.push(res.error);
+          continue;
+        }
+        sourceObjectId = res.targets[0].id;
+      }
+      const mech: GameMechanic = {
+        id: createId('mech'),
+        name: op.name,
+        enabled: true,
+        priority: 10,
+        trigger: {
+          event: op.triggerEvent,
+          ...(sourceObjectId ? { sourceObjectId } : {}),
+          ...(op.tag ? { tag: op.tag } : {}),
+          ...(op.key ? { key: op.key } : {}),
+          ...(op.intervalSec !== undefined ? { intervalSec: op.intervalSec } : {}),
+          ...(op.variable ? { variable: op.variable } : {}),
+          ...(op.eventName ? { eventName: op.eventName } : {}),
+        },
+        conditions: [],
+        actions: [
+          {
+            id: createId('act'),
+            type: op.actionType,
+            parameters: { ...(op.actionParams ?? {}) },
+          },
+        ],
+      };
+      simMechanics.push(mech);
+      diffs.push({
+        kind: 'add',
+        scope: 'mechanic',
+        targetId: mech.id,
+        targetLabel: `Mecánica: ${mech.name}`,
+        after: `${mech.trigger.event} → ${op.actionType}`,
+      });
+    } else if (op.op === 'create_script') {
+      if (!op.code.trim()) {
+        errors.push(`El script "${op.name}" no puede tener código vacío.`);
+        continue;
+      }
+      const effectiveMode =
+        op.securityMode ?? project.security?.scriptMode ?? 'safe_sandbox';
+      const scan = scanScriptSecurity(op.code);
+      if (effectiveMode === 'safe_sandbox' && !scan.safe) {
+        errors.push(
+          `Script "${op.name}" bloqueado por sandbox seguro (${scan.blockedIdentifiers.join(', ')}). Usa modo=trusted_js solo si confías en el código.`
+        );
+        continue;
+      }
+      if (effectiveMode === 'trusted_js' && !scan.safe) {
+        warnings.push(
+          `Script "${op.name}" usa modo trusted_js con APIs sensibles: ${scan.blockedIdentifiers.join(', ')}.`
+        );
+      }
+
+      const rawTarget = op.targetRef?.trim();
+      const isSceneTarget =
+        !rawTarget || rawTarget === '__scene__' || rawTarget.toLowerCase() === 'escena';
+      let boundLabel = 'Escena';
+      if (!isSceneTarget && rawTarget) {
+        const res = resolveTargetsStrict(rawTarget, simObjects, selectedIds, lastCreatedId);
+        if (res.error) {
+          errors.push(res.error);
+          continue;
+        }
+        boundLabel = res.targets.map((t) => t.name).join(', ');
+      }
+
+      const nextScript: NexusScriptAsset = {
+        id: createId('scr'),
+        name: op.name,
+        kind: 'script',
+        code: op.code,
+        targetScope: isSceneTarget ? 'scene' : 'object',
+        securityMode: effectiveMode,
+        updatedAt: Date.now(),
+      };
+      simScripts.push(nextScript);
+      diffs.push({
+        kind: 'add',
+        scope: 'script',
+        targetId: nextScript.id,
+        targetLabel: `Script: ${nextScript.name}`,
+        after: `Adjunto a ${boundLabel} (${effectiveMode})`,
+      });
+    } else if (op.op === 'set_lighting') {
+      const before = `Sol ${simLighting.sunIntensity.toFixed(2)} · Amb ${simLighting.ambientIntensity.toFixed(2)} · Hora ${(simLighting.timeOfDay ?? 12).toFixed(1)}h`;
+      simLighting = {
+        ...simLighting,
+        ...(op.sunIntensity !== undefined ? { sunIntensity: op.sunIntensity } : {}),
+        ...(op.ambientIntensity !== undefined ? { ambientIntensity: op.ambientIntensity } : {}),
+        ...(op.fogEnabled !== undefined ? { fogEnabled: op.fogEnabled } : {}),
+        ...(op.fogNear !== undefined ? { fogNear: op.fogNear } : {}),
+        ...(op.fogFar !== undefined ? { fogFar: op.fogFar } : {}),
+        ...(op.timeOfDay !== undefined ? { timeOfDay: op.timeOfDay } : {}),
+        ...(op.dayCycleSpeed !== undefined ? { dayCycleSpeed: op.dayCycleSpeed } : {}),
+        ...(op.dayNightEnabled !== undefined ? { dayNightEnabled: op.dayNightEnabled } : {}),
+        ...(op.sunColor !== undefined ? { sunColor: op.sunColor } : {}),
+        ...(op.ambientColor !== undefined ? { ambientColor: op.ambientColor } : {}),
+      };
+      const after = `Sol ${simLighting.sunIntensity.toFixed(2)} · Amb ${simLighting.ambientIntensity.toFixed(2)} · Hora ${(simLighting.timeOfDay ?? 12).toFixed(1)}h${simLighting.dayNightEnabled ? ' (Ciclo ON)' : ''}`;
+      diffs.push({
+        kind: 'modify',
+        scope: 'scene',
+        targetId: scene.id,
+        targetLabel: `Iluminación (${scene.name})`,
+        before,
+        after,
+      });
+    } else if (op.op === 'configure_camera') {
+      const camRes = resolveCameraTargets(
+        op.targetRef,
+        scene,
+        simObjects,
+        selectedIds,
+        lastCreatedId
+      );
+      if (camRes.error) {
+        errors.push(camRes.error);
+        continue;
+      }
+      if (camRes.targets.length > 0) {
+        for (const cam of camRes.targets) {
+          const cfg = cam.camera3d;
+          const before = cfg
+            ? `${cfg.mode} · dist=${cfg.distance} · fov=${cfg.fov} · col=${cfg.collideWithWalls}`
+            : 'Sin config';
+          if (cfg) {
+            if (op.mode !== undefined) cfg.mode = op.mode;
+            if (op.distance !== undefined) cfg.distance = op.distance;
+            if (op.fov !== undefined) cfg.fov = op.fov;
+            if (op.collideWithWalls !== undefined) cfg.collideWithWalls = op.collideWithWalls;
+            if (op.allowShoulderSwap !== undefined) cfg.allowShoulderSwap = op.allowShoulderSwap;
+          }
+          const after = cfg
+            ? `${cfg.mode} · dist=${cfg.distance} · fov=${cfg.fov} · col=${cfg.collideWithWalls}`
+            : 'Actualizada';
+          diffs.push({
+            kind: 'modify',
+            scope: 'object',
+            targetId: cam.id,
+            targetLabel: cam.name,
+            before,
+            after,
+          });
+        }
+      } else if (scene.cameraConfig?.smartCamera) {
+        const sc = scene.cameraConfig.smartCamera;
+        const before = `${sc.mode} · dist=${sc.distance} · fov=${sc.fov}`;
+        const after = `${op.mode ?? sc.mode} · dist=${op.distance ?? sc.distance} · fov=${op.fov ?? sc.fov}`;
+        diffs.push({
+          kind: 'modify',
+          scope: 'scene',
+          targetId: scene.id,
+          targetLabel: `Cámara Escena (${scene.name})`,
+          before,
+          after,
+        });
+      }
     }
   }
 
@@ -1065,6 +1922,37 @@ export function applyCommandPlan(
       if (res.error) throw new Error(res.error);
       res.targets[0].name = op.newName;
       affectedIds.add(res.targets[0].id);
+    } else if (op.op === 'duplicate_object') {
+      const res = resolveTargetsStrict(op.targetRef, scene.objects, selectedIds, lastCreatedId);
+      if (res.error) throw new Error(res.error);
+      for (let i = 0; i < res.targets.length; i++) {
+        const src = res.targets[i];
+        const clone = structuredClone(src);
+        clone.id = createId('obj');
+        clone.name =
+          op.newName && res.targets.length === 1
+            ? op.newName
+            : makeUniqueObjectName(`${src.name}_Copia`, scene.objects);
+        const hasExplicitPos = op.x !== undefined || op.y !== undefined || op.z !== undefined;
+        const hasDelta = op.dx !== undefined || op.dy !== undefined || op.dz !== undefined;
+        if (clone.transform3d) {
+          if (op.x !== undefined) clone.transform3d.x = op.x;
+          if (op.y !== undefined) clone.transform3d.y = op.y;
+          if (op.z !== undefined) clone.transform3d.z = op.z;
+          clone.transform3d.x += op.dx ?? (hasExplicitPos || hasDelta ? 0 : 2 * (i + 1));
+          clone.transform3d.y += op.dy ?? 0;
+          clone.transform3d.z += op.dz ?? 0;
+        } else {
+          if (op.x !== undefined) clone.transform.x = op.x;
+          if (op.y !== undefined) clone.transform.y = op.y;
+          clone.transform.x += op.dx ?? (hasExplicitPos || hasDelta ? 0 : 32 * (i + 1));
+          clone.transform.y += op.dy ?? 0;
+        }
+        scene.objects.push(clone);
+        createdIds.push(clone.id);
+        affectedIds.add(clone.id);
+        lastCreatedId = clone.id;
+      }
     } else if (op.op === 'tag_object') {
       const res = resolveTargetsStrict(op.targetRef, scene.objects, selectedIds, lastCreatedId);
       if (res.error) throw new Error(res.error);
@@ -1087,14 +1975,17 @@ export function applyCommandPlan(
       const existing = nextProject.variables.find((v) => v.name === op.name);
       if (existing) {
         existing.initialValue = op.value;
+        affectedIds.add(existing.id);
       } else {
+        const nextVarId = createId('var');
         nextProject.variables.push({
-          id: createId('var'),
+          id: nextVarId,
           name: op.name,
           scope: 'global',
           type: typeof op.value === 'boolean' ? 'boolean' : typeof op.value === 'number' ? 'number' : 'string',
           initialValue: op.value,
         });
+        affectedIds.add(nextVarId);
       }
     } else if (op.op === 'configure_streaming') {
       scene.worldStreaming = {
@@ -1111,6 +2002,130 @@ export function applyCommandPlan(
         budgetProfile: op.budgetProfile ?? scene.worldStreaming?.budgetProfile ?? 'pc',
         customBudgets: scene.worldStreaming?.customBudgets,
       };
+      affectedIds.add(scene.id);
+    } else if (op.op === 'add_mechanic') {
+      let sourceObjectId: string | undefined;
+      if (op.sourceRef) {
+        const res = resolveTargetsStrict(op.sourceRef, scene.objects, selectedIds, lastCreatedId);
+        if (res.error) throw new Error(res.error);
+        sourceObjectId = res.targets[0].id;
+      }
+      const mech: GameMechanic = {
+        id: createId('mech'),
+        name: op.name,
+        enabled: true,
+        priority: 10,
+        trigger: {
+          event: op.triggerEvent,
+          ...(sourceObjectId ? { sourceObjectId } : {}),
+          ...(op.tag ? { tag: op.tag } : {}),
+          ...(op.key ? { key: op.key } : {}),
+          ...(op.intervalSec !== undefined ? { intervalSec: op.intervalSec } : {}),
+          ...(op.variable ? { variable: op.variable } : {}),
+          ...(op.eventName ? { eventName: op.eventName } : {}),
+        },
+        conditions: [],
+        actions: [
+          {
+            id: createId('act'),
+            type: op.actionType,
+            parameters: { ...(op.actionParams ?? {}) },
+          },
+        ],
+      };
+      scene.mechanics = [...(scene.mechanics ?? []), mech];
+      affectedIds.add(mech.id);
+    } else if (op.op === 'create_script') {
+      const effectiveMode =
+        op.securityMode ?? nextProject.security?.scriptMode ?? 'safe_sandbox';
+      const scan = scanScriptSecurity(op.code);
+      if (effectiveMode === 'safe_sandbox' && !scan.safe) {
+        throw new Error(
+          `Script "${op.name}" bloqueado por sandbox seguro (${scan.blockedIdentifiers.join(', ')}).`
+        );
+      }
+      const rawTarget = op.targetRef?.trim();
+      const isSceneTarget =
+        !rawTarget || rawTarget === '__scene__' || rawTarget.toLowerCase() === 'escena';
+
+      const scriptAsset: NexusScriptAsset = {
+        id: createId('scr'),
+        name: op.name,
+        kind: 'script',
+        code: op.code,
+        targetScope: isSceneTarget ? 'scene' : 'object',
+        securityMode: effectiveMode,
+        updatedAt: Date.now(),
+      };
+      nextProject.scripts = [...(nextProject.scripts ?? []), scriptAsset];
+      affectedIds.add(scriptAsset.id);
+
+      if (isSceneTarget) {
+        scene.scriptIds = [...(scene.scriptIds ?? []), scriptAsset.id];
+      } else if (rawTarget) {
+        const res = resolveTargetsStrict(rawTarget, scene.objects, selectedIds, lastCreatedId);
+        if (res.error) throw new Error(res.error);
+        const schema = extractScriptParamsSchema(scriptAsset);
+        const defaultParams: Record<string, unknown> = {};
+        for (const field of schema) defaultParams[field.key] = field.defaultValue;
+        for (const tgt of res.targets) {
+          affectedIds.add(tgt.id);
+          tgt.scriptBindings = [
+            ...(tgt.scriptBindings ?? []),
+            {
+              id: createId('sb'),
+              scriptId: scriptAsset.id,
+              enabled: true,
+              params: defaultParams,
+            },
+          ];
+        }
+      }
+    } else if (op.op === 'set_lighting') {
+      const base = defaultSceneLighting(scene.lighting);
+      scene.lighting = {
+        ...base,
+        ...(op.sunIntensity !== undefined ? { sunIntensity: op.sunIntensity } : {}),
+        ...(op.ambientIntensity !== undefined ? { ambientIntensity: op.ambientIntensity } : {}),
+        ...(op.fogEnabled !== undefined ? { fogEnabled: op.fogEnabled } : {}),
+        ...(op.fogNear !== undefined ? { fogNear: op.fogNear } : {}),
+        ...(op.fogFar !== undefined ? { fogFar: op.fogFar } : {}),
+        ...(op.timeOfDay !== undefined ? { timeOfDay: op.timeOfDay } : {}),
+        ...(op.dayCycleSpeed !== undefined ? { dayCycleSpeed: op.dayCycleSpeed } : {}),
+        ...(op.dayNightEnabled !== undefined ? { dayNightEnabled: op.dayNightEnabled } : {}),
+        ...(op.sunColor !== undefined ? { sunColor: op.sunColor } : {}),
+        ...(op.ambientColor !== undefined ? { ambientColor: op.ambientColor } : {}),
+      };
+      affectedIds.add(scene.id);
+    } else if (op.op === 'configure_camera') {
+      const camRes = resolveCameraTargets(
+        op.targetRef,
+        scene,
+        scene.objects,
+        selectedIds,
+        lastCreatedId
+      );
+      if (camRes.error) throw new Error(camRes.error);
+      if (camRes.targets.length > 0) {
+        for (const cam of camRes.targets) {
+          affectedIds.add(cam.id);
+          if (cam.camera3d) {
+            if (op.mode !== undefined) cam.camera3d.mode = op.mode;
+            if (op.distance !== undefined) cam.camera3d.distance = op.distance;
+            if (op.fov !== undefined) cam.camera3d.fov = op.fov;
+            if (op.collideWithWalls !== undefined) cam.camera3d.collideWithWalls = op.collideWithWalls;
+            if (op.allowShoulderSwap !== undefined) cam.camera3d.allowShoulderSwap = op.allowShoulderSwap;
+          }
+        }
+      } else if (scene.cameraConfig?.smartCamera) {
+        const sc = scene.cameraConfig.smartCamera;
+        if (op.mode !== undefined) sc.mode = op.mode;
+        if (op.distance !== undefined) sc.distance = op.distance;
+        if (op.fov !== undefined) sc.fov = op.fov;
+        if (op.collideWithWalls !== undefined) sc.collideWithWalls = op.collideWithWalls;
+        if (op.allowShoulderSwap !== undefined) sc.allowShoulderSwap = op.allowShoulderSwap;
+        affectedIds.add(scene.id);
+      }
     }
   }
 

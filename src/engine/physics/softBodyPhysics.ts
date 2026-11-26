@@ -256,6 +256,9 @@ export interface Vehicle4WRuntimeState {
   speedForward: number;
   steerAngleRad: number;
   propellerSpinRad: number;
+  rotorRpm?: number;
+  stridePhase?: number;
+  jumpCooldown?: number;
   lastActiveTime: number;
   lodCulled: boolean;
   wheels: [WheelContactState, WheelContactState, WheelContactState, WheelContactState];
@@ -357,6 +360,9 @@ export function createVehicle4WState(
     speedForward: 0,
     steerAngleRad: 0,
     propellerSpinRad: 0,
+    rotorRpm: 0,
+    stridePhase: 0,
+    jumpCooldown: 0,
     lastActiveTime: 0,
     lodCulled: false,
     wheels: [mkWheel(-hw, hl), mkWheel(hw, hl), mkWheel(-hw, -hl), mkWheel(hw, -hl)],
@@ -369,6 +375,41 @@ export function createVehicle4WState(
       waterY: y,
       submerged: 0,
     })),
+  };
+}
+
+/**
+ * Calcula la posición mundial de un jinete sentado sobre una montura visible (moto, bici, caballo)
+ * aplicando la rotación 'YXZ' exacta del vehículo para que acompañe el alabeo y cabeceo.
+ */
+export function computeSaddleWorldPosition(
+  vehPos: { x: number; y: number; z: number },
+  vehRotDeg: { rx: number; ry: number; rz: number },
+  seatOffset: { x: number; y: number; z: number } = { x: 0, y: 0.85, z: -0.1 }
+): { x: number; y: number; z: number } {
+  const rx = ((vehRotDeg.rx || 0) * Math.PI) / 180;
+  const ry = ((vehRotDeg.ry || 0) * Math.PI) / 180;
+  const rz = ((vehRotDeg.rz || 0) * Math.PI) / 180;
+  const ox = seatOffset.x || 0;
+  const oy = seatOffset.y || 0;
+  const oz = seatOffset.z || 0;
+
+  // Orden 'YXZ': Rz -> Rx -> Ry
+  const cosR = Math.cos(rz), sinR = Math.sin(rz);
+  const x1 = ox * cosR - oy * sinR;
+  const y1 = ox * sinR + oy * cosR;
+  const z1 = oz;
+
+  const cosP = Math.cos(rx), sinP = Math.sin(rx);
+  const x2 = x1;
+  const y2 = y1 * cosP - z1 * sinP;
+  const z2 = y1 * sinP + z1 * cosP;
+
+  const cosY = Math.cos(ry), sinY = Math.sin(ry);
+  return {
+    x: vehPos.x + x2 * cosY + z2 * sinY,
+    y: vehPos.y + y2,
+    z: vehPos.z - x2 * sinY + z2 * cosY,
   };
 }
 
@@ -399,6 +440,9 @@ export function stepVehicle4W(
 
   const cosY = Math.cos(st.yawRad);
   const sinY = Math.sin(st.yawRad);
+  const cosP = Math.cos(st.pitchRad);
+  const sinP = Math.sin(st.pitchRad);
+  const sinR = Math.sin(st.rollRad);
   const wheelR = Math.max(0.18, cfg.wheelRadius || 0.42);
   const restLen = Math.max(0.15, cfg.suspensionRestLen || 0.65);
 
@@ -410,7 +454,8 @@ export function stepVehicle4W(
     const wx = st.x + w.offsetX * cosY + w.offsetZ * sinY;
     const wz = st.z - w.offsetX * sinY + w.offsetZ * cosY;
     const gY = sampleGroundY(wx, wz);
-    const hubY = st.y - restLen * 0.4;
+    const cornerAttachY = st.y + w.offsetX * sinR * cosP - w.offsetZ * sinP;
+    const hubY = cornerAttachY - restLen * 0.35;
     const groundDist = hubY - (gY + wheelR);
 
     if (groundDist <= restLen) {
@@ -425,7 +470,7 @@ export function stepVehicle4W(
     } else {
       w.compression = 0;
       w.grounded = false;
-      w.worldY = hubY - restLen * 0.5;
+      w.worldY = Math.max(gY + wheelR, hubY - restLen * 0.5);
     }
     w.worldX = wx;
     w.worldZ = wz;
@@ -492,7 +537,8 @@ export function stepVehicle4W(
 
   const avgGround =
     (st.wheels[0].worldY + st.wheels[1].worldY + st.wheels[2].worldY + st.wheels[3].worldY) * 0.25;
-  const minChassisY = avgGround + restLen * 0.45;
+  const centerGroundY = sampleGroundY(st.x, st.z);
+  const minChassisY = Math.max(avgGround + restLen * 0.42, centerGroundY + wheelR * 0.65);
   if (st.y < minChassisY) {
     st.y = minChassisY;
     if (st.vy < 0) st.vy = 0;
@@ -509,10 +555,10 @@ export function stepVehicle4W(
   // Moto inclina hacia adentro de la curva (+); Auto balancea suavemente hacia afuera (-)
   const leanFactor = isMoto ? 0.42 : -0.075;
   const targetRoll =
-    Math.atan2(leftAvg - rightAvg, Math.max(0.6, cfg.trackWidth || 1.7)) +
+    Math.atan2(rightAvg - leftAvg, Math.max(0.6, cfg.trackWidth || 1.7)) +
     steerInput * (st.speedForward / maxSpd) * leanFactor;
-  st.pitchRad += (targetPitch - st.pitchRad) * Math.min(1, safeDt * 10);
-  st.rollRad += (targetRoll - st.rollRad) * Math.min(1, safeDt * 10);
+  st.pitchRad += (targetPitch - st.pitchRad) * Math.min(1, safeDt * 12);
+  st.rollRad += (targetRoll - st.rollRad) * Math.min(1, safeDt * 12);
 }
 
 /**
@@ -644,7 +690,7 @@ export function stepBoatVehicle(
     const targetPitch =
       Math.atan2(rY - fY, Math.max(1.5, cfg.wheelBase || 5)) * inertiaDamp - throttleInput * 0.06 * inertiaDamp;
     const targetRoll =
-      Math.atan2(lY - riY, Math.max(1.2, cfg.trackWidth || 2.4)) * inertiaDamp +
+      Math.atan2(riY - lY, Math.max(1.2, cfg.trackWidth || 2.4)) * inertiaDamp +
       steerInput * (st.speedForward / maxSpd) * 0.22 * inertiaDamp;
     st.pitchRad += (targetPitch - st.pitchRad) * Math.min(1, safeDt * (6 * inertiaDamp + 1.5));
     st.rollRad += (targetRoll - st.rollRad) * Math.min(1, safeDt * (6 * inertiaDamp + 1.5));
@@ -846,4 +892,222 @@ export function applyLocalGravityZone(
   const floorY = shipState.y - hy + 0.15 + actorHalfY;
   const nextY = Math.max(floorY, actorPos.y + dyShip);
   return { inside: true, nextX, nextY, nextZ, floorY };
+}
+
+/**
+ * Física realista para Helicópteros:
+ * - Arranque progresivo del rotor principal (spool-up RPM)
+ * - Colectivo vertical (Space sube, Shift baja) con auto-hover estable en el aire
+ * - Cíclico: W/S inclina el morro hacia adelante/atrás para acelerar o frenar
+ * - Viraje bancado: A/D alabea lateralmente y gira con rotor de cola + Q/R guiñada fina
+ * - Patines de aterrizaje con nivelación automática al tocar suelo o pista
+ */
+export function stepHelicopterVehicle(
+  st: Vehicle4WRuntimeState,
+  cfg: Vehicle4WConfig,
+  pitchThrottleIn: number, // W/S (+1 adelante, -1 atrás/freno)
+  rollTurnIn: number, // A/D (-1 izq, +1 der)
+  collectiveIn: number, // Space (+1 subir), Shift (-1 bajar)
+  yawIn: number, // Q (-1) o guiñada extra
+  dt: number,
+  sampleGroundY: (x: number, z: number) => number
+): void {
+  const safeDt = Math.min(0.033, Math.max(0.001, dt));
+  st.prevX = st.x;
+  st.prevY = st.y;
+  st.prevZ = st.z;
+
+  const skidClearance = Math.max(0.65, cfg.suspensionRestLen || 0.95);
+  const gY = sampleGroundY(st.x, st.z);
+  const airborne = st.y > gY + skidClearance + 0.18;
+
+  // Spool-up del rotor: acelera rápido al pedir colectivo o movimiento; desacelera suave en tierra
+  let rpm = st.rotorRpm ?? 0;
+  const wantsPower =
+    collectiveIn > 0.05 ||
+    airborne ||
+    Math.abs(pitchThrottleIn) > 0.05 ||
+    Math.abs(rollTurnIn) > 0.05;
+  const targetRpm = collectiveIn > 0.05 ? 1.0 : airborne ? 0.88 : wantsPower ? 0.72 : 0.15;
+  const spoolRate = targetRpm > rpm ? 1.35 : 0.45;
+  rpm += (targetRpm - rpm) * Math.min(1, safeDt * spoolRate);
+  rpm = Math.max(0, Math.min(1.05, rpm));
+  st.rotorRpm = rpm;
+
+  const maxSpd = Math.max(8, cfg.maxSpeed || 28);
+  const cyclicPower = Math.max(8, cfg.maxTorque || 18);
+
+  if (airborne || rpm >= 0.48) {
+    // Cabeceo cíclico (W inclina morro hacia abajo -> +pitchRad porque +Z es adelante y +rx baja nariz)
+    const targetPitch = Math.max(-0.44, Math.min(0.44, pitchThrottleIn * 0.38));
+    st.pitchRad += (targetPitch - st.pitchRad) * Math.min(1, safeDt * 4.5);
+
+    // Alabeo y viraje bancado al doblar
+    const targetRoll = Math.max(-0.5, Math.min(0.5, rollTurnIn * 0.42));
+    st.rollRad += (targetRoll - st.rollRad) * Math.min(1, safeDt * 4.8);
+
+    // Giro de cola: A/D combinan alabeo con viraje progresivo + guiñada directa
+    const turnRate = (rollTurnIn * 1.35 + yawIn * 1.45) * (airborne ? 1.0 : 0.45);
+    st.yawRad -= turnRate * safeDt;
+  } else {
+    // En tierra con bajas RPM: nivelación firme sobre patines
+    st.pitchRad *= Math.max(0, 1 - 6 * safeDt);
+    st.rollRad *= Math.max(0, 1 - 6 * safeDt);
+  }
+
+  const sinY = Math.sin(st.yawRad);
+  const cosY = Math.cos(st.yawRad);
+  const rightX = cosY;
+  const rightZ = -sinY;
+
+  // Empuje horizontal proporcional al ángulo cíclico y RPM del rotor
+  const liftAuth = Math.max(0, Math.min(1, (rpm - 0.25) / 0.65));
+  if (airborne || rpm >= 0.48) {
+    const fwdAccel = (Math.sin(st.pitchRad) * cyclicPower * 1.65 + pitchThrottleIn * cyclicPower * 0.45) * liftAuth;
+    const latAccel = Math.sin(st.rollRad) * cyclicPower * 0.45 * liftAuth;
+    st.vx += (sinY * fwdAccel + rightX * latAccel) * safeDt;
+    st.vz += (cosY * fwdAccel + rightZ * latAccel) * safeDt;
+  }
+
+  // Resistencia aérea suave para frenar naturalmente al nivelar el cíclico
+  const airDrag = airborne ? 1.15 : 4.2;
+  st.vx *= Math.max(0, 1 - airDrag * safeDt);
+  st.vz *= Math.max(0, 1 - airDrag * safeDt);
+
+  const horizSpd = Math.hypot(st.vx, st.vz);
+  if (horizSpd > maxSpd) {
+    const scale = maxSpd / horizSpd;
+    st.vx *= scale;
+    st.vz *= scale;
+  }
+
+  // Sustentación vertical y colectivo (auto-hover cuando RPM >= 0.55)
+  const gravity = 15.5;
+  const hoverThrust = rpm >= 0.52 ? gravity * Math.min(1.02, (rpm - 0.15) / 0.72) : gravity * rpm * 0.6;
+  const collectiveForce = collectiveIn * 18.5 * Math.max(0.35, liftAuth);
+  const netVertAcc = hoverThrust + collectiveForce - gravity - st.vy * (airborne ? 2.4 : 4.0);
+  st.vy += netVertAcc * safeDt;
+  st.vy = Math.max(-16, Math.min(16, st.vy));
+
+  st.x += st.vx * safeDt;
+  st.y += st.vy * safeDt;
+  st.z += st.vz * safeDt;
+
+  // Aterrizaje / contacto de patines con el terreno
+  const nextGY = sampleGroundY(st.x, st.z);
+  const landed = st.y <= nextGY + skidClearance;
+  if (landed) {
+    st.y = nextGY + skidClearance;
+    if (st.vy < 0) st.vy = 0;
+    st.pitchRad *= Math.max(0, 1 - 7.5 * safeDt);
+    st.rollRad *= Math.max(0, 1 - 7.5 * safeDt);
+    st.vx *= Math.max(0, 1 - 5.5 * safeDt);
+    st.vz *= Math.max(0, 1 - 5.5 * safeDt);
+  }
+
+  st.speedForward = st.vx * sinY + st.vz * cosY;
+  st.propellerSpinRad += (1.2 + rpm * 30) * safeDt;
+
+  for (let i = 0; i < 4; i++) {
+    const w = st.wheels[i];
+    w.worldX = st.x + w.offsetX * cosY + w.offsetZ * sinY;
+    w.worldZ = st.z - w.offsetX * sinY + w.offsetZ * cosY;
+    w.worldY = st.y - skidClearance;
+    w.grounded = landed;
+  }
+}
+
+/**
+ * Física ágil de Caballo / Montura Terrestre:
+ * - Giro en el sitio + curvas cerradas al galopar
+ * - Cadencia vertical rítmica de trote/galope sincronizada con la velocidad
+ * - Salto con Space y adaptación suave a pendientes del terreno
+ */
+export function stepHorseVehicle(
+  st: Vehicle4WRuntimeState,
+  cfg: Vehicle4WConfig,
+  throttleIn: number, // W/S
+  steerIn: number, // A/D
+  jumpPressed: boolean,
+  dt: number,
+  sampleGroundY: (x: number, z: number) => number
+): void {
+  const safeDt = Math.min(0.033, Math.max(0.001, dt));
+  st.prevX = st.x;
+  st.prevY = st.y;
+  st.prevZ = st.z;
+
+  const hipHeight = Math.max(0.75, (cfg.wheelRadius || 0.45) + (cfg.suspensionRestLen || 0.65));
+  const maxSpd = Math.max(6, cfg.maxSpeed || 17);
+  const accel = Math.max(8, cfg.maxTorque || 20);
+  const gNow = sampleGroundY(st.x, st.z);
+  const grounded = st.y <= gNow + hipHeight + 0.14 && st.vy <= 0.6;
+
+  // Giro ágil incluso quieto (caballo gira sobre sus cuartos traseros)
+  const turnRate = ((cfg.maxSteerDeg || 36) * Math.PI) / 180 * 2.6;
+  const speedTurnMod = Math.abs(st.speedForward) < 0.5 ? 1.0 : 0.78;
+  st.yawRad -= Math.max(-1, Math.min(1, steerIn)) * turnRate * speedTurnMod * safeDt;
+  st.steerAngleRad = Math.max(-0.6, Math.min(0.6, steerIn * 0.45));
+
+  const thr = Math.max(-1, Math.min(1, throttleIn));
+  if (thr > 0.02) {
+    st.speedForward += accel * thr * (grounded ? 1.0 : 0.35) * safeDt;
+  } else if (thr < -0.02) {
+    st.speedForward += accel * 0.75 * thr * (grounded ? 1.0 : 0.35) * safeDt;
+  } else if (grounded) {
+    st.speedForward *= Math.max(0, 1 - 5.2 * safeDt);
+    if (Math.abs(st.speedForward) < 0.08) st.speedForward = 0;
+  }
+  st.speedForward = Math.max(-maxSpd * 0.35, Math.min(maxSpd, st.speedForward));
+
+  st.jumpCooldown = Math.max(0, (st.jumpCooldown ?? 0) - safeDt);
+  if (jumpPressed && grounded && st.jumpCooldown <= 0) {
+    st.vy = 9.4;
+    st.jumpCooldown = 0.35;
+  }
+
+  const sinY = Math.sin(st.yawRad);
+  const cosY = Math.cos(st.yawRad);
+  st.vx = sinY * st.speedForward;
+  st.vz = cosY * st.speedForward;
+  st.vy -= 22 * safeDt;
+
+  st.x += st.vx * safeDt;
+  st.z += st.vz * safeDt;
+  st.y += st.vy * safeDt;
+
+  const gNext = sampleGroundY(st.x, st.z);
+  const speedRatio = Math.min(1, Math.abs(st.speedForward) / maxSpd);
+  let gallopBobY = 0;
+  let gallopPitch = 0;
+  if (st.y <= gNext + hipHeight) {
+    st.stridePhase = (st.stridePhase ?? 0) + (2.5 + speedRatio * 9.5) * safeDt;
+    if (speedRatio > 0.06) {
+      gallopBobY = Math.abs(Math.sin(st.stridePhase)) * 0.14 * speedRatio;
+      gallopPitch = Math.cos(st.stridePhase) * 0.055 * speedRatio;
+    }
+    st.y = gNext + hipHeight + gallopBobY;
+    if (st.vy < 0) st.vy = 0;
+  }
+
+  // Adaptar al terreno delantero/trasero
+  const probeDist = Math.max(0.8, (cfg.wheelBase || 2.1) * 0.5);
+  const gFront = sampleGroundY(st.x + sinY * probeDist, st.z + cosY * probeDist);
+  const gBack = sampleGroundY(st.x - sinY * probeDist, st.z - cosY * probeDist);
+  const slopePitch = Math.atan2(gBack - gFront, probeDist * 2);
+  const airPitch = !grounded ? Math.max(-0.35, Math.min(0.35, -st.vy * 0.03)) : 0;
+  const targetPitch = slopePitch + gallopPitch + airPitch;
+  const targetRoll = steerIn * speedRatio * 0.16;
+
+  st.pitchRad += (targetPitch - st.pitchRad) * Math.min(1, safeDt * 10);
+  st.rollRad += (targetRoll - st.rollRad) * Math.min(1, safeDt * 10);
+
+  for (let i = 0; i < 4; i++) {
+    const w = st.wheels[i];
+    w.worldX = st.x + w.offsetX * cosY + w.offsetZ * sinY;
+    w.worldZ = st.z - w.offsetX * sinY + w.offsetZ * cosY;
+    w.worldY = gNext + 0.18;
+    w.grounded = st.y <= gNext + hipHeight + gallopBobY + 0.16;
+    w.spinRad = st.stridePhase ?? 0;
+  }
 }

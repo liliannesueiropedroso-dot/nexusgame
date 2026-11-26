@@ -1,4 +1,4 @@
-import type { NexusScriptAsset, PrefabDefinition } from '../../project/models/project';
+import type { NexusPluginPackage, NexusScriptAsset, PrefabDefinition } from '../../project/models/project';
 import type {
   ProjectVariable,
   SceneData,
@@ -26,6 +26,7 @@ export class RuntimeSceneManager {
   private projectVariables: ProjectVariable[];
   private prefabs: PrefabDefinition[];
   private scripts: NexusScriptAsset[];
+  private plugins: NexusPluginPackage[];
   private stage: StageResolution;
   private storageAdapter?: StorageAdapter;
 
@@ -42,6 +43,7 @@ export class RuntimeSceneManager {
     variables?: ProjectVariable[];
     prefabs?: PrefabDefinition[];
     scripts?: NexusScriptAsset[];
+    plugins?: NexusPluginPackage[];
     stage: StageResolution;
     storageAdapter?: StorageAdapter;
     leaderboard?: LeaderboardEntry[];
@@ -50,6 +52,7 @@ export class RuntimeSceneManager {
     this.projectVariables = params.variables ?? [];
     this.prefabs = params.prefabs ?? [];
     this.scripts = params.scripts ?? [];
+    this.plugins = params.plugins ?? [];
     this.stage = params.stage;
     this.storageAdapter = params.storageAdapter;
 
@@ -69,6 +72,7 @@ export class RuntimeSceneManager {
     this.baseState = createSimulationState(startScene, this.projectVariables, {
       prefabs: this.prefabs,
       scripts: this.scripts,
+      plugins: this.plugins,
       stage: this.stage,
       preservedVariables: this.persistentVars,
       storageAdapter: this.storageAdapter,
@@ -136,6 +140,7 @@ export class RuntimeSceneManager {
     this.baseState = createSimulationState(target, this.projectVariables, {
       prefabs: this.prefabs,
       scripts: this.scripts,
+      plugins: this.plugins,
       stage: this.stage,
       preservedVariables: this.persistentVars,
       storageAdapter: this.storageAdapter,
@@ -158,6 +163,7 @@ export class RuntimeSceneManager {
     const overlayState = createSimulationState(target, this.projectVariables, {
       prefabs: this.prefabs,
       scripts: this.scripts,
+      plugins: this.plugins,
       stage: this.stage,
       preservedVariables: this.persistentVars,
       storageAdapter: this.storageAdapter,

@@ -2028,6 +2028,27 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
       if (resC) compiledScripts2D.set(sc.id, resC);
     });
 
+    var compiledPlugins2D = [];
+    (gameData.plugins || []).forEach(function (plg) {
+      if (!plg || !plg.enabled || plg.scope === 'editor' || !plg.code) return;
+      try {
+        var regDef = null;
+        var modObj = { exports: {} };
+        var npHost = {
+          id: plg.id, name: plg.name, version: plg.version,
+          register: function (d) { if (d && typeof d === 'object') regDef = d; }
+        };
+        var fn = new Function('nexusPlugin', 'exports', 'module', '"use strict";\\n' + String(plg.code));
+        var ret = fn(npHost, modObj.exports, modObj);
+        var resolved = regDef || (ret && typeof ret === 'object' ? ret : null) || (Object.keys(modObj.exports).length > 0 ? modObj.exports : null);
+        if (resolved && (typeof resolved.onStart === 'function' || typeof resolved.onUpdate === 'function' || typeof resolved.onEvent === 'function')) {
+          compiledPlugins2D.push({ id: plg.id, name: plg.name, onStart: resolved.onStart, onUpdate: resolved.onUpdate, onEvent: resolved.onEvent });
+        }
+      } catch (e) {
+        console.warn('[NEXUS Plugin Error]', plg.name, e);
+      }
+    });
+
     function makeScriptHandle2D(obj, sim, objMap, params) {
       var body = sim.bodies.get(obj.id);
       if (!sim.scriptObjectData) sim.scriptObjectData = new Map();
@@ -4559,6 +4580,26 @@ export function generateNexusRuntimeJs(options: Html5CompileOptions): string {
           }
         });
       });
+
+      if (compiledPlugins2D.length > 0) {
+        if (!sim.startedPluginIds) sim.startedPluginIds = new Set();
+        compiledPlugins2D.forEach(function (plg) {
+          if (!sim.startedPluginIds.has(plg.id)) {
+            sim.startedPluginIds.add(plg.id);
+            if (typeof plg.onStart === 'function') {
+              try { plg.onStart(api2d); } catch (err) { console.warn('[NEXUS Plugin Error]', plg.name, err); }
+            }
+          }
+          if (typeof plg.onUpdate === 'function') {
+            try { plg.onUpdate(dt, api2d); } catch (err) { console.warn('[NEXUS Plugin Error]', plg.name, err); }
+          }
+          if (typeof plg.onEvent === 'function' && emittedThisFrame.length > 0) {
+            emittedThisFrame.forEach(function (evName) {
+              try { plg.onEvent(evName, undefined, api2d); } catch (err) { console.warn('[NEXUS Plugin Error]', plg.name, err); }
+            });
+          }
+        });
+      }
 
       sim.sceneStarted = true;
       sim.activeCollisions = nextCollisions;

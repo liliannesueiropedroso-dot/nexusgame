@@ -4409,13 +4409,21 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                         <select
                           aria-label="Modo de vehículo 3D"
                           value={kind}
-                          onChange={(e) => patchVeh({ vehicleKind: e.target.value as VehicleKind3D })}
+                          onChange={(e) => {
+                            const nextK = e.target.value as VehicleKind3D;
+                            patchVeh({
+                              vehicleKind: nextK,
+                              mountStyle: nextK === 'moto' || nextK === 'horse' ? 'saddle' : veh.mountStyle,
+                            });
+                          }}
                           className="w-full rounded border border-[#32323c] bg-[#141416] px-2 py-1 text-xs text-zinc-100"
                         >
                           <option value="car">Auto 4 Ruedas + Suspensión</option>
-                          <option value="moto">Moto 2 Ruedas + Inclinación</option>
+                          <option value="moto">Moto / Bici (2 Ruedas + Montura)</option>
+                          <option value="horse">Caballo / Montura (Galope + Salto)</option>
                           <option value="boat">Bote / Barco (Flotación en Olas)</option>
                           <option value="plane">Avión (Aerodinámica 6DOF)</option>
+                          <option value="helicopter">Helicóptero (Rotor Y + Auto-Hover)</option>
                           <option value="spaceship">Nave Espacial (6DOF + Gravedad Local)</option>
                         </select>
 
@@ -4427,6 +4435,106 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                           <NumberField id="veh-str" label="Giro °" value={veh.maxSteerDeg} min={10} max={60} onChange={(maxSteerDeg) => patchVeh({ maxSteerDeg })} />
                           <NumberField id="veh-lod" label="LOD Físicas (m)" value={veh.physicsLodDistance ?? 140} min={20} max={600} step={10} onChange={(physicsLodDistance) => patchVeh({ physicsLodDistance })} />
                         </div>
+
+                        {(kind === 'car' || kind === 'moto') && (
+                          <div className="space-y-1.5 rounded border border-cyan-500/30 bg-cyan-500/5 p-2">
+                            <div className="text-[10px] font-semibold text-cyan-300">
+                              Dimensiones de Ruedas y Suspensión (Malla en escena)
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <NumberField
+                                id="veh-wrad"
+                                label="Radio Rueda (m)"
+                                value={veh.wheelRadius ?? 0.42}
+                                min={0.18}
+                                max={2.5}
+                                step={0.04}
+                                onChange={(wheelRadius) => patchVeh({ wheelRadius })}
+                              />
+                              <NumberField
+                                id="veh-wwid"
+                                label="Ancho Rueda (m)"
+                                value={veh.wheelWidth ?? (kind === 'moto' ? 0.22 : 0.3)}
+                                min={0.12}
+                                max={1.5}
+                                step={0.02}
+                                onChange={(wheelWidth) => patchVeh({ wheelWidth })}
+                              />
+                              <NumberField
+                                id="veh-rest"
+                                label="Suspensión (m)"
+                                value={veh.suspensionRestLen ?? 0.65}
+                                min={0.2}
+                                max={2.0}
+                                step={0.05}
+                                onChange={(suspensionRestLen) => patchVeh({ suspensionRestLen })}
+                              />
+                              <NumberField
+                                id="veh-wbase"
+                                label="Dist. Ejes (m)"
+                                value={veh.wheelBase ?? 2.5}
+                                min={1.0}
+                                max={8.0}
+                                step={0.1}
+                                onChange={(wheelBase) => patchVeh({ wheelBase })}
+                              />
+                              {kind === 'car' && (
+                                <NumberField
+                                  id="veh-track"
+                                  label="Ancho Eje (m)"
+                                  value={veh.trackWidth ?? 1.92}
+                                  min={0.8}
+                                  max={5.0}
+                                  step={0.08}
+                                  onChange={(trackWidth) => patchVeh({ trackWidth })}
+                                />
+                              )}
+                            </div>
+                            {veh.parts && (veh.parts.wheelFL || veh.parts.wheelFR || veh.parts.wheelRL || veh.parts.wheelRR) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const wRad = Math.max(0.18, veh.wheelRadius ?? 0.42);
+                                  const wWid = Math.max(0.12, veh.wheelWidth ?? (kind === 'moto' ? 0.22 : 0.3));
+                                  const rest = Math.max(0.2, veh.suspensionRestLen ?? 0.65);
+                                  const hw = kind === 'moto' ? 0 : Math.max(0.8, veh.trackWidth ?? 1.92) * 0.5;
+                                  const hl = Math.max(1.0, veh.wheelBase ?? 2.5) * 0.5;
+                                  const wy = -(rest * 0.85);
+                                  const defW = kind === 'moto' ? 0.22 : 0.3;
+                                  const wheelSlots: Record<string, { x: number; z: number }> = {
+                                    ...(veh.parts?.wheelFL ? { [veh.parts.wheelFL]: { x: -hw, z: hl } } : {}),
+                                    ...(veh.parts?.wheelFR ? { [veh.parts.wheelFR]: { x: hw, z: hl } } : {}),
+                                    ...(veh.parts?.wheelRL ? { [veh.parts.wheelRL]: { x: -hw, z: -hl } } : {}),
+                                    ...(veh.parts?.wheelRR ? { [veh.parts.wheelRR]: { x: hw, z: -hl } } : {}),
+                                  };
+                                  onUpdateScene((prevScene) => ({
+                                    ...prevScene,
+                                    objects: prevScene.objects.map((cand) => {
+                                      const slotPos = wheelSlots[cand.id];
+                                      if (!slotPos || !cand.transform3d) return cand;
+                                      const isGlb = cand.mesh3d?.shape === 'glb' && Boolean(cand.mesh3d.glbAssetId);
+                                      return {
+                                        ...cand,
+                                        transform3d: {
+                                          ...cand.transform3d,
+                                          x: slotPos.x,
+                                          y: wy,
+                                          z: slotPos.z,
+                                          sx: isGlb ? Math.max(0.14, (wRad * 2) * (wWid / defW)) : wRad * 2,
+                                          sy: isGlb ? wRad * 2 : wWid,
+                                          sz: wRad * 2,
+                                        },
+                                      };
+                                    }),
+                                  }));
+                                }}
+                                className="w-full rounded border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
+                              >
+                                Ajustar ruedas hijas a este tamaño
+                              </button>
+                            )}
+                          </div>
+                        )}
 
                         {kind === 'boat' && (
                           <div className="grid grid-cols-2 gap-1.5">
@@ -4498,6 +4606,61 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                             )}
                           </div>
                         )}
+
+                        <div className="space-y-1.5 rounded border border-[#2f323d] bg-[#141418] p-2">
+                          <div className="grid grid-cols-2 gap-1.5 items-center">
+                            <span className="text-[10px] font-medium text-zinc-300">Montura al subir (E)</span>
+                            <select
+                              aria-label="Estilo de montura del vehículo"
+                              value={veh.mountStyle ?? (kind === 'moto' || kind === 'horse' ? 'saddle' : 'inside')}
+                              onChange={(e) => patchVeh({ mountStyle: e.target.value as 'inside' | 'saddle' })}
+                              className="rounded border border-[#32323c] bg-[#141416] px-1.5 py-1 text-[11px] text-zinc-100"
+                            >
+                              <option value="inside">Dentro / Cabina (ocultar)</option>
+                              <option value="saddle">Encima / Silla (visible)</option>
+                            </select>
+                          </div>
+                          {(veh.mountStyle === 'saddle' || (!veh.mountStyle && (kind === 'moto' || kind === 'horse'))) && (
+                            <div className="grid grid-cols-3 gap-1">
+                              <NumberField
+                                id="veh-seat-x"
+                                label="Asiento X"
+                                value={veh.seatOffset?.x ?? 0}
+                                min={-4}
+                                max={4}
+                                step={0.1}
+                                onChange={(x) => patchVeh({ seatOffset: { x, y: veh.seatOffset?.y ?? (kind === 'horse' ? 0.92 : 0.78), z: veh.seatOffset?.z ?? -0.1 } })}
+                              />
+                              <NumberField
+                                id="veh-seat-y"
+                                label="Asiento Y"
+                                value={veh.seatOffset?.y ?? (kind === 'horse' ? 0.92 : 0.78)}
+                                min={-2}
+                                max={5}
+                                step={0.1}
+                                onChange={(y) => patchVeh({ seatOffset: { x: veh.seatOffset?.x ?? 0, y, z: veh.seatOffset?.z ?? -0.1 } })}
+                              />
+                              <NumberField
+                                id="veh-seat-z"
+                                label="Asiento Z"
+                                value={veh.seatOffset?.z ?? (kind === 'horse' ? -0.06 : -0.14)}
+                                min={-5}
+                                max={5}
+                                step={0.1}
+                                onChange={(z) => patchVeh({ seatOffset: { x: veh.seatOffset?.x ?? 0, y: veh.seatOffset?.y ?? (kind === 'horse' ? 0.92 : 0.78), z } })}
+                              />
+                            </div>
+                          )}
+                          <label className="flex items-center gap-1.5 text-[10px] text-zinc-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={veh.allowQuickEnterExit !== false}
+                              onChange={(e) => patchVeh({ allowQuickEnterExit: e.target.checked })}
+                              className="accent-emerald-500"
+                            />
+                            <span>Subir / Bajar automático con Tecla E</span>
+                          </label>
+                        </div>
 
                         {(scene.splines3d?.length ?? 0) > 0 && (
                           <div>

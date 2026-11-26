@@ -1,11 +1,12 @@
 import { createId } from '../../utils/id';
-import type { NexusProject, NexusProjectSummary } from '../../project/models/project';
+import type { NexusPluginPackage, NexusProject, NexusProjectSummary } from '../../project/models/project';
 import { summarizeProject } from '../../project/models/project';
 
 const DB_NAME = 'nexus_game_engine_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_PROJECTS = 'projects';
 const STORE_ASSETS = 'assets';
+const STORE_PLUGINS = 'plugins';
 
 export interface StoredAssetBlob {
   key: string; // `${projectId}:${assetId}`
@@ -38,6 +39,10 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_ASSETS)) {
         const assetStore = db.createObjectStore(STORE_ASSETS, { keyPath: 'key' });
         assetStore.createIndex('projectId', 'projectId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_PLUGINS)) {
+        const pluginStore = db.createObjectStore(STORE_PLUGINS, { keyPath: 'id' });
+        pluginStore.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
     };
 
@@ -264,6 +269,44 @@ export class NexusIndexedDBStorage {
       }
       await waitTransaction(tx);
       return toSave;
+    } finally {
+      db.close();
+    }
+  }
+
+  async listLocalPlugins(): Promise<NexusPluginPackage[]> {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(STORE_PLUGINS, 'readonly');
+      const all = await txPromise<NexusPluginPackage[]>(tx.objectStore(STORE_PLUGINS).getAll());
+      return all.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    } finally {
+      db.close();
+    }
+  }
+
+  async saveLocalPlugin(plugin: NexusPluginPackage): Promise<NexusPluginPackage> {
+    const next: NexusPluginPackage = {
+      ...plugin,
+      updatedAt: Date.now(),
+    };
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(STORE_PLUGINS, 'readwrite');
+      tx.objectStore(STORE_PLUGINS).put(next);
+      await waitTransaction(tx);
+      return next;
+    } finally {
+      db.close();
+    }
+  }
+
+  async deleteLocalPlugin(pluginId: string): Promise<void> {
+    const db = await openDatabase();
+    try {
+      const tx = db.transaction(STORE_PLUGINS, 'readwrite');
+      tx.objectStore(STORE_PLUGINS).delete(pluginId);
+      await waitTransaction(tx);
     } finally {
       db.close();
     }

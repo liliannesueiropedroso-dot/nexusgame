@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Check, Copy, Play, SlidersHorizontal, Sparkles, Terminal } from 'lucide-react';
+import { applyCommandPlan, planCommandBarInput } from '../../engine/commandbar/commandPlan';
 import { importImageFiles } from '../../assets/importer/assetImporter';
 import type { MechanicCatalogEntry } from '../../assistant/catalog/mechanicsCatalog';
 import {
@@ -59,6 +60,7 @@ import { createId } from '../../utils/id';
 import { AssistantPanel } from '../assistant/AssistantPanel';
 import { HelpModal } from '../common/HelpModal';
 import { BottomDock, type DockTab } from '../dock/BottomDock';
+import type { CommandBarDraftSignal } from '../dock/CommandBarPanel';
 import { ExportModal } from '../export/ExportModal';
 import { InspectorPanel } from '../inspector/InspectorPanel';
 import { LeftSidebar } from '../panels/LeftSidebar';
@@ -133,6 +135,10 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isVehicleWizardOpen, setIsVehicleWizardOpen] = useState(false);
   const [isCompilingHtml5, setIsCompilingHtml5] = useState(false);
+  const [quickCmdText, setQuickCmdText] = useState('');
+  const [quickCmdCopied, setQuickCmdCopied] = useState(false);
+  const [externalCommandDraft, setExternalCommandDraft] = useState<CommandBarDraftSignal | null>(null);
+  const quickCmdInputRef = useRef<HTMLInputElement | null>(null);
 
   const project = transientProject ?? history.present;
   const activeScene = useMemo(
@@ -149,6 +155,14 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
   const diagnostics = useMemo(
     () => analyzeProjectDiagnostics(project, activeScene, project.assets),
     [project, activeScene]
+  );
+
+  const quickCmdPlan = useMemo(
+    () =>
+      quickCmdText.trim().length > 0
+        ? planCommandBarInput(project, activeScene.id, selectedIds, quickCmdText)
+        : null,
+    [project, activeScene.id, selectedIds, quickCmdText]
   );
 
   const stage = useMemo(
@@ -332,13 +346,20 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
     setSelectedIds(ids);
   }, []);
 
-  // Atajos globales del editor (deshabilitados al escribir en inputs)
+  // Atajos globales del editor (deshabilitados al escribir en inputs, salvo Ctrl+K)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (actionsRef.current.isPreviewOpen || actionsRef.current.isExportOpen) return;
-      if (isEditableTarget(e.target)) return;
-
       const mod = e.ctrlKey || e.metaKey;
+
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        quickCmdInputRef.current?.focus();
+        quickCmdInputRef.current?.select();
+        return;
+      }
+
+      if (isEditableTarget(e.target)) return;
 
       if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -1225,11 +1246,138 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
             )}
           </div>
 
+          {/* Barra Rápida de Comandos estilo Roblox Studio (> Ctrl+K) */}
+          <div className="flex h-8 shrink-0 items-center gap-1.5 border-t border-[#2b2b34] bg-[#131318] px-2 text-xs">
+            <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold text-cyan-400">
+              <Terminal className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Comando</span>
+              <span>&gt;</span>
+            </span>
+            <input
+              ref={quickCmdInputRef}
+              type="text"
+              value={quickCmdText}
+              onChange={(e) => setQuickCmdText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (!quickCmdText.trim()) {
+                    setDockTab('commandbar');
+                    setDockOpen(true);
+                    return;
+                  }
+                  if (!quickCmdPlan || !quickCmdPlan.valid) {
+                    onNotify('error', quickCmdPlan?.errors[0] || 'Comando inválido.');
+                    return;
+                  }
+                  if (quickCmdPlan.requiresDestructiveConfirm) {
+                    setExternalCommandDraft({ text: quickCmdText, nonce: Date.now() });
+                    setDockTab('commandbar');
+                    setDockOpen(true);
+                    onNotify('info', 'Confirma el borrado en Comandos 2.0 antes de aplicar.');
+                    return;
+                  }
+                  const res = applyCommandPlan(project, activeScene.id, selectedIds, quickCmdPlan, false);
+                  commitProjectChange(res.nextProject);
+                  if (res.createdIds.length > 0) setSelectedIds(res.createdIds);
+                  setQuickCmdText('');
+                  onNotify('success', quickCmdPlan.summary);
+                } else if (e.key === 'Escape') {
+                  (e.currentTarget as HTMLInputElement).blur();
+                }
+              }}
+              aria-label="Barra rápida de comandos Roblox Studio"
+              placeholder='Ej: crear cubo nombre=Torre x=6 y=2 z=-4 | mecanica ... | script ... (Ctrl+K)'
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded border border-[#2a2a36] bg-[#0e0e12] px-2 py-0.5 font-mono text-[11px] text-zinc-100 placeholder:text-zinc-500 focus:border-cyan-500 focus:outline-none"
+            />
+            {quickCmdPlan && (
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                  quickCmdPlan.valid
+                    ? 'bg-emerald-500/15 text-emerald-300'
+                    : 'bg-red-500/15 text-red-300'
+                }`}
+              >
+                {quickCmdPlan.valid ? `${quickCmdPlan.diffs.length} cambio(s)` : 'Error'}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (!quickCmdText.trim()) {
+                  setDockTab('commandbar');
+                  setDockOpen(true);
+                  return;
+                }
+                if (!quickCmdPlan || !quickCmdPlan.valid) {
+                  onNotify('error', quickCmdPlan?.errors[0] || 'Comando inválido.');
+                  return;
+                }
+                if (quickCmdPlan.requiresDestructiveConfirm) {
+                  setExternalCommandDraft({ text: quickCmdText, nonce: Date.now() });
+                  setDockTab('commandbar');
+                  setDockOpen(true);
+                  onNotify('info', 'Confirma el borrado en Comandos 2.0 antes de aplicar.');
+                  return;
+                }
+                const res = applyCommandPlan(project, activeScene.id, selectedIds, quickCmdPlan, false);
+                commitProjectChange(res.nextProject);
+                if (res.createdIds.length > 0) setSelectedIds(res.createdIds);
+                setQuickCmdText('');
+                onNotify('success', quickCmdPlan.summary);
+              }}
+              disabled={Boolean(quickCmdText.trim() && quickCmdPlan && !quickCmdPlan.valid)}
+              className="inline-flex shrink-0 items-center gap-1 rounded bg-cyan-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+            >
+              <Play className="h-2.5 w-2.5" />
+              <span>Ejecutar</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Copiar comando rápido"
+              disabled={!quickCmdText.trim()}
+              onClick={() => {
+                if (!quickCmdText.trim()) return;
+                void navigator.clipboard?.writeText?.(quickCmdText).catch(() => {});
+                setQuickCmdCopied(true);
+                setTimeout(() => setQuickCmdCopied(false), 1500);
+              }}
+              className="inline-flex shrink-0 items-center gap-1 rounded border border-[#2f2f3b] bg-[#1a1a22] px-1.5 py-0.5 text-[10px] text-zinc-300 hover:border-cyan-500/60 hover:text-white disabled:opacity-40"
+            >
+              {quickCmdCopied ? (
+                <>
+                  <Check className="h-2.5 w-2.5 text-emerald-400" />
+                  <span className="text-emerald-300">Copiado</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-2.5 w-2.5" />
+                  <span className="hidden md:inline">Copiar</span>
+                </>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (quickCmdText.trim()) {
+                  setExternalCommandDraft({ text: quickCmdText, nonce: Date.now() });
+                }
+                setDockTab('commandbar');
+                setDockOpen(true);
+              }}
+              className="shrink-0 rounded border border-[#2f2f3b] bg-[#1a1a22] px-2 py-0.5 text-[10px] font-medium text-cyan-300 hover:border-cyan-500/60 hover:bg-[#21212b]"
+            >
+              Recetas / Diff
+            </button>
+          </div>
+
           <BottomDock
             open={dockOpen}
             activeTab={dockTab}
             onToggleOpen={() => setDockOpen((o) => !o)}
             onSelectTab={setDockTab}
+            externalCommandDraft={externalCommandDraft}
             mechanics={activeScene.mechanics ?? []}
             objects={activeScene.objects}
             selectedObjectId={selectedObjects[0]?.id ?? null}
@@ -1537,6 +1685,7 @@ export const EditorWorkspace: React.FC<EditorWorkspaceProps> = ({
         open={isVehicleWizardOpen}
         objects={activeScene.objects}
         assets={project.assets}
+        assetBlobs={assetBlobs}
         onClose={() => setIsVehicleWizardOpen(false)}
         onCreateVehicle={(built) => {
           updateActiveSceneCommitted((s) => ({

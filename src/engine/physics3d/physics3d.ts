@@ -22,7 +22,8 @@ import type {
   SmartCameraConfig,
   Transform3D,
 } from '../core/types';
-import type { NexusScriptAsset } from '../../project/models/project';
+import type { NexusPluginPackage, NexusScriptAsset } from '../../project/models/project';
+import { compileRuntimePlugins, type CompiledRuntimePlugin } from '../../plugins/pluginSystem';
 import { compareValues, evaluateNumericExpression, type VariableMap } from '../runtime/expressionEvaluator';
 import {
   beginSmartCameraSwitch,
@@ -79,10 +80,13 @@ import {
 } from '../three3d/waterEffects';
 import {
   applyLocalGravityZone,
+  computeSaddleWorldPosition,
   createSoftBodySimulation,
   createVehicle4WState,
   shouldStepVehiclePhysics,
   stepBoatVehicle,
+  stepHelicopterVehicle,
+  stepHorseVehicle,
   stepPlaneVehicle,
   stepSoftBodySimulation,
   stepSpaceshipVehicle,
@@ -217,7 +221,8 @@ export function createSimulation3DState(
   scripts: NexusScriptAsset[] = [],
   initialVars?: VariableMap,
   audioHooks?: Runtime3DAudioHooks,
-  sceneHooks?: Runtime3DSceneHooks
+  sceneHooks?: Runtime3DSceneHooks,
+  plugins: NexusPluginPackage[] = []
 ) {
   const variables: VariableMap = new Map<string, number | boolean | string>();
   if (initialVars) {
@@ -318,6 +323,8 @@ export function createSimulation3DState(
       }
     }
   }
+  const compiledPlugins: CompiledRuntimePlugin[] = compileRuntimePlugins(plugins);
+  const startedPluginIds = new Set<string>();
 
   const particlePool = new ParticlePool(900);
   const trimeshCache = new Map<string, WorldTrimeshData | null>();
@@ -389,6 +396,7 @@ export function createSimulation3DState(
   let cameraFollowOverride3D: string | null = null;
   let activeMountedVehicleId: string | null = null;
   let mountedActorId: string | null = null;
+  let vehicleToggledThisStep = false;
   let spawnCounter = 0;
   let cameraManualLock = false;
   let cameraBlend: {
@@ -404,6 +412,11 @@ export function createSimulation3DState(
   let cameraShakeIntensity = 0;
 
   let streamingFrame = 0;
+  let lastStreamPx = Number.NaN;
+  let lastStreamPz = Number.NaN;
+  let lastStreamCamX = Number.NaN;
+  let lastStreamCamZ = Number.NaN;
+  const descendantSeenSet = new Set<string>();
   const chunkManifest: ChunkManifest | null = scene.worldStreaming?.enabled
     ? buildChunkManifest(scene, scene.worldStreaming)
     : null;
@@ -1425,20 +1438,30 @@ export function createSimulation3DState(
         break;
       }
       case 'vehicle.enterExit': {
+        if (vehicleToggledThisStep) break;
         const actor =
           (typeof p.actorId === 'string' && p.actorId ? resolveObjectRef(p.actorId) : null) ??
           resolvePlayerActor();
-        const vehTarget =
+        if (!actor) break;
+        const maxDist = Number(p.maxDistance ?? 12);
+        const preferredVeh =
           (typeof p.vehicleId === 'string' && p.vehicleId ? resolveObjectRef(p.vehicleId) : null) ??
-          (typeof p.target === 'string' && p.target ? resolveObjectRef(p.target) : null) ??
-          objects.find((o) => o.source.vehicle?.enabled);
-        if (actor && vehTarget && vehTarget.id !== actor.id) {
-          if (activeMountedVehicleId === vehTarget.id) {
-            const yaw = (vehTarget.t3.ry * Math.PI) / 180;
-            const side = Number(p.exitOffsetX ?? 2.6);
-            actor.t3.x = vehTarget.t3.x + Math.cos(yaw) * side;
-            actor.t3.y = vehTarget.t3.y + 0.9;
-            actor.t3.z = vehTarget.t3.z - Math.sin(yaw) * side;
+          (typeof p.target === 'string' && p.target ? resolveObjectRef(p.target) : null);
+
+        if (activeMountedVehicleId) {
+          const curVeh =
+            objById.get(activeMountedVehicleId) ??
+            (preferredVeh?.source.vehicle?.enabled ? preferredVeh : null);
+          if (curVeh && actor.id !== curVeh.id) {
+            const exitOffsetX = Number(p.exitOffsetX ?? 2.6);
+            const yaw = (curVeh.t3.ry * Math.PI) / 180;
+            actor.t3.x = curVeh.t3.x + Math.cos(yaw) * exitOffsetX;
+            actor.t3.z = curVeh.t3.z - Math.sin(yaw) * exitOffsetX;
+            const gY = groundHeightAt(scene, actor.t3.x, actor.t3.z);
+            const heA = getHalfExtents3D(actor);
+            actor.t3.y = Math.max(curVeh.t3.y + 0.5, gY + heA.y);
+            actor.t3.rx = 0;
+            actor.t3.rz = 0;
             actor.vx = 0;
             actor.vy = 0;
             actor.vz = 0;
@@ -1447,21 +1470,59 @@ export function createSimulation3DState(
             mountedActorId = null;
             cameraFollowOverride3D = null;
             cameraManualLock = false;
-          } else if (!activeMountedVehicleId) {
+            vehicleToggledThisStep = true;
+          }
+        } else {
+          let vehTarget: Sim3DObjectState | null =
+            preferredVeh && preferredVeh.source.vehicle?.enabled ? preferredVeh : null;
+          if (!vehTarget) {
+            let bestDist = Infinity;
+            for (const cand of objects) {
+              if (!cand.visible || cand.id === actor.id || !cand.source.vehicle?.enabled) continue;
+              const xzD = Math.hypot(actor.t3.x - cand.t3.x, actor.t3.z - cand.t3.z);
+              if (xzD > maxDist) continue;
+              const d3 = Math.hypot(actor.t3.x - cand.t3.x, actor.t3.y - cand.t3.y, actor.t3.z - cand.t3.z);
+              if (d3 < bestDist) {
+                bestDist = d3;
+                vehTarget = cand;
+              }
+            }
+          }
+          if (vehTarget && vehTarget.id !== actor.id) {
             const dist = Math.hypot(actor.t3.x - vehTarget.t3.x, actor.t3.z - vehTarget.t3.z);
-            const maxDist = Number(p.maxDistance ?? 12);
             if (dist <= maxDist) {
+              const vCfg = vehTarget.source.vehicle;
+              const vKind = vCfg?.vehicleKind ?? 'car';
+              const isSaddle =
+                vCfg?.mountStyle === 'saddle' ||
+                (!vCfg?.mountStyle && (vKind === 'moto' || vKind === 'horse'));
               activeMountedVehicleId = vehTarget.id;
               mountedActorId = actor.id;
-              actor.visible = false;
               actor.vx = 0;
               actor.vy = 0;
               actor.vz = 0;
-              actor.t3.x = vehTarget.t3.x;
-              actor.t3.y = vehTarget.t3.y;
-              actor.t3.z = vehTarget.t3.z;
-              cameraFollowOverride3D = vehTarget.source.vehicle?.parts?.cameraId || vehTarget.id;
+              if (isSaddle) {
+                actor.visible = true;
+                const pos = computeSaddleWorldPosition(
+                  vehTarget.t3,
+                  vehTarget.t3,
+                  vCfg?.seatOffset ?? { x: 0, y: vKind === 'horse' ? 1.05 : 0.85, z: -0.1 }
+                );
+                actor.t3.x = pos.x;
+                actor.t3.y = pos.y;
+                actor.t3.z = pos.z;
+                actor.t3.rx = vehTarget.t3.rx;
+                actor.t3.ry = vehTarget.t3.ry;
+                actor.t3.rz = vehTarget.t3.rz;
+              } else {
+                actor.visible = false;
+                actor.t3.x = vehTarget.t3.x;
+                actor.t3.y = vehTarget.t3.y;
+                actor.t3.z = vehTarget.t3.z;
+              }
+              cameraFollowOverride3D = vCfg?.parts?.cameraId || vehTarget.id;
               cameraManualLock = false;
+              vehicleToggledThisStep = true;
             }
           }
         }
@@ -1809,6 +1870,7 @@ export function createSimulation3DState(
     activeJustPressedKeys = input.justPressedKeys;
     activeMoveAxisX = input.moveAxisX ?? 0;
     activeMoveAxisY = input.moveAxisY ?? 0;
+    vehicleToggledThisStep = false;
 
     // Decrementar toasts dinámicos
     for (let i = activeToasts.length - 1; i >= 0; i--) {
@@ -1817,6 +1879,17 @@ export function createSimulation3DState(
     }
 
     const api = createApi(dt);
+    for (const pl of compiledPlugins) {
+      if (startedPluginIds.has(pl.id)) continue;
+      startedPluginIds.add(pl.id);
+      if (pl.onStart) {
+        try {
+          pl.onStart(api);
+        } catch (err) {
+          logScriptError(`plugin:${pl.id}:onStart`, pl.name, err);
+        }
+      }
+    }
     // Avanzar animaciones de Keyframes 3D/Cámara (SceneAnimatorPanel)
     for (const obj of objects) {
       if (!obj.visible || !obj.source.tweens || obj.source.tweens.length === 0) continue;
@@ -1957,14 +2030,29 @@ export function createSimulation3DState(
             }
           : null
       );
-      stepStreamingController(
-        streamingState,
-        streamingSceneView,
-        chunkManifest,
-        cue,
-        scene.worldStreaming,
-        worldSaveState ?? undefined
-      );
+      const movedEnough =
+        Number.isNaN(lastStreamPx) ||
+        Math.hypot(cue.playerPos.x - lastStreamPx, cue.playerPos.z - lastStreamPz) >= 0.75 ||
+        Math.hypot(cameraState.posX - lastStreamCamX, cameraState.posZ - lastStreamCamZ) >= 0.75;
+      if (
+        streamingFrame === 1 ||
+        streamingState.queue.length > 0 ||
+        movedEnough ||
+        streamingFrame % 4 === 1
+      ) {
+        lastStreamPx = cue.playerPos.x;
+        lastStreamPz = cue.playerPos.z;
+        lastStreamCamX = cameraState.posX;
+        lastStreamCamZ = cameraState.posZ;
+        stepStreamingController(
+          streamingState,
+          streamingSceneView,
+          chunkManifest,
+          cue,
+          scene.worldStreaming,
+          worldSaveState ?? undefined
+        );
+      }
     }
     const aiObstacleBoxes = objects
       .filter(
@@ -2285,9 +2373,30 @@ export function createSimulation3DState(
           if (mountedActorId === obj.id && activeMountedVehicleId) {
             const mVeh = objById.get(activeMountedVehicleId);
             if (mVeh) {
-              obj.t3.x = mVeh.t3.x;
-              obj.t3.y = mVeh.t3.y;
-              obj.t3.z = mVeh.t3.z;
+              const vCfgM = mVeh.source.vehicle;
+              const vKindM = vCfgM?.vehicleKind ?? 'car';
+              const isSaddleM =
+                vCfgM?.mountStyle === 'saddle' ||
+                (!vCfgM?.mountStyle && (vKindM === 'moto' || vKindM === 'horse'));
+              if (isSaddleM) {
+                obj.visible = true;
+                const pos = computeSaddleWorldPosition(
+                  mVeh.t3,
+                  mVeh.t3,
+                  vCfgM?.seatOffset ?? { x: 0, y: vKindM === 'horse' ? 1.05 : 0.85, z: -0.1 }
+                );
+                obj.t3.x = pos.x;
+                obj.t3.y = pos.y;
+                obj.t3.z = pos.z;
+                obj.t3.rx = mVeh.t3.rx;
+                obj.t3.ry = mVeh.t3.ry;
+                obj.t3.rz = mVeh.t3.rz;
+              } else {
+                obj.visible = false;
+                obj.t3.x = mVeh.t3.x;
+                obj.t3.y = mVeh.t3.y;
+                obj.t3.z = mVeh.t3.z;
+              }
               obj.vx = mVeh.vx;
               obj.vy = mVeh.vy;
               obj.vz = mVeh.vz;
@@ -3137,11 +3246,13 @@ export function createSimulation3DState(
     const dynamicIdSet = new Set(dynamicBodies.map((b) => b.id));
     const isDescendantOfDynamic = (o: Sim3DObjectState): boolean => {
       let pid: string | null | undefined = o.source.parentId;
+      if (!pid) return false;
       let guard = 0;
-      const seen = new Set<string>([o.id]);
-      while (pid && !seen.has(pid) && guard < 12) {
+      descendantSeenSet.clear();
+      descendantSeenSet.add(o.id);
+      while (pid && !descendantSeenSet.has(pid) && guard < 12) {
         if (dynamicIdSet.has(pid)) return true;
-        seen.add(pid);
+        descendantSeenSet.add(pid);
         pid = objById.get(pid)?.source.parentId;
         guard++;
       }
@@ -3210,6 +3321,108 @@ export function createSimulation3DState(
           ? (scene.splines3d ?? []).find((sp) => sp.id === patrolSplineId)
           : null;
 
+        const sampleDriveGroundY = (wx: number, wz: number): number => {
+          let bestY: number | null = null;
+          for (const sol of staticSolids) {
+            const sm3 = sol.source.mesh3d;
+            if (sm3?.shape === 'water' || sm3?.shape === 'grass_field' || sol.source.physics3d?.isTrigger) continue;
+            if (sm3?.shape === 'terrain' && sm3.terrainData) {
+              const th = sampleTerrainHeightAt({ ...sol.source, transform3d: getWorldT3(sol) }, wx, wz);
+              if (th !== null && (bestY === null || th > bestY)) bestY = th;
+              continue;
+            }
+            if (sol.source.navRole === 'ignore') continue;
+            const solW = getWorldT3(sol);
+            const heB = getHalfExtents3D({ ...sol, t3: solW });
+            const ryRad = ((solW.ry ?? 0) * Math.PI) / 180;
+            const cosR = Math.cos(ryRad);
+            const sinR = Math.sin(ryRad);
+            const dxW = wx - solW.x;
+            const dzW = wz - solW.z;
+            const lx = dxW * cosR - dzW * sinR;
+            const lz = dxW * sinR + dzW * cosR;
+            if (Math.abs(lx) > heB.x || Math.abs(lz) > heB.z) continue;
+            if (sm3?.shape === 'ramp') {
+              const frac = Math.max(0, Math.min(1, (lx + heB.x) / Math.max(0.01, heB.x * 2)));
+              const rampY = solW.y + heB.y - frac * (heB.y * 2);
+              if (rampY <= vState.y + 1.15 && (bestY === null || rampY > bestY)) bestY = rampY;
+              continue;
+            }
+            const topY = solW.y + heB.y;
+            if (topY <= vState.y + 0.72 && (bestY === null || topY > bestY)) {
+              bestY = topY;
+            }
+          }
+          return bestY ?? 0;
+        };
+
+        const resolveVehicleWallCollisions = () => {
+          const heVeh = getHalfExtents3D(body);
+          const colRx = Math.min(heVeh.x, heVeh.z) * 0.85;
+          const colHy = Math.max(0.35, heVeh.y * 0.75);
+          for (const sol of staticSolids) {
+            const sm3 = sol.source.mesh3d;
+            if (!sm3 || sm3.shape === 'terrain' || sm3.shape === 'water' || sm3.shape === 'ramp' || sm3.shape === 'plane' || sol.source.physics3d?.isTrigger) continue;
+            const solW = getWorldT3(sol);
+            const heB = getHalfExtents3D({ ...sol, t3: solW });
+            const solTop = solW.y + heB.y;
+            if (solTop <= vState.y - heVeh.y + 0.35) continue;
+            const solShape = sol.source.physics3d?.shape;
+            if (solShape === 'mesh_exact' || sm3.shape === 'arch' || sm3.shape === 'stairs') {
+              let tri = trimeshCache.get(sol.id);
+              if (tri === undefined) {
+                tri = buildWorldTrimeshData({ ...sol.source, transform3d: solW });
+                trimeshCache.set(sol.id, tri);
+              }
+              if (tri) {
+                const tRes = resolveBodyVsTrimesh(vState.x, vState.y, vState.z, colRx, colHy, colRx, tri);
+                if (tRes.collided && tRes.hitWall) {
+                  vState.x += tRes.dx;
+                  vState.z += tRes.dz;
+                  const vn = vState.vx * tRes.wallNx + vState.vz * tRes.wallNz;
+                  if (vn < 0) {
+                    vState.vx -= vn * tRes.wallNx * 1.15;
+                    vState.vz -= vn * tRes.wallNz * 1.15;
+                    const fwdX = Math.sin(vState.yawRad);
+                    const fwdZ = Math.cos(vState.yawRad);
+                    vState.speedForward = vState.vx * fwdX + vState.vz * fwdZ;
+                  }
+                }
+                continue;
+              }
+            }
+            const oRes = resolveBodyVsOBB3D(
+              vState.x,
+              vState.y,
+              vState.z,
+              colRx,
+              colHy,
+              colRx,
+              solW.x,
+              solW.y,
+              solW.z,
+              heB.x,
+              heB.y,
+              heB.z,
+              solW.rx ?? 0,
+              solW.ry ?? 0,
+              solW.rz ?? 0
+            );
+            if (oRes.collided && oRes.hitWall) {
+              vState.x += oRes.dx;
+              vState.z += oRes.dz;
+              const vn = vState.vx * oRes.wallNx + vState.vz * oRes.wallNz;
+              if (vn < 0) {
+                vState.vx -= vn * oRes.wallNx * 1.15;
+                vState.vz -= vn * oRes.wallNz * 1.15;
+                const fwdX = Math.sin(vState.yawRad);
+                const fwdZ = Math.cos(vState.yawRad);
+                vState.speedForward = vState.vx * fwdX + vState.vz * fwdZ;
+              }
+            }
+          }
+        };
+
         if (patrolSpline && patrolSpline.points.length >= 2 && !activeMountedVehicleId) {
           const curT = splineProgress.get(body.id) ?? 0;
           const spdRatio = Math.max(0.02, (vCfg.maxSpeed || 14) * 0.008);
@@ -3266,111 +3479,35 @@ export function createSimulation3DState(
             dt,
             (wx, wz) => groundHeightAt(scene, wx, wz)
           );
+        } else if (kind === 'helicopter') {
+          const engineActive = !primaryPlayer || activeMountedVehicleId === body.id || body.id === primaryPlayer.id;
+          stepHelicopterVehicle(
+            vState,
+            vCfg,
+            thr,
+            str,
+            ascendIn,
+            yawIn,
+            dt,
+            (wx, wz) => groundHeightAt(scene, wx, wz),
+            engineActive
+          );
         } else if (kind === 'spaceship') {
           stepSpaceshipVehicle(vState, vCfg, thr, str, ascendIn, yawIn, pitchIn, 0, dt);
+        } else if (kind === 'horse') {
+          stepHorseVehicle(
+            vState,
+            vCfg,
+            thr,
+            str,
+            playerControlsThis && hasDriverControl && (activeJustPressedKeys.has('Space') || activeHeldKeys.has('Space')),
+            dt,
+            sampleDriveGroundY
+          );
+          resolveVehicleWallCollisions();
         } else {
-          const sampleDriveGroundY = (wx: number, wz: number): number => {
-            let bestY: number | null = null;
-            for (const sol of staticSolids) {
-              const sm3 = sol.source.mesh3d;
-              if (sm3?.shape === 'water' || sm3?.shape === 'grass_field' || sol.source.physics3d?.isTrigger) continue;
-              if (sm3?.shape === 'terrain' && sm3.terrainData) {
-                const th = sampleTerrainHeightAt({ ...sol.source, transform3d: getWorldT3(sol) }, wx, wz);
-                if (th !== null && (bestY === null || th > bestY)) bestY = th;
-                continue;
-              }
-              if (sol.source.navRole === 'ignore') continue;
-              const solW = getWorldT3(sol);
-              const heB = getHalfExtents3D({ ...sol, t3: solW });
-              const ryRad = ((solW.ry ?? 0) * Math.PI) / 180;
-              const cosR = Math.cos(ryRad);
-              const sinR = Math.sin(ryRad);
-              const dxW = wx - solW.x;
-              const dzW = wz - solW.z;
-              const lx = dxW * cosR - dzW * sinR;
-              const lz = dxW * sinR + dzW * cosR;
-              if (Math.abs(lx) > heB.x || Math.abs(lz) > heB.z) continue;
-              if (sm3?.shape === 'ramp') {
-                const frac = Math.max(0, Math.min(1, (lx + heB.x) / Math.max(0.01, heB.x * 2)));
-                const rampY = solW.y + heB.y - frac * (heB.y * 2);
-                if (rampY <= vState.y + 1.15 && (bestY === null || rampY > bestY)) bestY = rampY;
-                continue;
-              }
-              const topY = solW.y + heB.y;
-              if (topY <= vState.y + 0.72 && (bestY === null || topY > bestY)) {
-                bestY = topY;
-              }
-            }
-            return bestY ?? 0;
-          };
-
           stepVehicle4W(vState, vCfg, thr, str, dt, sampleDriveGroundY);
-
-          // Colisión horizontal del vehículo contra pilares, muros y arcos sólidos
-          const heVeh = getHalfExtents3D(body);
-          const colRx = Math.min(heVeh.x, heVeh.z) * 0.85;
-          const colHy = Math.max(0.35, heVeh.y * 0.75);
-          for (const sol of staticSolids) {
-            const sm3 = sol.source.mesh3d;
-            if (!sm3 || sm3.shape === 'terrain' || sm3.shape === 'water' || sm3.shape === 'ramp' || sm3.shape === 'plane' || sol.source.physics3d?.isTrigger) continue;
-            const solW = getWorldT3(sol);
-            const heB = getHalfExtents3D({ ...sol, t3: solW });
-            const solTop = solW.y + heB.y;
-            if (solTop <= vState.y - heVeh.y + 0.35) continue; // Suelo bajo transitable
-            const solShape = sol.source.physics3d?.shape;
-            if (solShape === 'mesh_exact' || sm3.shape === 'arch' || sm3.shape === 'stairs') {
-              let tri = trimeshCache.get(sol.id);
-              if (tri === undefined) {
-                tri = buildWorldTrimeshData({ ...sol.source, transform3d: solW });
-                trimeshCache.set(sol.id, tri);
-              }
-              if (tri) {
-                const tRes = resolveBodyVsTrimesh(vState.x, vState.y, vState.z, colRx, colHy, colRx, tri);
-                if (tRes.collided && tRes.hitWall) {
-                  vState.x += tRes.dx;
-                  vState.z += tRes.dz;
-                  const vn = vState.vx * tRes.wallNx + vState.vz * tRes.wallNz;
-                  if (vn < 0) {
-                    vState.vx -= vn * tRes.wallNx * 1.15;
-                    vState.vz -= vn * tRes.wallNz * 1.15;
-                    const fwdX = Math.sin(vState.yawRad);
-                    const fwdZ = Math.cos(vState.yawRad);
-                    vState.speedForward = vState.vx * fwdX + vState.vz * fwdZ;
-                  }
-                }
-                continue;
-              }
-            }
-            const oRes = resolveBodyVsOBB3D(
-              vState.x,
-              vState.y,
-              vState.z,
-              colRx,
-              colHy,
-              colRx,
-              solW.x,
-              solW.y,
-              solW.z,
-              heB.x,
-              heB.y,
-              heB.z,
-              solW.rx ?? 0,
-              solW.ry ?? 0,
-              solW.rz ?? 0
-            );
-            if (oRes.collided && oRes.hitWall) {
-              vState.x += oRes.dx;
-              vState.z += oRes.dz;
-              const vn = vState.vx * oRes.wallNx + vState.vz * oRes.wallNz;
-              if (vn < 0) {
-                vState.vx -= vn * oRes.wallNx * 1.15;
-                vState.vz -= vn * oRes.wallNz * 1.15;
-                const fwdX = Math.sin(vState.yawRad);
-                const fwdZ = Math.cos(vState.yawRad);
-                vState.speedForward = vState.vx * fwdX + vState.vz * fwdZ;
-              }
-            }
-          }
+          resolveVehicleWallCollisions();
         }
 
         body.t3.x = vState.x;
@@ -3385,7 +3522,43 @@ export function createSimulation3DState(
         body.isGrounded =
           kind === 'boat'
             ? vState.pontoons.some((p) => p.submerged > 0)
-            : vState.wheels.some((w) => w.grounded);
+            : kind === 'helicopter' || kind === 'plane'
+              ? vState.y <= groundHeightAt(scene, vState.x, vState.z) + 1.15
+              : kind === 'spaceship'
+                ? false
+                : vState.wheels.some((w) => w.grounded);
+
+        // Sincronizar en el mismo frame al jinete montado en silla ('moto' / 'horse' / mountStyle === 'saddle')
+        if (activeMountedVehicleId === body.id && mountedActorId) {
+          const mAct = objById.get(mountedActorId);
+          if (mAct) {
+            const isSaddle =
+              vCfg.mountStyle === 'saddle' ||
+              (!vCfg.mountStyle && (kind === 'moto' || kind === 'horse'));
+            if (isSaddle) {
+              mAct.visible = true;
+              const sPos = computeSaddleWorldPosition(
+                body.t3,
+                body.t3,
+                vCfg.seatOffset ?? { x: 0, y: kind === 'horse' ? 1.05 : 0.85, z: -0.1 }
+              );
+              mAct.t3.x = sPos.x;
+              mAct.t3.y = sPos.y;
+              mAct.t3.z = sPos.z;
+              mAct.t3.rx = body.t3.rx;
+              mAct.t3.ry = body.t3.ry;
+              mAct.t3.rz = body.t3.rz;
+            } else {
+              mAct.visible = false;
+              mAct.t3.x = body.t3.x;
+              mAct.t3.y = body.t3.y;
+              mAct.t3.z = body.t3.z;
+            }
+            mAct.vx = body.vx;
+            mAct.vy = body.vy;
+            mAct.vz = body.vz;
+          }
+        }
 
         // Zona de Gravedad Local para naves espaciales grandes: el jugador puede caminar dentro en movimiento
         if (
@@ -3834,9 +4007,111 @@ export function createSimulation3DState(
     for (const k of activeJustPressedKeys) {
       runMechanicsForEvent('input.pressed', undefined, undefined, { key: k });
     }
+    // Acceso rápido integrado Tecla E para subir/bajar de cualquier vehículo aunque no tenga mecánica manual
+    if (!vehicleToggledThisStep && activeJustPressedKeys.has('KeyE')) {
+      const actorQuick = (mountedActorId ? objById.get(mountedActorId) : null) ?? resolvePlayerActor();
+      if (actorQuick) {
+        if (activeMountedVehicleId) {
+          const curVeh = objById.get(activeMountedVehicleId);
+          if (curVeh && curVeh.source.vehicle?.allowQuickEnterExit !== false) {
+            const yaw = (curVeh.t3.ry * Math.PI) / 180;
+            actorQuick.t3.x = curVeh.t3.x + Math.cos(yaw) * 2.6;
+            actorQuick.t3.z = curVeh.t3.z - Math.sin(yaw) * 2.6;
+            const gY = groundHeightAt(scene, actorQuick.t3.x, actorQuick.t3.z);
+            const heA = getHalfExtents3D(actorQuick);
+            actorQuick.t3.y = Math.max(curVeh.t3.y + 0.5, gY + heA.y);
+            actorQuick.t3.rx = 0;
+            actorQuick.t3.rz = 0;
+            actorQuick.vx = 0;
+            actorQuick.vy = 0;
+            actorQuick.vz = 0;
+            actorQuick.visible = true;
+            activeMountedVehicleId = null;
+            mountedActorId = null;
+            cameraFollowOverride3D = null;
+            cameraManualLock = false;
+            vehicleToggledThisStep = true;
+          }
+        } else {
+          let nearestVeh: Sim3DObjectState | null = null;
+          let bestDist = Infinity;
+          for (const cand of objects) {
+            if (
+              !cand.visible ||
+              cand.id === actorQuick.id ||
+              !cand.source.vehicle?.enabled ||
+              cand.source.vehicle.allowQuickEnterExit === false
+            ) {
+              continue;
+            }
+            const xzD = Math.hypot(actorQuick.t3.x - cand.t3.x, actorQuick.t3.z - cand.t3.z);
+            if (xzD > 12) continue;
+            const d3 = Math.hypot(
+              actorQuick.t3.x - cand.t3.x,
+              actorQuick.t3.y - cand.t3.y,
+              actorQuick.t3.z - cand.t3.z
+            );
+            if (d3 < bestDist) {
+              bestDist = d3;
+              nearestVeh = cand;
+            }
+          }
+          if (nearestVeh) {
+            const vCfg = nearestVeh.source.vehicle!;
+            const vKind = vCfg.vehicleKind ?? 'car';
+            const isSaddle =
+              vCfg.mountStyle === 'saddle' ||
+              (!vCfg.mountStyle && (vKind === 'moto' || vKind === 'horse'));
+            activeMountedVehicleId = nearestVeh.id;
+            mountedActorId = actorQuick.id;
+            actorQuick.vx = 0;
+            actorQuick.vy = 0;
+            actorQuick.vz = 0;
+            if (isSaddle) {
+              actorQuick.visible = true;
+              const sPos = computeSaddleWorldPosition(
+                nearestVeh.t3,
+                nearestVeh.t3,
+                vCfg.seatOffset ?? { x: 0, y: vKind === 'horse' ? 1.05 : 0.85, z: -0.1 }
+              );
+              actorQuick.t3.x = sPos.x;
+              actorQuick.t3.y = sPos.y;
+              actorQuick.t3.z = sPos.z;
+              actorQuick.t3.rx = nearestVeh.t3.rx;
+              actorQuick.t3.ry = nearestVeh.t3.ry;
+              actorQuick.t3.rz = nearestVeh.t3.rz;
+            } else {
+              actorQuick.visible = false;
+              actorQuick.t3.x = nearestVeh.t3.x;
+              actorQuick.t3.y = nearestVeh.t3.y;
+              actorQuick.t3.z = nearestVeh.t3.z;
+            }
+            cameraFollowOverride3D = vCfg.parts?.cameraId || nearestVeh.id;
+            cameraManualLock = false;
+            vehicleToggledThisStep = true;
+          }
+        }
+      }
+    }
+    for (const pl of compiledPlugins) {
+      if (!pl.onUpdate) continue;
+      try {
+        pl.onUpdate(dt, api);
+      } catch (err) {
+        logScriptError(`plugin:${pl.id}:onUpdate`, pl.name, err);
+      }
+    }
     while (queuedEvents.length > 0) {
       const ev = queuedEvents.shift()!;
       runMechanicsForEvent('custom.event', undefined, undefined, { eventName: ev });
+      for (const pl of compiledPlugins) {
+        if (!pl.onEvent) continue;
+        try {
+          pl.onEvent(ev, undefined, api);
+        } catch (err) {
+          logScriptError(`plugin:${pl.id}:onEvent`, pl.name, err);
+        }
+      }
     }
 
     // 6. Actualizar SmartCamera3D
@@ -4039,6 +4314,7 @@ export function createSimulation3DState(
     getLastWaterSplash: () => lastSplashPos,
     consumeWaterInteractionEvents: () => waterInteractionQueue.splice(0, waterInteractionQueue.length),
     getMountedVehicleId: () => activeMountedVehicleId,
+    getMountedActorId: () => mountedActorId,
     getElapsedTime: () => elapsedTime,
     getUiOverlayState: () => ({ toasts: activeToasts, widgets: dynamicWidgets }),
     getSunOverride: () => sunOverride,
@@ -4047,6 +4323,7 @@ export function createSimulation3DState(
     wiringSys,
     getCameraFollowOverrideId: () => cameraFollowOverride3D,
     getStreamingState: () => streamingState,
+    getChunkManifest: () => chunkManifest,
     getWorldSaveState: () => worldSaveState,
     getStreamingReport: (assets: ProjectAssetMeta[] = []): StreamingProfilerReport | null =>
       chunkManifest && streamingState && streamingSceneView

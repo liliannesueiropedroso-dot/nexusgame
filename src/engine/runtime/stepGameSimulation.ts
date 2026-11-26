@@ -1,4 +1,5 @@
-import type { NexusScriptAsset, PrefabDefinition } from '../../project/models/project';
+import type { NexusPluginPackage, NexusScriptAsset, PrefabDefinition } from '../../project/models/project';
+import { compileRuntimePlugins, type CompiledRuntimePlugin } from '../../plugins/pluginSystem';
 import { createId } from '../../utils/id';
 import { stageDeltaToParentLocal } from '../core/math';
 import { buildGridNav2D, findPath2D, hasLineOfSight2D, type GridNav2D } from '../ai2d/gridPathfinding2d';
@@ -179,6 +180,8 @@ export interface SimulationState {
   prefabMap: Map<string, PrefabDefinition>;
   stage: StageResolution;
   compiledScripts?: Map<string, CompiledScriptEntry>;
+  compiledPlugins?: CompiledRuntimePlugin[];
+  pluginsStarted?: boolean;
   scriptObjectData?: Map<string, Record<string, unknown>>;
   startedScriptBindings?: Set<string>;
   scriptActivePairs?: Set<string>;
@@ -507,6 +510,7 @@ export function createSimulationState(
   options?: {
     prefabs?: PrefabDefinition[];
     scripts?: NexusScriptAsset[];
+    plugins?: NexusPluginPackage[];
     stage?: StageResolution;
     preservedVariables?: Map<string, number | boolean | string>;
     storageAdapter?: StorageAdapter;
@@ -554,6 +558,7 @@ export function createSimulationState(
       }
     }
   }
+  const compiledPlugins = compileRuntimePlugins(options?.plugins ?? []);
 
   const leaderboard = options?.leaderboard ?? loadLeaderboard(options?.storageAdapter);
 
@@ -645,6 +650,8 @@ export function createSimulationState(
     prefabMap,
     stage: options?.stage ?? { width: 1280, height: 720 },
     compiledScripts,
+    compiledPlugins,
+    pluginsStarted: false,
     scriptObjectData: new Map(),
     startedScriptBindings: new Set(),
     scriptActivePairs: new Set(),
@@ -3361,6 +3368,39 @@ export function stepSimulation(
             );
           } catch (err) {
             log2DScriptError(state, `${obj.id}:${b.scriptId}:onClick`, e.name, err);
+          }
+        }
+      }
+    }
+
+    if (state.compiledPlugins && state.compiledPlugins.length > 0) {
+      if (!state.pluginsStarted) {
+        state.pluginsStarted = true;
+        for (const plg of state.compiledPlugins) {
+          if (plg.onStart) {
+            try {
+              plg.onStart(api);
+            } catch (err) {
+              log2DScriptError(state, `plugin:${plg.id}:onStart`, plg.name, err);
+            }
+          }
+        }
+      }
+      for (const plg of state.compiledPlugins) {
+        if (plg.onUpdate) {
+          try {
+            plg.onUpdate(dt, api);
+          } catch (err) {
+            log2DScriptError(state, `plugin:${plg.id}:onUpdate`, plg.name, err);
+          }
+        }
+        if (plg.onEvent && emittedThisFrame.length > 0) {
+          for (const evName of emittedThisFrame) {
+            try {
+              plg.onEvent(evName, undefined, api);
+            } catch (err) {
+              log2DScriptError(state, `plugin:${plg.id}:onEvent`, plg.name, err);
+            }
           }
         }
       }

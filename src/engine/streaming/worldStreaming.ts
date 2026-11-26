@@ -96,6 +96,17 @@ export interface ActivationPolicy {
   aiStride: number;
 }
 
+export interface HlodProxyPart {
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+  width: number;
+  height: number;
+  depth: number;
+  color: string;
+  kind: 'building' | 'foliage' | 'structure';
+}
+
 export interface HlodChunkProxy {
   chunkKey: string;
   centerX: number;
@@ -107,6 +118,9 @@ export interface HlodChunkProxy {
   color: string;
   memberCount: number;
   estimatedTriangles: number;
+  reducedTriangles: number;
+  impostorKind: 'merged_cluster' | 'billboard' | 'hybrid';
+  parts: HlodProxyPart[];
 }
 
 export interface WorldSaveState {
@@ -589,7 +603,7 @@ export function evaluateMemoryResidency(
 
 /**
  * WorldProxySystem: genera proxies agrupados (HLOD) por chunk para representar grandes
- * grupos de edificios/árboles a larga distancia como bloques simplificados/impostors.
+ * grupos de edificios/árboles a larga distancia como mallas combinadas simplificadas e impostors 2D.
  */
 export function buildHlodProxiesForChunks(
   scene: SceneData,
@@ -622,32 +636,134 @@ export function buildHlodProxiesForChunks(
     let minZ = Infinity;
     let maxZ = -Infinity;
     let tris = 0;
+    let foliageParts = 0;
+    let structureParts = 0;
+
+    const rawParts: Array<{
+      cx: number;
+      cy: number;
+      cz: number;
+      w: number;
+      h: number;
+      d: number;
+      color: string;
+      kind: 'building' | 'foliage' | 'structure';
+      vol: number;
+    }> = [];
 
     for (const m of members) {
       const t = m.transform3d ?? { x: 0, y: 0, z: 0, sx: 1, sy: 1, sz: 1 };
-      const hx = Math.max(0.5, Math.abs(t.sx) * 0.5);
-      const hy = Math.max(0.5, Math.abs(t.sy) * 0.5);
-      const hz = Math.max(0.5, Math.abs(t.sz) * 0.5);
+      const w = Math.max(0.8, Math.abs(t.sx));
+      const h = Math.max(0.8, Math.abs(t.sy));
+      const d = Math.max(0.8, Math.abs(t.sz));
+      const hx = w * 0.5;
+      const hy = h * 0.5;
+      const hz = d * 0.5;
       minX = Math.min(minX, t.x - hx);
       maxX = Math.max(maxX, t.x + hx);
       minY = Math.min(minY, t.y - hy);
       maxY = Math.max(maxY, t.y + hy);
       minZ = Math.min(minZ, t.z - hz);
       maxZ = Math.max(maxZ, t.z + hz);
-      tris += m.mesh3d?.foliageConfig ? m.mesh3d.foliageConfig.instances.length * 6 : 24;
+
+      const isFoliage =
+        Boolean(m.mesh3d?.foliageConfig) ||
+        m.mesh3d?.shape === 'grass_field' ||
+        /arbol|árbol|tree|pino|bosque|bush|arbusto/i.test(m.name) ||
+        (m.tags ?? []).some((tg) => /tree|arbol|foliage|vegetacion/i.test(tg));
+
+      const partKind: 'building' | 'foliage' | 'structure' = isFoliage
+        ? 'foliage'
+        : h >= 2.6 || w >= 2.6 || d >= 2.6
+          ? 'building'
+          : 'structure';
+
+      if (partKind === 'foliage') foliageParts += 1;
+      else structureParts += 1;
+
+      const partColor =
+        m.mesh3d?.foliageConfig?.colorTip ??
+        m.mesh3d?.foliageConfig?.colorBase ??
+        m.mesh3d?.color ??
+        '#64748b';
+
+      if (m.mesh3d?.foliageConfig && m.mesh3d.foliageConfig.instances.length > 0) {
+        const insts = m.mesh3d.foliageConfig.instances;
+        tris += insts.length * 6;
+        // Agrupar vegetación dispersa en hasta 6 clusters representativos para impostors
+        const step = Math.max(1, Math.floor(insts.length / 6));
+        for (let ii = 0; ii < insts.length && rawParts.length < 32; ii += step) {
+          const it = insts[ii];
+          const sc = Math.max(0.6, it.scale || 1);
+          rawParts.push({
+            cx: it.x,
+            cy: it.y + sc * 0.8,
+            cz: it.z,
+            w: sc * 1.6,
+            h: sc * 1.9,
+            d: sc * 1.6,
+            color: partColor,
+            kind: 'foliage',
+            vol: sc * sc * sc * 4.5,
+          });
+        }
+      } else {
+        tris += m.mesh3d?.shape === 'glb' ? 240 : 24;
+        rawParts.push({
+          cx: t.x,
+          cy: t.y,
+          cz: t.z,
+          w,
+          h,
+          d,
+          color: partColor,
+          kind: partKind,
+          vol: w * h * d,
+        });
+      }
     }
+
+    const centerX = (minX + maxX) * 0.5;
+    const centerY = (minY + maxY) * 0.5;
+    const centerZ = (minZ + maxZ) * 0.5;
+
+    // Conservar hasta las 20 siluetas de mayor volumen para mantener bajo el conteo de triángulos
+    rawParts.sort((a, b) => b.vol - a.vol);
+    const selectedParts: HlodProxyPart[] = rawParts.slice(0, 20).map((p) => ({
+      offsetX: p.cx - centerX,
+      offsetY: p.cy - centerY,
+      offsetZ: p.cz - centerZ,
+      width: p.w,
+      height: p.h,
+      depth: p.d,
+      color: p.color,
+      kind: p.kind,
+    }));
+
+    const impostorKind: HlodChunkProxy['impostorKind'] =
+      foliageParts > 0 && structureParts === 0
+        ? 'billboard'
+        : foliageParts > 0
+          ? 'hybrid'
+          : 'merged_cluster';
+
+    const reducedTriangles =
+      selectedParts.length * 12 + (impostorKind !== 'merged_cluster' ? 4 : 0);
 
     proxies.set(chunk.key, {
       chunkKey: chunk.key,
-      centerX: (minX + maxX) * 0.5,
-      centerY: (minY + maxY) * 0.5,
-      centerZ: (minZ + maxZ) * 0.5,
+      centerX,
+      centerY,
+      centerZ,
       width: Math.max(1, maxX - minX),
       height: Math.max(1, maxY - minY),
       depth: Math.max(1, maxZ - minZ),
       color: members[0].mesh3d?.color ?? '#64748b',
       memberCount: members.length,
       estimatedTriangles: tris,
+      reducedTriangles,
+      impostorKind,
+      parts: selectedParts,
     });
   }
   return proxies;
@@ -1127,4 +1243,293 @@ export function findMatchingCameraVolume(
     }
   }
   return best;
+}
+
+export type StreamedAssetState = 'unloaded' | 'loading' | 'loaded' | 'error';
+
+export interface StreamedAssetEntry {
+  assetId: string;
+  kind: 'texture' | 'model3d' | 'audio';
+  state: StreamedAssetState;
+  refCount: number;
+  bytes: number;
+  lastUsedFrame: number;
+  lastUnreferencedFrame: number;
+  disposeHandle?: (() => void) | null;
+}
+
+export interface AssetStreamingStats {
+  residentCount: number;
+  loadingCount: number;
+  unloadedCount: number;
+  residentBytes: number;
+  residentMB: number;
+  totalLoads: number;
+  totalUnloads: number;
+}
+
+export interface AssetStreamingHooks {
+  getAssetInfo?: (assetId: string) => { kind?: 'texture' | 'model3d' | 'audio'; bytes?: number } | null;
+  onLoadAsset: (assetId: string) => Promise<(() => void) | void> | (() => void) | void;
+  onUnloadAsset?: (assetId: string, entry: StreamedAssetEntry) => void;
+}
+
+export function collectSceneObjectAssetIds(obj: GameObjectData): string[] {
+  const deps = new Set<string>(collectObjectAssetDeps(obj));
+  if (obj.optimization?.lodEnabled && obj.optimization.lodAssetId) {
+    deps.add(obj.optimization.lodAssetId);
+  }
+  for (const st of obj.animStateMachine?.states ?? []) {
+    if (st.assetId) deps.add(st.assetId);
+  }
+  return Array.from(deps);
+}
+
+/**
+ * AssetStreamingManager: controla la residencia real en memoria/GPU de modelos GLB/FBX y texturas
+ * por chunk usando conteo de referencias (refCount), cola asíncrona por presupuesto de frame
+ * y liberación real (.dispose()) al descargar chunks o superar el presupuesto de memoria.
+ */
+export class AssetStreamingManager {
+  private readonly entries = new Map<string, StreamedAssetEntry>();
+  private readonly objDepsCache = new WeakMap<GameObjectData, string[]>();
+  private totalLoads = 0;
+  private totalUnloads = 0;
+  private lastSyncSignature = '';
+  private readonly unloadGraceFrames: number;
+
+  constructor(options?: { unloadGraceFrames?: number }) {
+    this.unloadGraceFrames = Math.max(0, options?.unloadGraceFrames ?? 30);
+  }
+
+  getEntry(assetId: string): StreamedAssetEntry | undefined {
+    return this.entries.get(assetId);
+  }
+
+  hasPendingWork(): boolean {
+    for (const e of this.entries.values()) {
+      if (e.state === 'loading') return true;
+      if (e.state === 'loaded' && e.refCount === 0) return true;
+      if (e.state === 'unloaded' && e.refCount > 0) return true;
+    }
+    return false;
+  }
+
+  private getCachedObjectDeps(obj: GameObjectData): string[] {
+    let cached = this.objDepsCache.get(obj);
+    if (!cached) {
+      cached = collectSceneObjectAssetIds(obj);
+      this.objDepsCache.set(obj, cached);
+    }
+    return cached;
+  }
+
+  getStats(): AssetStreamingStats {
+    let residentCount = 0;
+    let loadingCount = 0;
+    let unloadedCount = 0;
+    let residentBytes = 0;
+    for (const e of this.entries.values()) {
+      if (e.state === 'loaded') {
+        residentCount += 1;
+        residentBytes += e.bytes;
+      } else if (e.state === 'loading') {
+        loadingCount += 1;
+      } else {
+        unloadedCount += 1;
+      }
+    }
+    return {
+      residentCount,
+      loadingCount,
+      unloadedCount,
+      residentBytes,
+      residentMB: Number((residentBytes / (1024 * 1024)).toFixed(2)),
+      totalLoads: this.totalLoads,
+      totalUnloads: this.totalUnloads,
+    };
+  }
+
+  syncChunks(
+    scene: SceneData,
+    manifest: ChunkManifest,
+    state: StreamingControllerState,
+    hooks: AssetStreamingHooks,
+    options?: {
+      maxAssetLoadsPerFrame?: number;
+      budgetLimits?: MemoryBudgetLimits;
+      immediateEvict?: boolean;
+    }
+  ): { loadedNow: string[]; unloadedNow: string[] } {
+    const syncSig = `${state.totalLoads}:${state.totalUnloads}:${scene.objects.length}:${manifest.chunks.size}:${options?.immediateEvict ? 1 : 0}`;
+    if (syncSig === this.lastSyncSignature && !this.hasPendingWork()) {
+      return { loadedNow: [], unloadedNow: [] };
+    }
+    this.lastSyncSignature = syncSig;
+
+    const frame = state.frameIndex;
+    const objMap = new Map<string, GameObjectData>();
+    for (const o of scene.objects) objMap.set(o.id, o);
+    const globalSet = new Set(manifest.globalAnchorIds);
+    const refCounts = new Map<string, number>();
+
+    const addRef = (assetId: string) => {
+      if (!assetId) return;
+      refCounts.set(assetId, (refCounts.get(assetId) ?? 0) + 1);
+    };
+
+    if (scene.lighting?.skyDomeAssetId) {
+      addRef(scene.lighting.skyDomeAssetId);
+    }
+
+    for (const oid of globalSet) {
+      const obj = objMap.get(oid);
+      if (obj) {
+        for (const aid of this.getCachedObjectDeps(obj)) addRef(aid);
+      }
+    }
+
+    for (const chunkKey of state.loaded.keys()) {
+      const chunk = manifest.chunks.get(chunkKey);
+      if (!chunk) continue;
+      for (const dep of chunk.assetDependencies) addRef(dep);
+      for (const oid of chunk.objectIds) {
+        if (globalSet.has(oid)) continue;
+        const obj = objMap.get(oid);
+        if (!obj) continue;
+        for (const aid of this.getCachedObjectDeps(obj)) {
+          if (!chunk.assetDependencies.includes(aid)) addRef(aid);
+        }
+      }
+    }
+
+    // Actualizar refCounts en entradas conocidas o crear nuevas
+    for (const entry of this.entries.values()) {
+      const nextRef = refCounts.get(entry.assetId) ?? 0;
+      if (nextRef > 0) {
+        entry.lastUsedFrame = frame;
+      } else if (entry.refCount > 0) {
+        entry.lastUnreferencedFrame = frame;
+      }
+      entry.refCount = nextRef;
+    }
+
+    const toLoad: string[] = [];
+    for (const [assetId, rc] of refCounts.entries()) {
+      if (rc <= 0) continue;
+      let entry = this.entries.get(assetId);
+      if (!entry) {
+        const info = hooks.getAssetInfo?.(assetId);
+        entry = {
+          assetId,
+          kind: info?.kind ?? 'texture',
+          state: 'unloaded',
+          refCount: rc,
+          bytes: info?.bytes ?? 262_144,
+          lastUsedFrame: frame,
+          lastUnreferencedFrame: frame,
+          disposeHandle: null,
+        };
+        this.entries.set(assetId, entry);
+      }
+      if (entry.state === 'unloaded') {
+        toLoad.push(assetId);
+      }
+    }
+
+    const maxLoads = Math.max(1, options?.maxAssetLoadsPerFrame ?? 3);
+    const loadedNow: string[] = [];
+    for (let i = 0; i < Math.min(maxLoads, toLoad.length); i++) {
+      const assetId = toLoad[i];
+      const entry = this.entries.get(assetId)!;
+      entry.state = 'loading';
+      loadedNow.push(assetId);
+      Promise.resolve(hooks.onLoadAsset(assetId))
+        .then((disposeFn) => {
+          const cur = this.entries.get(assetId);
+          if (!cur) {
+            if (typeof disposeFn === 'function') disposeFn();
+            return;
+          }
+          if (cur.refCount <= 0) {
+            // El chunk se descargó mientras cargaba de forma asíncrona: liberar inmediatamente
+            if (typeof disposeFn === 'function') disposeFn();
+            cur.state = 'unloaded';
+            cur.disposeHandle = null;
+            this.totalUnloads += 1;
+            hooks.onUnloadAsset?.(assetId, cur);
+            return;
+          }
+          cur.state = 'loaded';
+          cur.disposeHandle = typeof disposeFn === 'function' ? disposeFn : null;
+          this.totalLoads += 1;
+        })
+        .catch(() => {
+          const cur = this.entries.get(assetId);
+          if (cur) cur.state = 'error';
+        });
+    }
+
+    // Descargar recursos con refCount === 0 tras grace period o inmediatamente si excede presupuesto
+    const unloadedNow: string[] = [];
+    const limits = options?.budgetLimits;
+    let totalTexBytes = 0;
+    let totalModelBytes = 0;
+    let hasZeroRefLoaded = false;
+    for (const e of this.entries.values()) {
+      if (e.state !== 'loaded') continue;
+      if (e.refCount === 0) hasZeroRefLoaded = true;
+      if (e.kind === 'model3d') totalModelBytes += e.bytes;
+      else if (e.kind === 'texture') totalTexBytes += e.bytes;
+    }
+
+    if (hasZeroRefLoaded) {
+      const overTexBudget = limits ? totalTexBytes > limits.texturesMB * 1024 * 1024 : false;
+      const overModelBudget = limits ? totalModelBytes > limits.modelsMB * 1024 * 1024 : false;
+      const forceEvict = Boolean(options?.immediateEvict) || overTexBudget || overModelBudget;
+
+      const candidates = Array.from(this.entries.values())
+        .filter((e) => e.state === 'loaded' && e.refCount === 0)
+        .sort((a, b) => a.lastUsedFrame - b.lastUsedFrame);
+
+      for (const entry of candidates) {
+        const expired = frame - entry.lastUnreferencedFrame >= this.unloadGraceFrames;
+        if (!expired && !forceEvict) continue;
+        if (entry.disposeHandle) {
+          try {
+            entry.disposeHandle();
+          } catch {
+            // Ignorar errores de limpieza ya liberada
+          }
+          entry.disposeHandle = null;
+        }
+        entry.state = 'unloaded';
+        this.totalUnloads += 1;
+        unloadedNow.push(entry.assetId);
+        hooks.onUnloadAsset?.(entry.assetId, entry);
+      }
+    }
+
+    return { loadedNow, unloadedNow };
+  }
+
+  disposeAll(onUnloadAsset?: (assetId: string, entry: StreamedAssetEntry) => void): void {
+    for (const entry of this.entries.values()) {
+      if (entry.disposeHandle) {
+        try {
+          entry.disposeHandle();
+        } catch {
+          // noop
+        }
+        entry.disposeHandle = null;
+      }
+      if (entry.state === 'loaded') {
+        entry.state = 'unloaded';
+        this.totalUnloads += 1;
+        onUnloadAsset?.(entry.assetId, entry);
+      }
+    }
+    this.entries.clear();
+    this.lastSyncSignature = '';
+  }
 }

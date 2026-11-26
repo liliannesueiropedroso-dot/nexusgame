@@ -425,4 +425,95 @@ test('HTML5 3D export runtime parses cleanly with new Function and includes Pro 
   const exportedRuntime = await zip.file('js/nexus-3d-runtime.js')!.async('string');
   assert.doesNotThrow(() => new Function(exportedRuntime));
   assert.ok(exportedRuntime.includes('vehicleAnimatedPart'));
+  assert.ok(exportedRuntime.includes("'YXZ'"), 'Runtime exportado usa orden Euler YXZ en vehículos');
 });
+
+test('Land vehicles react in real time to terrain slopes, keep wheels flush on ground, and respect custom wheel sizes', () => {
+  const monsterCfg: Vehicle4WConfig = {
+    enabled: true,
+    vehicleKind: 'car',
+    wheelRadius: 1.1,
+    wheelWidth: 0.68,
+    suspensionRestLen: 1.15,
+    suspensionStiffness: 38,
+    suspensionDamping: 4.8,
+    maxTorque: 16,
+    maxSpeed: 18,
+    maxSteerDeg: 28,
+    wheelBase: 3.2,
+    trackWidth: 2.6,
+    driveType: 'awd',
+    gripFactor: 0.85,
+  };
+
+  // Subida en rampa +Z: trompa más alta -> pitchRad negativo y ruedas apoyadas exactamente a gY + wheelRadius
+  const hillGround = (_x: number, z: number) => z * 0.25;
+  const hillCar = createVehicle4WState(0, 2.2, 0, 0, monsterCfg);
+  for (let i = 0; i < 45; i++) stepVehicle4W(hillCar, monsterCfg, 0.5, 0, 0.016, hillGround);
+  assert.ok(hillCar.pitchRad < -0.1, 'Chasis levanta trompa al subir pendiente');
+  for (const w of hillCar.wheels) {
+    assert.equal(w.grounded, true, 'Todas las ruedas apoyan en terreno inclinado');
+    const gY = hillGround(w.worldX, w.worldZ);
+    assert.ok(
+      Math.abs((w.worldY - monsterCfg.wheelRadius) - gY) < 0.02,
+      'Base de rueda grande apoya al ras del terreno sin flotar ni enterrarse'
+    );
+  }
+
+  // Pendiente lateral derecha más alta (+X): rollRad positivo para acompañar la inclinación del terreno
+  const sideSlope = (x: number, _z: number) => x * 0.3;
+  const sideCar = createVehicle4WState(0, 2.2, 0, 0, monsterCfg);
+  for (let i = 0; i < 45; i++) stepVehicle4W(sideCar, monsterCfg, 0, 0, 0.016, sideSlope);
+  assert.ok(sideCar.rollRad > 0.12, 'Chasis inclina acorde a pendiente lateral derecha');
+
+  // Auto girado 90° (+X): pendiente hacia +X debe provocar pitch (no roll invertido)
+  const rotatedCar = createVehicle4WState(0, 2.2, 0, 90, monsterCfg);
+  for (let i = 0; i < 45; i++) stepVehicle4W(rotatedCar, monsterCfg, 0.4, 0, 0.016, sideSlope);
+  assert.ok(rotatedCar.pitchRad < -0.12, 'Auto rotado 90° cabecea correctamente siguiendo su orientación local');
+
+  // Tamaño de rueda pequeño vs grande en Composite Vehicle Builder (incluyendo modelo GLB)
+  const smallBuild = buildCompositeVehicleObjects(
+    {
+      name: 'Kart',
+      kind: 'car',
+      wheelRadius: 0.25,
+      wheelWidth: 0.18,
+      suspensionRestLen: 0.4,
+      wheelBase: 1.8,
+      trackWidth: 1.4,
+      cameraEnabled: false,
+    },
+    []
+  );
+  const smallParent = smallBuild.objects.find((o) => o.id === smallBuild.parentId)!;
+  const smallWheel = smallBuild.objects.find((o) => o.id === smallParent.vehicle?.parts?.wheelFL)!;
+  assert.equal(smallParent.vehicle?.wheelRadius, 0.25);
+  assert.ok(
+    Math.abs((smallParent.transform3d!.y + smallWheel.transform3d!.y) - 0.25) < 0.01,
+    'Rueda pequeña inicia apoyada exactamente en Y=0'
+  );
+
+  const glbMonsterBuild = buildCompositeVehicleObjects(
+    {
+      name: 'MonsterGLB',
+      kind: 'car',
+      wheelFLAssetId: 'ast_wheel_glb',
+      wheelRadius: 1.05,
+      wheelWidth: 0.68,
+      suspensionRestLen: 1.15,
+      wheelBase: 3.2,
+      trackWidth: 2.6,
+      cameraEnabled: true,
+    },
+    []
+  );
+  const monsterParent = glbMonsterBuild.objects.find((o) => o.id === glbMonsterBuild.parentId)!;
+  const monsterWheel = glbMonsterBuild.objects.find((o) => o.id === monsterParent.vehicle?.parts?.wheelFL)!;
+  assert.equal(monsterWheel.mesh3d?.shape, 'glb');
+  assert.equal(monsterWheel.transform3d?.sy, 2.1, 'Modelo GLB de rueda conserva diámetro Y = 2 * wheelRadius');
+  assert.ok(
+    Math.abs((monsterParent.transform3d!.y + monsterWheel.transform3d!.y) - 1.05) < 0.01,
+    'Rueda Monster GLB inicia apoyada exactamente en Y=0'
+  );
+});
+

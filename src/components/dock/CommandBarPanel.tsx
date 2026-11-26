@@ -1,7 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
+  ClipboardPaste,
+  Copy,
+  Eraser,
   Play,
   ShieldAlert,
   Star,
@@ -18,10 +22,16 @@ import type {
   NexusProject,
 } from '../../project/models/project';
 
+export interface CommandBarDraftSignal {
+  text: string;
+  nonce: number;
+}
+
 interface CommandBarPanelProps {
   project: NexusProject;
   activeSceneId: string;
   selectedIds: string[];
+  externalCommandDraft?: CommandBarDraftSignal | null;
   onCommitCommandResult: (
     nextProject: NexusProject,
     createdIds: string[],
@@ -30,22 +40,134 @@ interface CommandBarPanelProps {
   onUpdateCommandHistory: (next: CommandBarHistoryEntry[]) => void;
 }
 
-const DSL_PRESETS: Array<{ label: string; cmd: string }> = [
+type RecipeCategory = 'gameplay' | 'scripts' | 'mundo' | 'camara' | 'streaming';
+
+interface StudioRecipe {
+  id: string;
+  category: RecipeCategory;
+  title: string;
+  desc: string;
+  cmd: string;
+}
+
+const RECIPE_CATEGORY_LABELS: Array<{ id: RecipeCategory; label: string }> = [
+  { id: 'gameplay', label: 'Gameplay' },
+  { id: 'scripts', label: 'Scripts JS' },
+  { id: 'mundo', label: 'Mundo 3D' },
+  { id: 'camara', label: 'Luz y Cámara' },
+  { id: 'streaming', label: 'Streaming' },
+];
+
+const STUDIO_RECIPES: StudioRecipe[] = [
   {
-    label: '+ Torre 3D',
-    cmd: 'crear cubo nombre=Torre_Vigia x=12 y=3 z=-8 sx=3 sy=6 sz=3 color=#6366f1 tag=edificio\nrenombrar @lastCreated Torre_Norte',
+    id: 'coin_score',
+    category: 'gameplay',
+    title: 'Moneda + Puntos',
+    desc: 'Crea esfera coleccionable, variable puntos y mecánica de suma.',
+    cmd: [
+      'variable puntos = 0',
+      'crear esfera nombre=Moneda x=4 y=1.5 z=-4 color=#facc15 tag=moneda',
+      'mecanica nombre="Recoger Moneda" evento=trigger.enter tag=moneda accion=variable.add variable=puntos amount=10',
+    ].join('\n'),
   },
   {
-    label: 'Mover @selected',
-    cmd: 'mover @selected dx=2 dy=0 dz=-2',
+    id: 'boost_jump',
+    category: 'gameplay',
+    title: 'Impulso con Tecla E',
+    desc: 'Aplica impulso vertical al objeto seleccionado al pulsar E.',
+    cmd: 'mecanica nombre="Salto Turbo" evento=input.pressed tecla=KeyE accion=physics.impulse target=@selected iy=11',
   },
   {
-    label: 'Streaming Mundo Abierto',
-    cmd: 'streaming activar chunk=64 carga=140 descarga=210 perfil=pc',
+    id: 'enemy_patrol',
+    category: 'gameplay',
+    title: 'Centinela NavMesh',
+    desc: 'Crea enemigo 3D con componente navMeshAgent listo para perseguir.',
+    cmd: [
+      'crear cubo nombre=Centinela x=10 y=1.5 z=-10 sx=1.2 sy=2.2 sz=1.2 color=#ef4444 tag=enemigo',
+      'agregar componente @lastCreated navMeshAgent speed=4.5',
+    ].join('\n'),
   },
   {
-    label: 'Eliminar @selected',
-    cmd: 'eliminar @selected',
+    id: 'portal_tp',
+    category: 'gameplay',
+    title: 'Portal Teletransporte',
+    desc: 'Crea cilindro portal y regla de teletransporte al tocarlo.',
+    cmd: [
+      'crear cilindro nombre=Portal_Norte x=0 y=1.5 z=-18 sx=2 sy=3 sz=2 color=#a855f7 tag=portal',
+      'mecanica nombre="Teletransporte" evento=trigger.enter tag=portal accion=object.teleport target=@selected x=0 y=3 z=10',
+    ].join('\n'),
+  },
+  {
+    id: 'script_float',
+    category: 'scripts',
+    title: 'Cristal Flotante JS',
+    desc: 'Crea objeto 3D y script seguro onUpdate que rota y levita.',
+    cmd: [
+      'crear cubo nombre=Cristal_Energia x=0 y=2.5 z=-6 color=#22d3ee tag=recurso',
+      'script nombre=Cristal_Flotante objeto=@lastCreated codigo="export function onUpdate(self, dt, nexus){ self.ry += 90 * dt; self.y = 2.5 + Math.sin(nexus.time * 3) * 0.45; }"',
+    ].join('\n'),
+  },
+  {
+    id: 'script_regen',
+    category: 'scripts',
+    title: 'Regenerar Energía (Escena)',
+    desc: 'Script global de escena que regenera la variable energia.',
+    cmd: [
+      'variable energia = 100',
+      'script nombre=Regenerar_Energia objeto=__scene__ codigo="export function onUpdate(self, dt, nexus){ const e = Number(nexus.vars.get(\'energia\') || 0); if (e < 100) nexus.vars.set(\'energia\', Math.min(100, e + dt * 5)); }"',
+    ].join('\n'),
+  },
+  {
+    id: 'tower_3d',
+    category: 'mundo',
+    title: 'Torre de Vigilancia',
+    desc: 'Crea bloque arquitectónico y lo renombra con @lastCreated.',
+    cmd: [
+      'crear cubo nombre=Torre_Vigia x=12 y=3 z=-8 sx=3 sy=6 sz=3 color=#6366f1 tag=edificio',
+      'renombrar @lastCreated Torre_Norte',
+    ].join('\n'),
+  },
+  {
+    id: 'duplicate_row',
+    category: 'mundo',
+    title: 'Duplicar @selected (+4m)',
+    desc: 'Clona el objeto seleccionado desplazado 4 metros en X.',
+    cmd: 'duplicar @selected dx=4 dz=0',
+  },
+  {
+    id: 'sunset_light',
+    category: 'camara',
+    title: 'Atardecer + Niebla',
+    desc: 'Ajusta hora solar 18.2h y niebla atmosférica en la escena.',
+    cmd: 'iluminacion hora=18.2 sol=1.25 ambiente=0.55 niebla=true niebla_cerca=45 niebla_lejos=190',
+  },
+  {
+    id: 'day_cycle',
+    category: 'camara',
+    title: 'Ciclo Día/Noche',
+    desc: 'Activa el avance automático del sol en el cielo 3D.',
+    cmd: 'iluminacion ciclo=true hora=9 velocidad_dia=0.5',
+  },
+  {
+    id: 'cam_orbit',
+    category: 'camara',
+    title: 'Cámara Órbita Pro',
+    desc: 'Activa tercera persona con colisión contra muros y hombro.',
+    cmd: 'camara modo=third_person_orbit distancia=9 fov=62 colision=true hombro=true',
+  },
+  {
+    id: 'streaming_pc',
+    category: 'streaming',
+    title: 'Streaming PC + HLOD',
+    desc: 'Configura chunks 48m, radio de carga 120m y proxies HLOD.',
+    cmd: 'streaming activar chunk=48 carga=120 descarga=180 hlod=280 perfil=pc',
+  },
+  {
+    id: 'streaming_mobile',
+    category: 'streaming',
+    title: 'Streaming Móvil Ligero',
+    desc: 'Reduce radios y presupuesto de VRAM/entidades para móvil.',
+    cmd: 'streaming activar chunk=48 carga=85 descarga=130 hlod=210 perfil=mobile',
   },
 ];
 
@@ -81,13 +203,29 @@ export const CommandBarPanel: React.FC<CommandBarPanelProps> = ({
   project,
   activeSceneId,
   selectedIds,
+  externalCommandDraft,
   onCommitCommandResult,
   onUpdateCommandHistory,
 }) => {
   const [mode, setMode] = useState<CommandBarMode>('dsl');
-  const [inputText, setInputText] = useState<string>(DSL_PRESETS[0].cmd);
+  const [inputText, setInputText] = useState<string>(STUDIO_RECIPES[6].cmd);
+  const [activeCategory, setActiveCategory] = useState<RecipeCategory>('gameplay');
   const [destructiveConfirmed, setDestructiveConfirmed] = useState(false);
   const [lastAppliedMsg, setLastAppliedMsg] = useState<string>('');
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!externalCommandDraft) return;
+    const text = externalCommandDraft.text;
+    setInputText(text);
+    setDestructiveConfirmed(false);
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      setMode('json');
+    } else if (trimmed.length > 0) {
+      setMode('dsl');
+    }
+  }, [externalCommandDraft]);
 
   const plan = useMemo(
     () => planCommandBarInput(project, activeSceneId, selectedIds, inputText, mode),
@@ -95,6 +233,43 @@ export const CommandBarPanel: React.FC<CommandBarPanelProps> = ({
   );
 
   const history = project.commandHistory ?? [];
+  const visibleRecipes = useMemo(
+    () => STUDIO_RECIPES.filter((r) => r.category === activeCategory),
+    [activeCategory]
+  );
+
+  const copyToClipboard = async (text: string, key: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      }
+      setCopiedKey(key);
+      setTimeout(() => {
+        setCopiedKey((prev) => (prev === key ? null : prev));
+      }, 1600);
+    } catch {
+      setLastAppliedMsg('El navegador bloqueó el portapapeles; selecciona y copia con Ctrl+C.');
+    }
+  };
+
+  const pasteFromClipboard = async () => {
+    try {
+      if (!navigator.clipboard?.readText) {
+        setLastAppliedMsg('Portapapeles no disponible; pega directamente con Ctrl+V.');
+        return;
+      }
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setInputText(text);
+        setDestructiveConfirmed(false);
+        const trimmed = text.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) setMode('json');
+        else setMode('dsl');
+      }
+    } catch {
+      setLastAppliedMsg('Permiso de lectura denegado; pega dentro del editor con Ctrl+V.');
+    }
+  };
 
   const handleModeSwitch = (nextMode: CommandBarMode) => {
     setMode(nextMode);
@@ -102,7 +277,7 @@ export const CommandBarPanel: React.FC<CommandBarPanelProps> = ({
     if (nextMode === 'json' && !inputText.trim().startsWith('{') && !inputText.trim().startsWith('[')) {
       setInputText(JSON_PRESET);
     } else if (nextMode === 'dsl' && (inputText.trim().startsWith('{') || inputText.trim().startsWith('['))) {
-      setInputText(DSL_PRESETS[0].cmd);
+      setInputText(STUDIO_RECIPES[6].cmd);
     }
   };
 
@@ -133,69 +308,147 @@ export const CommandBarPanel: React.FC<CommandBarPanelProps> = ({
 
   return (
     <div className="grid h-full grid-cols-1 gap-2 p-2 text-xs text-zinc-200 lg:grid-cols-12 overflow-y-auto">
-      {/* Columna izquierda: Entrada DSL o JSON */}
+      {/* Columna izquierda: Entrada DSL o JSON + Recetas copiables estilo Roblox Studio */}
       <div className="flex flex-col gap-1.5 lg:col-span-5">
         <div className="flex flex-wrap items-center justify-between gap-1.5">
           <div className="flex items-center gap-1.5 font-semibold text-zinc-100">
             <Terminal className="h-3.5 w-3.5 text-cyan-400" />
             <span>Barra de Comandos 2.0</span>
           </div>
-          <div className="inline-flex rounded border border-[#2f2f3b] bg-[#1b1b22] p-0.5">
+          <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => handleModeSwitch('dsl')}
-              className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                mode === 'dsl'
-                  ? 'bg-cyan-600 text-white'
-                  : 'text-zinc-400 hover:text-zinc-100'
-              }`}
+              onClick={() => void copyToClipboard(inputText, 'editor')}
+              title="Copiar código del editor"
+              className="inline-flex items-center gap-1 rounded border border-[#32323e] bg-[#1e1e26] px-1.5 py-0.5 text-[10px] text-zinc-300 hover:border-cyan-500/60 hover:text-white"
             >
-              DSL Seguro
+              {copiedKey === 'editor' ? (
+                <>
+                  <Check className="h-3 w-3 text-emerald-400" />
+                  <span className="text-emerald-300">¡Copiado!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3 w-3" />
+                  <span>Copiar</span>
+                </>
+              )}
             </button>
             <button
               type="button"
-              onClick={() => handleModeSwitch('json')}
-              className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                mode === 'json'
-                  ? 'bg-violet-600 text-white'
-                  : 'text-zinc-400 hover:text-zinc-100'
-              }`}
+              onClick={() => void pasteFromClipboard()}
+              title="Pegar desde el portapapeles"
+              className="inline-flex items-center gap-1 rounded border border-[#32323e] bg-[#1e1e26] px-1.5 py-0.5 text-[10px] text-zinc-300 hover:border-cyan-500/60 hover:text-white"
             >
-              JSON Declarativo
+              <ClipboardPaste className="h-3 w-3" />
+              <span>Pegar</span>
             </button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-1">
-          {mode === 'dsl' ? (
-            DSL_PRESETS.map((p) => (
-              <button
-                key={p.label}
-                type="button"
-                onClick={() => {
-                  setInputText(p.cmd);
-                  setDestructiveConfirmed(false);
-                }}
-                className="rounded border border-[#32323e] bg-[#1e1e26] px-2 py-0.5 text-[10px] text-zinc-300 hover:border-cyan-500/60 hover:text-white"
-              >
-                {p.label}
-              </button>
-            ))
-          ) : (
             <button
               type="button"
               onClick={() => {
-                setInputText(JSON_PRESET);
+                setInputText('');
                 setDestructiveConfirmed(false);
               }}
-              className="rounded border border-[#32323e] bg-[#1e1e26] px-2 py-0.5 text-[10px] text-zinc-300 hover:border-violet-500/60 hover:text-white"
+              title="Limpiar editor de comandos"
+              className="inline-flex items-center gap-1 rounded border border-[#32323e] bg-[#1e1e26] px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-red-500/50 hover:text-red-300"
             >
-              Cargar plantilla JSON
+              <Eraser className="h-3 w-3" />
+              <span>Limpiar</span>
             </button>
-          )}
-          <span className="ml-auto text-[10px] text-zinc-500">
-            Refs: @selected · @lastCreated · #tag
-          </span>
+            <div className="inline-flex rounded border border-[#2f2f3b] bg-[#1b1b22] p-0.5">
+              <button
+                type="button"
+                onClick={() => handleModeSwitch('dsl')}
+                className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                  mode === 'dsl'
+                    ? 'bg-cyan-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-100'
+                }`}
+              >
+                DSL
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeSwitch('json')}
+                className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                  mode === 'json'
+                    ? 'bg-violet-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-100'
+                }`}
+              >
+                JSON
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Selector de categorías de Recetas Estilo Roblox Studio */}
+        <div className="rounded border border-[#292933] bg-[#17171d] p-1.5">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-1">
+            <span className="text-[10px] font-semibold text-zinc-300">
+              Recetas Estilo Roblox Studio
+            </span>
+            <div className="flex flex-wrap gap-0.5">
+              {RECIPE_CATEGORY_LABELS.map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setActiveCategory(cat.id)}
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                    activeCategory === cat.id
+                      ? 'bg-cyan-600/80 text-white'
+                      : 'bg-[#202028] text-zinc-400 hover:text-zinc-100'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+            {visibleRecipes.map((r) => (
+              <div
+                key={r.id}
+                className="flex min-w-[165px] max-w-[205px] shrink-0 flex-col justify-between gap-1 rounded border border-[#2c2c38] bg-[#111116] p-1.5"
+              >
+                <div>
+                  <div className="truncate text-[10px] font-semibold text-zinc-100">{r.title}</div>
+                  <div className="line-clamp-2 text-[9px] leading-tight text-zinc-400">{r.desc}</div>
+                </div>
+                <div className="flex items-center gap-1 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('dsl');
+                      setInputText(r.cmd);
+                      setDestructiveConfirmed(false);
+                    }}
+                    className="flex-1 rounded bg-cyan-700/80 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-cyan-600"
+                  >
+                    Cargar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void copyToClipboard(r.cmd, r.id)}
+                    aria-label={`Copiar código de ${r.title}`}
+                    className="inline-flex items-center gap-0.5 rounded border border-[#32323e] bg-[#1c1c24] px-1.5 py-0.5 text-[10px] text-zinc-300 hover:border-cyan-500/60 hover:text-white"
+                  >
+                    {copiedKey === r.id ? (
+                      <>
+                        <Check className="h-2.5 w-2.5 text-emerald-400" />
+                        <span className="text-emerald-300">Copiado</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-2.5 w-2.5" />
+                        <span>Copiar código</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         <label htmlFor="nexus-command-bar-input" className="sr-only">
@@ -208,14 +461,20 @@ export const CommandBarPanel: React.FC<CommandBarPanelProps> = ({
             setInputText(e.target.value);
             setDestructiveConfirmed(false);
           }}
-          rows={5}
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              handleExecute();
+            }
+          }}
+          rows={4}
           spellCheck={false}
           placeholder={
             mode === 'dsl'
-              ? 'Ej: crear cubo nombre=Muro x=0 y=2 z=5 sx=6 sy=4 sz=1'
+              ? 'Ej: crear cubo nombre=Muro x=0 y=2 z=5 sx=6 sy=4 sz=1 (Ctrl+Enter ejecuta)'
               : '{ "ops": [ ... ] }'
           }
-          className="min-h-[112px] flex-1 resize-none rounded border border-[#2f2f3b] bg-[#101014] p-2 font-mono text-[11px] leading-relaxed text-zinc-100 focus:border-cyan-500 focus:outline-none"
+          className="min-h-[82px] flex-1 resize-none rounded border border-[#2f2f3b] bg-[#101014] p-2 font-mono text-[11px] leading-relaxed text-zinc-100 focus:border-cyan-500 focus:outline-none"
         />
 
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -231,7 +490,7 @@ export const CommandBarPanel: React.FC<CommandBarPanelProps> = ({
             </label>
           ) : (
             <span className="text-[10px] text-zinc-400">
-              Commit atómico (Ctrl+Z deshace todo)
+              Ctrl+Enter ejecuta · Refs: @selected · @lastCreated · #tag
             </span>
           )}
 
@@ -380,6 +639,18 @@ export const CommandBarPanel: React.FC<CommandBarPanelProps> = ({
                     <div className="truncate text-[10px] text-zinc-500">{h.summary}</div>
                   </button>
                   <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      aria-label={`Copiar comando del historial ${h.summary}`}
+                      onClick={() => void copyToClipboard(h.commandText, h.id)}
+                      className="rounded p-1 text-zinc-500 hover:text-cyan-300"
+                    >
+                      {copiedKey === h.id ? (
+                        <Check className="h-3 w-3 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </button>
                     <button
                       type="button"
                       aria-label={h.favorite ? 'Quitar de favoritos' : 'Marcar favorito'}

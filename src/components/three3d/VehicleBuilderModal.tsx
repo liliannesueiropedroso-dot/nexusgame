@@ -6,6 +6,8 @@ import {
   Car,
   CheckCircle2,
   CircleDashed,
+  Fan,
+  Footprints,
   Plane,
   Rocket,
   Sparkles,
@@ -15,11 +17,13 @@ import type { GameMechanic, GameObjectData, VehicleKind3D } from '../../engine/c
 import { buildCompositeVehicleObjects } from '../../engine/three3d/vehiclePrefabs';
 import type { ProjectAssetMeta } from '../../project/models/project';
 import { NumericInput } from '../common/NumericInput';
+import { VehicleWizardPreview3D } from './VehicleWizardPreview3D';
 
 interface VehicleBuilderModalProps {
   open: boolean;
   objects: GameObjectData[];
   assets: ProjectAssetMeta[];
+  assetBlobs?: Map<string, Blob>;
   onClose: () => void;
   onCreateVehicle: (result: {
     objects: GameObjectData[];
@@ -35,6 +39,7 @@ type SlotKey =
   | 'wheelRL'
   | 'wheelRR'
   | 'propeller'
+  | 'tailRotor'
   | 'wings'
   | 'landingGear';
 
@@ -52,9 +57,11 @@ const KIND_TABS: Array<{
   Icon: React.FC<{ className?: string }>;
 }> = [
   { kind: 'car', label: 'Auto 4x4', subtitle: '4 ruedas + suspensión', Icon: Car },
-  { kind: 'moto', label: 'Moto', subtitle: '2 ruedas + inclinación', Icon: Bike },
+  { kind: 'moto', label: 'Moto / Bici', subtitle: 'Montura abierta 2R', Icon: Bike },
+  { kind: 'horse', label: 'Caballo', subtitle: 'Galope + Salto + Silla', Icon: Footprints },
   { kind: 'boat', label: 'Bote / Barco', subtitle: 'Flotación 4-12 pts', Icon: Anchor },
   { kind: 'plane', label: 'Avión', subtitle: 'Aerodinámica 6DOF', Icon: Plane },
+  { kind: 'helicopter', label: 'Helicóptero', subtitle: 'Rotor Y + Auto-Hover', Icon: Fan },
   { kind: 'spaceship', label: 'Nave 6DOF', subtitle: 'Gravedad local', Icon: Rocket },
 ];
 
@@ -62,6 +69,7 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
   open,
   objects,
   assets,
+  assetBlobs,
   onClose,
   onCreateVehicle,
 }) => {
@@ -73,10 +81,19 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [createEnterMechanic, setCreateEnterMechanic] = useState(true);
   const [playerObjectId, setPlayerObjectId] = useState<string>('');
+  const [mountStyle, setMountStyle] = useState<'inside' | 'saddle'>('inside');
   const [localGravEnabled, setLocalGravEnabled] = useState(true);
   const [localGravSx, setLocalGravSx] = useState(5.2);
   const [localGravSy, setLocalGravSy] = useState(2.2);
   const [localGravSz, setLocalGravSz] = useState(10.2);
+
+  // Dimensiones de ruedas y malla de ajuste para vehículos terrestres
+  const [wheelRadius, setWheelRadius] = useState(0.42);
+  const [wheelWidth, setWheelWidth] = useState(0.3);
+  const [suspensionRestLen, setSuspensionRestLen] = useState(0.65);
+  const [wheelBase, setWheelBase] = useState(2.5);
+  const [trackWidth, setTrackWidth] = useState(1.92);
+  const [showWireframeOverlay, setShowWireframeOverlay] = useState(true);
 
   // null = Primitiva Pro lista; string = assetId GLB/FBX; undefined = pendiente si no está en primitiva
   const [slotAssets, setSlotAssets] = useState<Record<SlotKey, string | 'primitive' | 'pending'>>({
@@ -84,12 +101,12 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
     wheelFL: 'primitive',
     wheelFR: 'primitive',
     wheelRL: 'primitive',
-    wheelRRA: 'primitive',
     wheelRR: 'primitive',
     propeller: 'primitive',
+    tailRotor: 'primitive',
     wings: 'primitive',
     landingGear: 'primitive',
-  } as Record<SlotKey, string | 'primitive' | 'pending'>);
+  });
 
   const [activeSlot, setActiveSlot] = useState<SlotKey>('body');
 
@@ -147,6 +164,19 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
         { key: 'landingGear', label: 'Tren de Aterrizaje', required: false, hint: 'Contacto en pista' },
       ];
     }
+    if (kind === 'helicopter') {
+      return [
+        { key: 'body', label: 'Fuselaje / Cabina', required: true, hint: 'Cuerpo del helicóptero y cabina frontal' },
+        { key: 'propeller', label: 'Rotor Principal (Techo)', required: true, hint: 'Gira en eje vertical Y para sustentación' },
+        { key: 'tailRotor', label: 'Rotor de Cola', required: true, hint: 'Estabilización de guiñada (Yaw)' },
+        { key: 'landingGear', label: 'Patines de Aterrizaje', required: false, hint: 'Tren tubular de contacto en suelo' },
+      ];
+    }
+    if (kind === 'horse') {
+      return [
+        { key: 'body', label: 'Cuerpo y Montura', required: true, hint: 'Montura abierta: personaje visible encima' },
+      ];
+    }
     return [
       { key: 'body', label: 'Casco de Nave', required: true, hint: 'Estructura 6DOF espacial' },
       { key: 'propeller', label: 'Propulsores Iónicos', required: true, hint: 'Motor emisivo trasero' },
@@ -163,14 +193,29 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
   const handleKindChange = (nextKind: VehicleKind3D) => {
     setKind(nextKind);
     setActiveSlot('body');
+    setMountStyle(nextKind === 'moto' || nextKind === 'horse' ? 'saddle' : 'inside');
     const defaults: Record<VehicleKind3D, string> = {
       car: 'AutoDeportivo',
       moto: 'MotoCross',
       boat: 'LanchaRapida',
       plane: 'AvionCaza',
+      helicopter: 'Helicoptero',
       spaceship: 'NaveEstelar',
+      horse: 'Caballo',
     };
     setName(defaults[nextKind]);
+    if (nextKind === 'moto') {
+      setWheelRadius(0.36);
+      setWheelWidth(0.22);
+      setWheelBase(1.84);
+      setSuspensionRestLen(0.55);
+    } else if (nextKind === 'car') {
+      setWheelRadius(0.42);
+      setWheelWidth(0.3);
+      setWheelBase(2.5);
+      setTrackWidth(1.92);
+      setSuspensionRestLen(0.65);
+    }
   };
 
   const handleSetAllPrimitive = () => {
@@ -181,6 +226,7 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
       wheelRL: 'primitive',
       wheelRR: 'primitive',
       propeller: 'primitive',
+      tailRotor: 'primitive',
       wings: 'primitive',
       landingGear: 'primitive',
     });
@@ -206,12 +252,14 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
         wheelRLAssetId: resolveAsset('wheelRL'),
         wheelRRAssetId: resolveAsset('wheelRR'),
         propellerAssetId: resolveAsset('propeller'),
+        tailRotorAssetId: resolveAsset('tailRotor'),
         wingsAssetId: resolveAsset('wings'),
         landingGearAssetId: resolveAsset('landingGear'),
         cameraEnabled,
         boatSize,
         waterObjectId: resolvedWaterId,
         planeStyle,
+        mountStyle,
         localGravityBox:
           kind === 'spaceship'
             ? {
@@ -224,6 +272,15 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
         createEnterMechanic,
         playerObjectId: resolvedPlayerId,
         useModularParts: true,
+        ...(kind === 'car' || kind === 'moto'
+          ? {
+              wheelRadius,
+              wheelWidth,
+              suspensionRestLen,
+              wheelBase,
+              trackWidth: kind === 'moto' ? 0.2 : trackWidth,
+            }
+          : {}),
       },
       objects
     );
@@ -268,7 +325,7 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
         {/* Body */}
         <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-4">
           {/* Selector de tipo de vehículo */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
             {KIND_TABS.map(({ kind: k, label, subtitle, Icon }) => {
               const active = kind === k;
               return (
@@ -291,73 +348,49 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
           </div>
 
           <div className="grid gap-4 lg:grid-cols-12">
-            {/* Diagrama interactivo visual */}
+            {/* Diagrama interactivo visual 3D + Malla de ajuste de ruedas */}
             <div className="lg:col-span-7 rounded-xl border border-[#2a2c37] bg-[#121318] p-4 flex flex-col justify-between gap-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-zinc-200">
-                  Diagrama de Piezas ({readyCount}/{slotsForKind.length} listas)
+                  Vista 3D y Piezas ({readyCount}/{slotsForKind.length} listas)
                 </span>
-                <button
-                  type="button"
-                  onClick={handleSetAllPrimitive}
-                  className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/25"
-                >
-                  Usar Primitivas Pro en todo
-                </button>
-              </div>
-
-              {/* Esquema SVG dinámico según tipo */}
-              <div className="relative flex min-h-[210px] items-center justify-center rounded-lg border border-[#22242e] bg-[#0e0f14] p-3">
-                <svg viewBox="0 0 360 190" className="h-44 w-full max-w-md" aria-hidden="true">
-                  {/* Rejilla sutil */}
-                  <line x1="20" y1="95" x2="340" y2="95" stroke="#1f2330" strokeWidth="1" strokeDasharray="4 4" />
-                  <line x1="180" y1="15" x2="180" y2="175" stroke="#1f2330" strokeWidth="1" strokeDasharray="4 4" />
-
-                  {/* Silueta según tipo */}
-                  {kind === 'car' && (
-                    <>
-                      <rect x="95" y="42" width="170" height="106" rx="18" fill="#1e293b" stroke="#34d399" strokeWidth="2" />
-                      <rect x="65" y="32" width="38" height="22" rx="6" fill="#059669" />
-                      <rect x="257" y="32" width="38" height="22" rx="6" fill="#059669" />
-                      <rect x="65" y="136" width="38" height="22" rx="6" fill="#059669" />
-                      <rect x="257" y="136" width="38" height="22" rx="6" fill="#059669" />
-                    </>
+                <div className="flex items-center gap-2">
+                  {(kind === 'car' || kind === 'moto') && (
+                    <label className="flex cursor-pointer items-center gap-1.5 rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">
+                      <input
+                        type="checkbox"
+                        checked={showWireframeOverlay}
+                        onChange={(e) => setShowWireframeOverlay(e.target.checked)}
+                        className="accent-cyan-400"
+                      />
+                      <span>Malla sobre ruedas</span>
+                    </label>
                   )}
-                  {kind === 'moto' && (
-                    <>
-                      <rect x="115" y="76" width="130" height="38" rx="14" fill="#1e293b" stroke="#34d399" strokeWidth="2" />
-                      <rect x="62" y="81" width="44" height="28" rx="8" fill="#059669" />
-                      <rect x="254" y="81" width="44" height="28" rx="8" fill="#059669" />
-                    </>
-                  )}
-                  {kind === 'boat' && (
-                    <>
-                      <path d="M 65 95 Q 115 45 275 55 L 295 95 L 275 135 Q 115 145 65 95 Z" fill="#1e293b" stroke="#38bdf8" strokeWidth="2" />
-                      <circle cx="298" cy="95" r="14" fill="#f59e0b" />
-                    </>
-                  )}
-                  {kind === 'plane' && (
-                    <>
-                      <polygon points="155,22 205,22 195,168 165,168" fill="#334155" stroke="#38bdf8" strokeWidth="1.5" />
-                      <rect x="65" y="76" width="230" height="38" rx="18" fill="#1e293b" stroke="#34d399" strokeWidth="2" />
-                      <rect x="295" y="70" width="12" height="50" rx="4" fill="#fbbf24" />
-                    </>
-                  )}
-                  {kind === 'spaceship' && (
-                    <>
-                      <rect x="75" y="34" width="210" height="122" rx="14" fill="none" stroke="#a855f7" strokeWidth="1.5" strokeDasharray="5 3" />
-                      <polygon points="75,95 160,52 275,65 275,125 160,138" fill="#1e293b" stroke="#34d399" strokeWidth="2" />
-                      <rect x="275" y="72" width="18" height="46" rx="5" fill="#22d3ee" />
-                    </>
-                  )}
-                  {cameraEnabled && (
-                    <circle cx="180" cy="95" r="9" fill="#0ea5e9" stroke="#ffffff" strokeWidth="1.5" />
-                  )}
-                </svg>
-                <div className="pointer-events-none absolute bottom-2 right-2.5 text-[10px] text-zinc-400">
-                  {cameraEnabled ? 'Cámara de seguimiento vinculada' : 'Sin ancla de cámara'}
+                  <button
+                    type="button"
+                    onClick={handleSetAllPrimitive}
+                    className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/25"
+                  >
+                    Usar Primitivas Pro
+                  </button>
                 </div>
               </div>
+
+              <VehicleWizardPreview3D
+                kind={kind}
+                boatSize={boatSize}
+                planeStyle={planeStyle}
+                mountStyle={mountStyle}
+                wheelRadius={wheelRadius}
+                wheelWidth={wheelWidth}
+                suspensionRestLen={suspensionRestLen}
+                wheelBase={wheelBase}
+                trackWidth={trackWidth}
+                showWireframeOverlay={showWireframeOverlay}
+                slotAssets={slotAssets}
+                assetBlobs={assetBlobs}
+                activeSlot={activeSlot}
+              />
 
               {/* Lista de slots interactivos (todos en verde cuando listos) */}
               <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
@@ -415,6 +448,81 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
                   onChange={(e) => setName(e.target.value)}
                   className="w-full rounded border border-[#343644] bg-[#121318] px-2.5 py-1.5 text-xs text-white focus:border-emerald-500 focus:outline-none"
                 />
+
+                {/* Ajuste de tamaño de ruedas y suspensión en tiempo real */}
+                {(kind === 'car' || kind === 'moto') && (
+                  <div className="space-y-2 rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-cyan-200">
+                        Tamaño de Ruedas y Suspensión
+                      </span>
+                      <div className="flex gap-1">
+                        {[
+                          { label: 'Compacto', r: 0.32, w: 0.22, rest: 0.52 },
+                          { label: 'Estándar', r: kind === 'moto' ? 0.36 : 0.42, w: kind === 'moto' ? 0.22 : 0.3, rest: 0.65 },
+                          { label: '4x4', r: 0.62, w: 0.42, rest: 0.85 },
+                          { label: 'Monster', r: 1.05, w: 0.68, rest: 1.15 },
+                        ].map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => {
+                              setWheelRadius(preset.r);
+                              setWheelWidth(preset.w);
+                              setSuspensionRestLen(preset.rest);
+                            }}
+                            className="rounded border border-cyan-500/35 bg-[#121318] px-1.5 py-0.5 text-[9px] font-medium text-cyan-200 hover:bg-cyan-500/20"
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-0.5 flex items-center justify-between text-[10px] text-zinc-300">
+                        <label htmlFor="veh-wiz-wrad-range">Radio de Rueda (m)</label>
+                        <span className="font-mono text-cyan-300">{wheelRadius.toFixed(2)}m</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="veh-wiz-wrad-range"
+                          type="range"
+                          min={0.18}
+                          max={2.0}
+                          step={0.02}
+                          value={wheelRadius}
+                          onChange={(e) => setWheelRadius(Number(e.target.value))}
+                          className="h-1.5 flex-1 accent-cyan-400"
+                        />
+                        <div className="w-16">
+                          <NumericInput value={wheelRadius} step={0.04} min={0.18} max={2.5} onChange={setWheelRadius} />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div>
+                        <span className="text-[10px] text-zinc-400">Ancho Rueda (m)</span>
+                        <NumericInput value={wheelWidth} step={0.02} min={0.12} max={1.5} onChange={setWheelWidth} />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-zinc-400">Suspensión (m)</span>
+                        <NumericInput value={suspensionRestLen} step={0.05} min={0.2} max={2.0} onChange={setSuspensionRestLen} />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-zinc-400">Dist. entre Ejes</span>
+                        <NumericInput value={wheelBase} step={0.1} min={1.0} max={8.0} onChange={setWheelBase} />
+                      </div>
+                      {kind === 'car' && (
+                        <div>
+                          <span className="text-[10px] text-zinc-400">Ancho de Eje</span>
+                          <NumericInput value={trackWidth} step={0.08} min={0.8} max={5.0} onChange={setTrackWidth} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Sub-opciones por tipo */}
                 {kind === 'boat' && (
@@ -542,6 +650,37 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
                   <span>Crear nodo CamAnchor de seguimiento</span>
                 </label>
 
+                {/* Posición del conductor: dentro o montura visible (moto/bici/caballo) */}
+                <div>
+                  <span className="mb-1 block text-[10px] font-medium text-zinc-400">
+                    Estilo de Montura (Tecla E)
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setMountStyle('inside')}
+                      className={`rounded border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                        mountStyle === 'inside'
+                          ? 'border-sky-400 bg-sky-500/20 text-sky-200'
+                          : 'border-[#343644] bg-[#121318] text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      Dentro / Cabina
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMountStyle('saddle')}
+                      className={`rounded border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                        mountStyle === 'saddle'
+                          ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                          : 'border-[#343644] bg-[#121318] text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      Encima (Visible)
+                    </button>
+                  </div>
+                </div>
+
                 <label className="flex items-center gap-2 text-xs text-zinc-200">
                   <input
                     type="checkbox"
@@ -549,7 +688,7 @@ export const VehicleBuilderModal: React.FC<VehicleBuilderModalProps> = ({
                     onChange={(e) => setCreateEnterMechanic(e.target.checked)}
                   />
                   <span className="font-semibold text-emerald-300">
-                    Añadir mecánica "Entrar / Salir con Tecla E"
+                    Añadir mecánica "Subir / Bajar con Tecla E"
                   </span>
                 </label>
 

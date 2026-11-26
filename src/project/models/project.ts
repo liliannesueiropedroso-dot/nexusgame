@@ -141,6 +141,31 @@ export interface CommandBarHistoryEntry {
   favorite?: boolean;
 }
 
+export type PluginPermission =
+  | 'scene:read'
+  | 'scene:write'
+  | 'ui:toolbar'
+  | 'runtime:update'
+  | 'commands';
+
+export type NexusPluginScope = 'both' | 'editor' | 'runtime';
+
+export interface NexusPluginPackage {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  entry: string;
+  code: string;
+  enabled: boolean;
+  scope: NexusPluginScope;
+  permissions: PluginPermission[];
+  source: 'zip' | 'editor' | 'template';
+  installedAt: number;
+  updatedAt: number;
+}
+
 export interface NexusProject {
   id: string;
   formatVersion: string;
@@ -154,6 +179,7 @@ export interface NexusProject {
   scenes: SceneData[];
   assets: ProjectAssetMeta[];
   scripts?: NexusScriptAsset[];
+  plugins?: NexusPluginPackage[];
   folders?: ProjectFolder[];
   prefabs?: PrefabDefinition[];
   variables?: ProjectVariable[];
@@ -201,6 +227,7 @@ export interface ExportedProjectManifest {
     initialSceneId?: string;
     scenes: SceneData[];
     scripts?: NexusScriptAsset[];
+    plugins?: NexusPluginPackage[];
     folders?: ProjectFolder[];
     prefabs?: PrefabDefinition[];
     variables?: ProjectVariable[];

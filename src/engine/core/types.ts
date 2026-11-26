@@ -1156,6 +1156,7 @@ export interface ObjectOptimizationConfig {
   lodEnabled?: boolean;
   lodAssetId?: string | null;
   lodDistance?: number;
+  cullDistance?: number;
   fadeEnabled?: boolean;
   fadeStart?: number;
   fadeEnd?: number;
@@ -1176,7 +1177,7 @@ export interface SoftBodyConfig {
   color?: string;
 }
 
-export type VehicleKind3D = 'car' | 'moto' | 'boat' | 'plane' | 'spaceship';
+export type VehicleKind3D = 'car' | 'moto' | 'boat' | 'plane' | 'helicopter' | 'spaceship' | 'horse';
 
 export interface VehiclePartsBinding {
   wheelFL?: string | null;
@@ -1184,6 +1185,7 @@ export interface VehiclePartsBinding {
   wheelRL?: string | null;
   wheelRR?: string | null;
   propellerId?: string | null;
+  tailRotorId?: string | null;
   cameraId?: string | null;
   landingGearId?: string | null;
 }
@@ -1191,6 +1193,12 @@ export interface VehiclePartsBinding {
 export interface Vehicle4WConfig {
   enabled: boolean;
   vehicleKind?: VehicleKind3D;
+  /** Modo de montura al entrar con Tecla E: 'inside' oculta al jugador dentro; 'saddle' lo mantiene visible sentado encima (motos, bicis, caballos) */
+  mountStyle?: 'inside' | 'saddle';
+  /** Desplazamiento local del asiento respecto al centro del vehículo para monturas visibles */
+  seatOffset?: { x: number; y: number; z: number };
+  /** Permite subir/bajar con Tecla E automáticamente sin requerir crear mecánica manual */
+  allowQuickEnterExit?: boolean;
   maxTorque: number;
   maxSpeed: number;
   maxSteerDeg: number;
@@ -1198,6 +1206,7 @@ export interface Vehicle4WConfig {
   suspensionStiffness: number;
   suspensionDamping: number;
   wheelRadius: number;
+  wheelWidth?: number;
   wheelBase: number;
   trackWidth: number;
   driveType: 'awd' | 'rwd' | 'fwd';

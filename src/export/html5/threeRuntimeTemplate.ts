@@ -808,6 +808,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     var steerSpeed = Math.abs(str) < 0.02 ? 8.8 : 5.4;
     st.steerAngleRad += (targetSteer - st.steerAngleRad) * Math.min(1, sdt * steerSpeed);
     var cosY = Math.cos(st.yawRad), sinY = Math.sin(st.yawRad);
+    var cosP = Math.cos(st.pitchRad), sinP = Math.sin(st.pitchRad), sinR = Math.sin(st.rollRad);
     var wheelR = Math.max(0.18, cfg.wheelRadius || 0.42), restLen = Math.max(0.15, cfg.suspensionRestLen || 0.65);
     var groundedCount = 0, totalSpring = 0;
     for (var i = 0; i < 4; i++) {
@@ -815,13 +816,14 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
       var wx = st.x + w.offsetX * cosY + w.offsetZ * sinY;
       var wz = st.z - w.offsetX * sinY + w.offsetZ * cosY;
       var gY = sampleGroundY(wx, wz);
-      var hubY = st.y - restLen * 0.4, gDist = hubY - (gY + wheelR);
+      var cornerAttachY = st.y + w.offsetX * sinR * cosP - w.offsetZ * sinP;
+      var hubY = cornerAttachY - restLen * 0.35, gDist = hubY - (gY + wheelR);
       if (gDist <= restLen) {
         var comp = Math.max(0, Math.min(1, 1 - gDist / restLen));
         totalSpring += Math.max(0, comp * (cfg.suspensionStiffness || 36) - st.vy * (cfg.suspensionDamping || 4.8));
         w.compression = comp; w.grounded = true; w.worldY = gY + wheelR; groundedCount++;
       } else {
-        w.compression = 0; w.grounded = false; w.worldY = hubY - restLen * 0.5;
+        w.compression = 0; w.grounded = false; w.worldY = Math.max(gY + wheelR, hubY - restLen * 0.5);
       }
       w.worldX = wx; w.worldZ = wz; w.steerAngleRad = i < 2 ? st.steerAngleRad : 0; w.spinRad += (st.speedForward / wheelR) * sdt;
     }
@@ -860,13 +862,15 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     st.x += st.vx * sdt; st.z += st.vz * sdt;
     st.vy += (totalSpring * 0.25 - 18) * sdt; st.y += st.vy * sdt;
     var avgG = (st.wheels[0].worldY + st.wheels[1].worldY + st.wheels[2].worldY + st.wheels[3].worldY) * 0.25;
-    if (st.y < avgG + restLen * 0.45) { st.y = avgG + restLen * 0.45; if (st.vy < 0) st.vy = 0; }
+    var centerGY = sampleGroundY(st.x, st.z);
+    var minVehY = Math.max(avgG + restLen * 0.42, centerGY + wheelR * 0.65);
+    if (st.y < minVehY) { st.y = minVehY; if (st.vy < 0) st.vy = 0; }
     var fAvg = (st.wheels[0].worldY + st.wheels[1].worldY) * 0.5, rAvg = (st.wheels[2].worldY + st.wheels[3].worldY) * 0.5;
     var lAvg = (st.wheels[0].worldY + st.wheels[2].worldY) * 0.5, riAvg = (st.wheels[1].worldY + st.wheels[3].worldY) * 0.5;
     var leanFactor = isMoto ? 0.42 : -0.075;
     var accelPitch = isBraking ? 0.055 : -clampedThr * 0.032;
-    st.pitchRad += (Math.atan2(rAvg - fAvg, Math.max(1, cfg.wheelBase || 2.5)) + accelPitch - st.pitchRad) * Math.min(1, sdt * 10);
-    st.rollRad += (Math.atan2(lAvg - riAvg, Math.max(0.6, cfg.trackWidth || 1.7)) + str * (st.speedForward / maxSpd) * leanFactor - st.rollRad) * Math.min(1, sdt * 10);
+    st.pitchRad += (Math.atan2(rAvg - fAvg, Math.max(1, cfg.wheelBase || 2.5)) + accelPitch - st.pitchRad) * Math.min(1, sdt * 12);
+    st.rollRad += (Math.atan2(riAvg - lAvg, Math.max(0.6, cfg.trackWidth || 1.7)) + str * (st.speedForward / maxSpd) * leanFactor - st.rollRad) * Math.min(1, sdt * 12);
   }
 
   function stepBoatVehicle(st, cfg, thr, str, dt, sampleWaterY) {
@@ -886,7 +890,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
       pt.submerged = sub; pt.waterY = wY;
       if (sub > 0) { subCount++; totalBuoy += sub * 24; }
       pitchSum += wY * (pt.offsetZ >= 0 ? 1 : -1);
-      rollSum += wY * (pt.offsetX <= 0 ? 1 : -1);
+      rollSum += wY * (pt.offsetX > 0 ? 1 : pt.offsetX < 0 ? -1 : 0);
     }
     var inWater = subCount > 0 ? subCount / Math.max(1, pts.length) : 0;
     var drag = Math.max(0.2, Math.min(6, cfg.buoyancyDrag !== undefined ? cfg.buoyancyDrag : 1.45));
@@ -1515,15 +1519,17 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     }
 
     function getMaxDpr3D(sc) {
-      var perf = sc && sc.renderQuality ? sc.renderQuality.performanceMode : 'balanced_60fps';
+      var perf = (sc && (sc.performanceProfile || (sc.renderQuality && sc.renderQuality.performanceMode))) || 'balanced_60';
       if (perf === 'ultra_fast') return 1;
       if (perf === 'high_quality') return 2;
       return 1.5;
     }
 
     var software = detectSoftwareWebGL();
-    var webgl = new THREE.WebGLRenderer({ antialias: !software, powerPreference: 'high-performance' });
-    webgl.setPixelRatio(software ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+    var initMaxDpr3D = getMaxDpr3D(scenes[0]);
+    var currentActiveDpr3D = software ? 1 : Math.min(window.devicePixelRatio || 1, initMaxDpr3D);
+    var webgl = new THREE.WebGLRenderer({ antialias: !software && initMaxDpr3D > 1, powerPreference: 'high-performance' });
+    webgl.setPixelRatio(currentActiveDpr3D);
     webgl.outputColorSpace = THREE.SRGBColorSpace;
     webgl.toneMapping = THREE.ACESFilmicToneMapping;
     webgl.shadowMap.enabled = !software;
@@ -1782,6 +1788,523 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     var fbxLoader = EXT.FBXLoader ? new EXT.FBXLoader() : null;
     var texLoader = new THREE.TextureLoader();
 
+    // ---- Real Chunk Asset Streaming + HLOD Combinado/Billboard ----
+    var streamedTexTargets3D = new Map();
+    var streamedGlbTargets3D = new Map();
+    var hlodProxyVisuals3D = new Map();
+    var activeStreamState3D = null;
+
+    function disposeObject3DTree3D(root) {
+      if (!root) return;
+      root.traverse(function (node) {
+        if (node.geometry && typeof node.geometry.dispose === 'function') node.geometry.dispose();
+        if (node.material) {
+          var mats = Array.isArray(node.material) ? node.material : [node.material];
+          for (var i = 0; i < mats.length; i++) {
+            var mat = mats[i];
+            if (!mat) continue;
+            var keys = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'alphaMap', 'aoMap'];
+            for (var ki = 0; ki < keys.length; ki++) {
+              var tx = mat[keys[ki]];
+              if (tx && typeof tx.dispose === 'function') tx.dispose();
+            }
+            if (typeof mat.dispose === 'function') mat.dispose();
+          }
+        }
+      });
+    }
+
+    function resolveStreamingCfg3D(ws) {
+      var chunkSize = Math.max(16, Number((ws && ws.chunkSize) || 64));
+      var loadRadius = Math.max(chunkSize, Number((ws && ws.loadRadius) || 140));
+      var unloadRadius = Math.max(loadRadius + 24, Number((ws && ws.unloadRadius) || 210));
+      var farProxyRadius = Math.max(unloadRadius + 40, Number((ws && ws.farProxyRadius) || 340));
+      var maxLoadsPerFrame = Math.max(1, Math.min(8, Number((ws && ws.maxLoadsPerFrame) || 2)));
+      var profile = (ws && ws.budgetProfile) || 'pc';
+      var baseLimits = profile === 'mobile'
+        ? { texturesMB: 128, modelsMB: 96 }
+        : { texturesMB: 512, modelsMB: 384 };
+      if (profile === 'custom' && ws && ws.customBudgets) {
+        if (ws.customBudgets.texturesMB !== undefined) baseLimits.texturesMB = ws.customBudgets.texturesMB;
+        if (ws.customBudgets.modelsMB !== undefined) baseLimits.modelsMB = ws.customBudgets.modelsMB;
+      }
+      return {
+        enabled: Boolean(ws && ws.enabled),
+        chunkSize: chunkSize,
+        loadRadius: loadRadius,
+        unloadRadius: unloadRadius,
+        farProxyRadius: farProxyRadius,
+        maxLoadsPerFrame: maxLoadsPerFrame,
+        frustumPreloadWeight: Math.max(1, Number((ws && ws.frustumPreloadWeight) || 1.35)),
+        velocityPreloadSec: Math.max(0, Number((ws && ws.velocityPreloadSec) || 1.6)),
+        enableHlod: !ws || ws.enableHlod !== false,
+        enableOcclusionCulling: !ws || ws.enableOcclusionCulling !== false,
+        budgetLimits: baseLimits
+      };
+    }
+
+    function collectObjectAssetIds3D(src) {
+      var ids = [];
+      if (!src || !src.mesh3d) return ids;
+      var m = src.mesh3d;
+      if (m.glbAssetId) ids.push(m.glbAssetId);
+      if (m.textureAssetId) ids.push(m.textureAssetId);
+      if (m.normalAssetId) ids.push(m.normalAssetId);
+      if (m.roughnessAssetId) ids.push(m.roughnessAssetId);
+      if (m.metalnessAssetId) ids.push(m.metalnessAssetId);
+      if (m.emissiveAssetId) ids.push(m.emissiveAssetId);
+      if (m.aoAssetId) ids.push(m.aoAssetId);
+      if (src.optimization && src.optimization.lodAssetId) ids.push(src.optimization.lodAssetId);
+      if (m.foliageConfig && m.foliageConfig.modelAssetId) ids.push(m.foliageConfig.modelAssetId);
+      return Array.from(new Set(ids));
+    }
+
+    function buildStreamingContext3D(sceneObj) {
+      var cfg = resolveStreamingCfg3D(sceneObj.worldStreaming);
+      var chunks = new Map();
+      var objToChunk = new Map();
+      (sceneObj.objects || []).forEach(function (o) {
+        if (!o.transform3d) return;
+        var m3 = o.mesh3d;
+        if (m3 && (m3.shape === 'plane' || m3.shape === 'terrain')) return;
+        var cx = Math.floor((o.transform3d.x || 0) / cfg.chunkSize);
+        var cz = Math.floor((o.transform3d.z || 0) / cfg.chunkSize);
+        var key = cx + ',' + cz;
+        var ch = chunks.get(key);
+        if (!ch) {
+          ch = {
+            key: key,
+            cx: cx,
+            cz: cz,
+            centerX: (cx + 0.5) * cfg.chunkSize,
+            centerZ: (cz + 0.5) * cfg.chunkSize,
+            objectIds: [],
+            assetIds: []
+          };
+          chunks.set(key, ch);
+        }
+        ch.objectIds.push(o.id);
+        objToChunk.set(o.id, key);
+        collectObjectAssetIds3D(o).forEach(function (aid) {
+          if (ch.assetIds.indexOf(aid) < 0) ch.assetIds.push(aid);
+        });
+      });
+
+      var objById = new Map((sceneObj.objects || []).map(function (o) { return [o.id, o]; }));
+      var hlodProxies = new Map();
+      chunks.forEach(function (ch) {
+        var members = ch.objectIds.map(function (id) { return objById.get(id); }).filter(function (o) {
+          return Boolean(o && o.visible && o.type === 'mesh_3d' && o.mesh3d && o.mesh3d.shape !== 'plane' && o.mesh3d.shape !== 'terrain' && o.mesh3d.shape !== 'water');
+        });
+        if (members.length < 2) return;
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        var rawParts = [], foliageParts = 0, structureParts = 0;
+        members.forEach(function (m) {
+          var t = m.transform3d || { x: 0, y: 0, z: 0, sx: 1, sy: 1, sz: 1 };
+          var w = Math.max(0.8, Math.abs(t.sx)), h = Math.max(0.8, Math.abs(t.sy)), d = Math.max(0.8, Math.abs(t.sz));
+          minX = Math.min(minX, t.x - w * 0.5); maxX = Math.max(maxX, t.x + w * 0.5);
+          minY = Math.min(minY, t.y - h * 0.5); maxY = Math.max(maxY, t.y + h * 0.5);
+          minZ = Math.min(minZ, t.z - d * 0.5); maxZ = Math.max(maxZ, t.z + d * 0.5);
+          var isFol = Boolean((m.mesh3d && m.mesh3d.foliageConfig) || (m.mesh3d && m.mesh3d.shape === 'grass_field') || /arbol|árbol|tree|pino|bosque|bush|arbusto/i.test(m.name || ''));
+          var pk = isFol ? 'foliage' : (h >= 2.6 || w >= 2.6 || d >= 2.6 ? 'building' : 'structure');
+          if (pk === 'foliage') foliageParts++; else structureParts++;
+          var pCol = (m.mesh3d && m.mesh3d.foliageConfig && (m.mesh3d.foliageConfig.colorTip || m.mesh3d.foliageConfig.colorBase)) || (m.mesh3d && m.mesh3d.color) || '#64748b';
+          if (m.mesh3d && m.mesh3d.foliageConfig && m.mesh3d.foliageConfig.instances && m.mesh3d.foliageConfig.instances.length > 0) {
+            var insts = m.mesh3d.foliageConfig.instances;
+            var step = Math.max(1, Math.floor(insts.length / 6));
+            for (var ii = 0; ii < insts.length && rawParts.length < 32; ii += step) {
+              var it = insts[ii], sc = Math.max(0.6, it.scale || 1);
+              rawParts.push({ cx: it.x, cy: it.y + sc * 0.8, cz: it.z, w: sc * 1.6, h: sc * 1.9, d: sc * 1.6, color: pCol, kind: 'foliage', vol: sc * sc * sc * 4.5 });
+            }
+          } else {
+            rawParts.push({ cx: t.x, cy: t.y, cz: t.z, w: w, h: h, d: d, color: pCol, kind: pk, vol: w * h * d });
+          }
+        });
+        var cX = (minX + maxX) * 0.5, cY = (minY + maxY) * 0.5, cZ = (minZ + maxZ) * 0.5;
+        rawParts.sort(function (a, b) { return b.vol - a.vol; });
+        var selParts = rawParts.slice(0, 20).map(function (p) {
+          return { offsetX: p.cx - cX, offsetY: p.cy - cY, offsetZ: p.cz - cZ, width: p.w, height: p.h, depth: p.d, color: p.color, kind: p.kind };
+        });
+        var impKind = foliageParts > 0 && structureParts === 0 ? 'billboard' : (foliageParts > 0 ? 'hybrid' : 'merged_cluster');
+        hlodProxies.set(ch.key, {
+          chunkKey: ch.key, centerX: cX, centerY: cY, centerZ: cZ,
+          width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY), depth: Math.max(1, maxZ - minZ),
+          color: (members[0].mesh3d && members[0].mesh3d.color) || '#64748b',
+          impostorKind: impKind, parts: selParts
+        });
+      });
+
+      return {
+        cfg: cfg,
+        chunks: chunks,
+        objToChunk: objToChunk,
+        loadedChunks: new Set(),
+        chunkGen: 1,
+        lastSyncChunkGen: -1,
+        hasPendingAssetWork: false,
+        occVols: (sc.occlusionVolumes || []).filter(function (v) { return v && v.enabled; }),
+        lastPlayerX: NaN,
+        lastPlayerZ: NaN,
+        lastCamX: NaN,
+        lastCamZ: NaN,
+        evalCounter: 0,
+        hlodProxies: hlodProxies,
+        objectActivity: new Map(),
+        culledObjectIds: new Set(),
+        assetEntries: new Map(),
+        frameIndex: 0
+      };
+    }
+
+    function buildHlodProxyVisual3D(proxy) {
+      var group = new THREE.Group();
+      group.position.set(proxy.centerX, proxy.centerY, proxy.centerZ);
+      var ownedGeos = [], ownedMats = [], ownedTexs = [];
+      var solidParts = proxy.impostorKind === 'billboard'
+        ? proxy.parts.filter(function (p) { return p.kind !== 'foliage'; })
+        : proxy.parts;
+      if (solidParts.length === 0 && proxy.impostorKind !== 'billboard') {
+        solidParts = [{ offsetX: 0, offsetY: 0, offsetZ: 0, width: proxy.width, height: proxy.height, depth: proxy.depth, color: proxy.color, kind: 'building' }];
+      }
+      if (solidParts.length > 0) {
+        var posArr = [], normArr = [], colArr = [];
+        solidParts.forEach(function (part) {
+          var b = new THREE.BoxGeometry(part.width, part.height, part.depth);
+          var ni = b.toNonIndexed();
+          b.dispose();
+          var pa = ni.getAttribute('position'), na = ni.getAttribute('normal');
+          var col = new THREE.Color(part.color || '#64748b');
+          for (var vi = 0; vi < pa.count; vi++) {
+            posArr.push(pa.getX(vi) + part.offsetX, pa.getY(vi) + part.offsetY, pa.getZ(vi) + part.offsetZ);
+            normArr.push(na.getX(vi), na.getY(vi), na.getZ(vi));
+            var sh = pa.getY(vi) > 0 ? 1.0 : 0.72;
+            colArr.push(col.r * sh, col.g * sh, col.b * sh);
+          }
+          ni.dispose();
+        });
+        var mg = new THREE.BufferGeometry();
+        mg.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+        mg.setAttribute('normal', new THREE.Float32BufferAttribute(normArr, 3));
+        mg.setAttribute('color', new THREE.Float32BufferAttribute(colArr, 3));
+        mg.computeBoundingBox(); mg.computeBoundingSphere();
+        var mm = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.86, metalness: 0.06 });
+        var mMesh = new THREE.Mesh(mg, mm);
+        mMesh.receiveShadow = true;
+        group.add(mMesh);
+        ownedGeos.push(mg); ownedMats.push(mm);
+      }
+      var billboardMesh = null;
+      if ((proxy.impostorKind === 'billboard' || proxy.impostorKind === 'hybrid') && typeof document !== 'undefined') {
+        var can = document.createElement('canvas'); can.width = 256; can.height = 128;
+        var ctx = can.getContext('2d');
+        if (ctx) {
+          var halfSpan = Math.max(2, proxy.width * 0.5, proxy.depth * 0.5);
+          var maxH = Math.max(2, proxy.height);
+          proxy.parts.forEach(function (p) {
+            var u = (p.offsetX / (halfSpan * 2) + 0.5) * can.width;
+            var wPx = Math.max(8, (p.width / (halfSpan * 2)) * can.width);
+            var hPx = Math.max(12, (p.height / maxH) * (can.height * 0.84));
+            var baseY = can.height - 6 - ((p.offsetY - p.height * 0.5 + maxH * 0.5) / maxH) * (can.height * 0.25);
+            var topY = Math.max(4, baseY - hPx);
+            if (p.kind === 'foliage') {
+              ctx.fillStyle = '#4b3621';
+              var tw = Math.max(3, wPx * 0.18);
+              ctx.fillRect(u - tw * 0.5, topY + hPx * 0.55, tw, Math.max(4, hPx * 0.45));
+              ctx.fillStyle = p.color || '#22c55e';
+              ctx.beginPath(); ctx.ellipse(u, topY + hPx * 0.36, wPx * 0.48, hPx * 0.38, 0, 0, Math.PI * 2); ctx.fill();
+            } else {
+              ctx.fillStyle = p.color || '#64748b';
+              ctx.fillRect(u - wPx * 0.5, topY, wPx, Math.max(8, baseY - topY));
+            }
+          });
+          var bTex = new THREE.CanvasTexture(can); bTex.colorSpace = THREE.SRGBColorSpace;
+          var bGeo = new THREE.PlaneGeometry(Math.max(3, Math.max(proxy.width, proxy.depth) * 0.92), Math.max(2.5, proxy.height * 1.05));
+          var bMat = new THREE.MeshBasicMaterial({ map: bTex, transparent: true, alphaTest: 0.2, side: THREE.DoubleSide });
+          billboardMesh = new THREE.Mesh(bGeo, bMat);
+          group.add(billboardMesh);
+          ownedGeos.push(bGeo); ownedMats.push(bMat); ownedTexs.push(bTex);
+        }
+      }
+      return {
+        group: group,
+        billboardMesh: billboardMesh,
+        dispose: function () {
+          ownedTexs.forEach(function (t) { t.dispose(); });
+          ownedMats.forEach(function (m) { m.dispose(); });
+          ownedGeos.forEach(function (g) { g.dispose(); });
+        }
+      };
+    }
+
+    function disposeStreamEntry3D(ent) {
+      if (!ent) return;
+      if (ent.cleanups && ent.cleanups.length > 0) {
+        ent.cleanups.forEach(function (fn) { try { fn(); } catch (_) {} });
+        ent.cleanups = [];
+      }
+      ent.state = 'unloaded';
+    }
+
+    function clearAllStreamingResources3D() {
+      hlodProxyVisuals3D.forEach(function (vis) {
+        worldGroup.remove(vis.group);
+        vis.dispose();
+      });
+      hlodProxyVisuals3D.clear();
+      if (activeStreamState3D && activeStreamState3D.assetEntries) {
+        activeStreamState3D.assetEntries.forEach(function (ent) { disposeStreamEntry3D(ent); });
+        activeStreamState3D.assetEntries.clear();
+      }
+      streamedTexTargets3D.clear();
+      streamedGlbTargets3D.clear();
+      activeStreamState3D = null;
+    }
+
+    function syncAssetStreaming3D(stCtx) {
+      if (!stCtx) return;
+      if (stCtx.lastSyncChunkGen === stCtx.chunkGen && !stCtx.hasPendingAssetWork) return;
+      var neededCounts = new Map();
+      stCtx.loadedChunks.forEach(function (cKey) {
+        var ch = stCtx.chunks.get(cKey);
+        if (!ch) return;
+        ch.assetIds.forEach(function (aid) {
+          neededCounts.set(aid, (neededCounts.get(aid) || 0) + 1);
+        });
+      });
+
+      var loadsStarted = 0;
+      var maxLoads = Math.max(2, stCtx.cfg.maxLoadsPerFrame * 2);
+      neededCounts.forEach(function (cnt, aid) {
+        var ent = stCtx.assetEntries.get(aid);
+        if (!ent) {
+          var meta = assetMap.get(aid);
+          var isModel = streamedGlbTargets3D.has(aid) || (meta && (meta.kind === 'model3d' || meta.format === 'glb' || meta.format === 'gltf' || meta.format === 'fbx'));
+          ent = {
+            assetId: aid,
+            kind: isModel ? 'model3d' : 'texture',
+            bytes: (meta && meta.size) || (isModel ? 650000 : 262144),
+            state: 'unloaded',
+            refCount: cnt,
+            lastUsedFrame: stCtx.frameIndex,
+            zeroSinceFrame: 0,
+            cleanups: []
+          };
+          stCtx.assetEntries.set(aid, ent);
+        } else {
+          ent.refCount = cnt;
+          ent.lastUsedFrame = stCtx.frameIndex;
+          ent.zeroSinceFrame = 0;
+        }
+        if (ent.state === 'unloaded' && loadsStarted < maxLoads) {
+          loadsStarted++;
+          ent.state = 'loading';
+          (function (entry) {
+            var metaA = assetMap.get(entry.assetId);
+            if (!metaA) { entry.state = 'missing'; return; }
+            var pendingTasks = [];
+            var texTargets = streamedTexTargets3D.get(entry.assetId) || [];
+            if (texTargets.length > 0) {
+              pendingTasks.push(new Promise(function (resolve) {
+                texLoader.load(metaA.path, function (t) {
+                  if (entry.refCount <= 0 || !activeStreamState3D || activeStreamState3D !== stCtx) {
+                    t.dispose();
+                    resolve();
+                    return;
+                  }
+                  if (texTargets.some(function (tg) { return tg.isColor; })) t.colorSpace = THREE.SRGBColorSpace;
+                  texTargets.forEach(function (tg) {
+                    tg.mat[tg.slot] = t;
+                    if (tg.slot === 'aoMap') tg.mat.aoMapIntensity = 0.9;
+                    tg.mat.needsUpdate = true;
+                  });
+                  entry.cleanups.push(function () {
+                    texTargets.forEach(function (tg) {
+                      if (tg.mat[tg.slot] === t) { tg.mat[tg.slot] = null; tg.mat.needsUpdate = true; }
+                    });
+                    t.dispose();
+                  });
+                  resolve();
+                }, undefined, function () { resolve(); });
+              }));
+            }
+            var glbTargets = streamedGlbTargets3D.get(entry.assetId) || [];
+            if (glbTargets.length > 0) {
+              glbTargets.forEach(function (gt) {
+                pendingTasks.push(new Promise(function (resolve) {
+                  gt.hydrate(function (cleanupFn) {
+                    if (entry.refCount <= 0 || !activeStreamState3D || activeStreamState3D !== stCtx) {
+                      if (typeof cleanupFn === 'function') cleanupFn();
+                    } else if (typeof cleanupFn === 'function') {
+                      entry.cleanups.push(cleanupFn);
+                    }
+                    resolve();
+                  });
+                }));
+              });
+            }
+            Promise.all(pendingTasks).then(function () {
+              if (entry.refCount <= 0 || !activeStreamState3D || activeStreamState3D !== stCtx) {
+                disposeStreamEntry3D(entry);
+              } else {
+                entry.state = 'loaded';
+              }
+            }).catch(function () { disposeStreamEntry3D(entry); });
+          })(ent);
+        }
+      });
+
+      var texBytes = 0, modBytes = 0, hasZeroRefLoaded = false, pendingWork = false;
+      stCtx.assetEntries.forEach(function (ent) {
+        if (!neededCounts.has(ent.assetId)) {
+          ent.refCount = 0;
+          if (ent.zeroSinceFrame === 0) ent.zeroSinceFrame = stCtx.frameIndex;
+          if (ent.state === 'loaded' && (stCtx.frameIndex - ent.zeroSinceFrame) >= 18) {
+            disposeStreamEntry3D(ent);
+          }
+        }
+        if (ent.state === 'loaded') {
+          if (ent.kind === 'model3d') modBytes += ent.bytes;
+          else texBytes += ent.bytes;
+          if (ent.refCount === 0) hasZeroRefLoaded = true;
+        }
+        if (ent.state === 'loading' || (ent.state === 'loaded' && ent.refCount === 0) || (ent.state === 'unloaded' && ent.refCount > 0)) {
+          pendingWork = true;
+        }
+      });
+
+      var maxTexBytes = stCtx.cfg.budgetLimits.texturesMB * 1024 * 1024;
+      var maxModBytes = stCtx.cfg.budgetLimits.modelsMB * 1024 * 1024;
+      if (hasZeroRefLoaded && (texBytes > maxTexBytes || modBytes > maxModBytes)) {
+        var candidates = [];
+        stCtx.assetEntries.forEach(function (ent) {
+          if (ent.state === 'loaded' && ent.refCount === 0) candidates.push(ent);
+        });
+        candidates.sort(function (a, b) { return a.lastUsedFrame - b.lastUsedFrame; });
+        for (var ci = 0; ci < candidates.length && (texBytes > maxTexBytes || modBytes > maxModBytes); ci++) {
+          var ev = candidates[ci];
+          disposeStreamEntry3D(ev);
+          if (ev.kind === 'model3d') modBytes = Math.max(0, modBytes - ev.bytes);
+          else texBytes = Math.max(0, texBytes - ev.bytes);
+        }
+      }
+      stCtx.lastSyncChunkGen = stCtx.chunkGen;
+      stCtx.hasPendingAssetWork = pendingWork;
+    }
+
+    function stepStreamingContext3D(stCtx, objs, playerPos, camPos, fwdXZ) {
+      if (!stCtx || !stCtx.cfg.enabled) return;
+      stCtx.frameIndex++;
+      stCtx.evalCounter++;
+      var cfg = stCtx.cfg;
+      var movedDist = Number.isFinite(stCtx.lastPlayerX) ? Math.hypot(playerPos.x - stCtx.lastPlayerX, playerPos.z - stCtx.lastPlayerZ) : Infinity;
+      var camMovedDist = Number.isFinite(stCtx.lastCamX) ? Math.hypot(camPos.posX - stCtx.lastCamX, camPos.posZ - stCtx.lastCamZ) : Infinity;
+      if (stCtx.frameIndex > 1 && movedDist < 0.75 && camMovedDist < 0.75 && (stCtx.evalCounter % 4 !== 0)) {
+        if (stCtx.hasPendingAssetWork || stCtx.lastSyncChunkGen !== stCtx.chunkGen) syncAssetStreaming3D(stCtx);
+        if (cfg.enableHlod && hlodProxyVisuals3D.size > 0) {
+          hlodProxyVisuals3D.forEach(function (vis, cKey) {
+            if (vis.group.visible && vis.billboardMesh) {
+              var prx = stCtx.hlodProxies.get(cKey);
+              if (prx) vis.billboardMesh.rotation.y = Math.atan2(camPos.posX - prx.centerX, camPos.posZ - prx.centerZ);
+            }
+          });
+        }
+        return;
+      }
+      stCtx.lastPlayerX = playerPos.x; stCtx.lastPlayerZ = playerPos.z;
+      stCtx.lastCamX = camPos.posX; stCtx.lastCamZ = camPos.posZ;
+
+      var fx = fwdXZ.x || 0, fz = fwdXZ.z || -1;
+      var fl = Math.hypot(fx, fz) || 1;
+      fx /= fl; fz /= fl;
+      var queue = [];
+      stCtx.chunks.forEach(function (ch) {
+        var dx = ch.centerX - playerPos.x, dz = ch.centerZ - playerPos.z;
+        var dist = Math.hypot(dx, dz);
+        if (dist <= cfg.loadRadius && !stCtx.loadedChunks.has(ch.key)) {
+          var inv = dist > 0.001 ? 1 / dist : 1;
+          var dot = (dx * inv) * fx + (dz * inv) * fz;
+          var score = dist / (dot > 0.35 ? cfg.frustumPreloadWeight : 1);
+          queue.push({ key: ch.key, score: score });
+        } else if (dist > cfg.unloadRadius && stCtx.loadedChunks.has(ch.key)) {
+          stCtx.loadedChunks.delete(ch.key);
+          stCtx.chunkGen++;
+        }
+      });
+      if (queue.length > 1) queue.sort(function (a, b) { return a.score - b.score; });
+      for (var qi = 0; qi < queue.length && qi < cfg.maxLoadsPerFrame; qi++) {
+        stCtx.loadedChunks.add(queue[qi].key);
+        stCtx.chunkGen++;
+      }
+
+      syncAssetStreaming3D(stCtx);
+
+      stCtx.objectActivity.clear();
+      objs.forEach(function (o) {
+        var cKey = stCtx.objToChunk.get(o.id);
+        var d = Math.hypot((o.t3.x || 0) - playerPos.x, (o.t3.z || 0) - playerPos.z);
+        if (!cKey) {
+          stCtx.objectActivity.set(o.id, 'near');
+        } else if (stCtx.loadedChunks.has(cKey)) {
+          stCtx.objectActivity.set(o.id, d <= cfg.loadRadius * 0.55 ? 'near' : 'medium');
+        } else {
+          stCtx.objectActivity.set(o.id, d <= cfg.farProxyRadius ? 'far' : 'unloaded');
+        }
+      });
+
+      // Occlusion Culling por occlusionVolumes
+      stCtx.culledObjectIds.clear();
+      var occVols = stCtx.occVols || [];
+      if (cfg.enableOcclusionCulling && occVols.length > 0) {
+        objs.forEach(function (o) {
+          if (!o.visible || o.type !== 'mesh_3d') return;
+          var act = stCtx.objectActivity.get(o.id) || 'near';
+          if (act === 'far' || act === 'unloaded') return;
+          var m3o = o.source && o.source.mesh3d;
+          if (m3o && (m3o.shape === 'terrain' || m3o.shape === 'plane' || m3o.shape === 'water')) return;
+          var odx = o.t3.x - camPos.posX, ody = o.t3.y - camPos.posY, odz = o.t3.z - camPos.posZ;
+          var oDist = Math.hypot(odx, ody, odz);
+          if (oDist < 4) return;
+          for (var vi = 0; vi < occVols.length; vi++) {
+            var b = occVols[vi].bounds;
+            if (!b || occVols[vi].kind !== 'occluder') continue;
+            if (camPos.posX >= b.minX && camPos.posX <= b.maxX && camPos.posY >= b.minY && camPos.posY <= b.maxY && camPos.posZ >= b.minZ && camPos.posZ <= b.maxZ) continue;
+            var hit = raycastSegmentAabb3DDetailed(camPos.posX, camPos.posY, camPos.posZ, odx, ody, odz, b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ);
+            if (hit && !hit.inside && hit.t > 0.02 && hit.t < 0.96) {
+              stCtx.culledObjectIds.add(o.id);
+              break;
+            }
+          }
+        });
+      }
+
+      // Renderizar y orientar proxies HLOD reales (combinados + billboard)
+      if (cfg.enableHlod) {
+        stCtx.hlodProxies.forEach(function (proxy, cKey) {
+          var isLoaded = stCtx.loadedChunks.has(cKey);
+          var dCam = Math.hypot(proxy.centerX - camPos.posX, proxy.centerZ - camPos.posZ);
+          var shouldShow = !isLoaded && dCam <= cfg.farProxyRadius;
+          var vis = hlodProxyVisuals3D.get(cKey);
+          if (!shouldShow && dCam > cfg.farProxyRadius * 1.15 && vis) {
+            worldGroup.remove(vis.group);
+            vis.dispose();
+            hlodProxyVisuals3D.delete(cKey);
+            return;
+          }
+          if (shouldShow && !vis) {
+            vis = buildHlodProxyVisual3D(proxy);
+            worldGroup.add(vis.group);
+            hlodProxyVisuals3D.set(cKey, vis);
+          }
+          if (vis) {
+            vis.group.visible = shouldShow;
+            if (shouldShow && vis.billboardMesh) {
+              vis.billboardMesh.rotation.y = Math.atan2(camPos.posX - proxy.centerX, camPos.posZ - proxy.centerZ);
+            }
+          }
+        });
+      }
+    }
+
     function loadModel3DAsset(assetId, normSize, onLoaded) {
       var meta = assetMap.get(assetId);
       if (!meta) return;
@@ -1839,6 +2362,8 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     function applyRepeatsAndI18n3D(container) {
       if (!container) return;
       container.querySelectorAll('[data-nexus-i18n]').forEach(function (el) {
+        if (el.__nxLastLocale === activeLocale3D) return;
+        el.__nxLastLocale = activeLocale3D;
         var k = el.getAttribute('data-nexus-i18n');
         if (k) el.textContent = t3D(k);
       });
@@ -1860,8 +2385,17 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
       });
     }
 
-    function refreshWidgetsDom() {
+    var lastWidgetRefreshAt = 0;
+    var lastWidgetRefreshSig = '';
+    function refreshWidgetsDom(force) {
       if (!activeSim) return;
+      var nowW = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      var dynArrCheck = activeSim.dynamicWidgets || [];
+      var varSig = activeLocale3D + '|' + dynArrCheck.length + '|';
+      activeSim.variables.forEach(function (vv, vk) { varSig += vk + '=' + vv + ';'; });
+      if (!force && varSig === lastWidgetRefreshSig && (nowW - lastWidgetRefreshAt) < 250) return;
+      lastWidgetRefreshSig = varSig;
+      lastWidgetRefreshAt = nowW;
       applyRepeatsAndI18n3D(widgetsHost);
       applyRepeatsAndI18n3D(dynWidgetsHost);
       widgetsHost.querySelectorAll('[data-nexus-var], [data-nexus-progress]').forEach(function (el) {
@@ -2085,10 +2619,15 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
       var target = scenes.find(function (s) { return s.id === idOrName || s.name === idOrName; }) || scenes[0];
       if (!target) return;
       currentScene = cloneData(target);
-      webgl.setPixelRatio(software ? 1 : Math.min(window.devicePixelRatio || 1, getMaxDpr3D(currentScene)));
+      clearAllStreamingResources3D();
+      currentActiveDpr3D = software ? 1 : Math.min(window.devicePixelRatio || 1, getMaxDpr3D(currentScene));
+      webgl.setPixelRatio(currentActiveDpr3D);
       resizeRenderer();
       while (worldGroup.children.length > 0) worldGroup.remove(worldGroup.children[0]);
       while (particleGroup.children.length > 0) particleGroup.remove(particleGroup.children[0]);
+      if (currentScene.worldStreaming && currentScene.worldStreaming.enabled) {
+        activeStreamState3D = buildStreamingContext3D(currentScene);
+      }
       nodeMap3d.clear();
       meshBindings.clear();
       loadedRoots3D.clear();
@@ -2246,70 +2785,99 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             }
           } else if (m3.shape === 'glb' && m3.glbAssetId && assetMap.has(m3.glbAssetId)) {
             var grp = new THREE.Group();
-            loadModel3DAsset(m3.glbAssetId, 1.0, function (loaded) {
-              var meshCnt = 0, boneCnt = 0;
-              loaded.root.traverse(function (ch) {
-                if (ch.isBone) boneCnt++;
-                if (ch.isMesh) {
-                  meshCnt++;
-                  ch.castShadow = m3.castShadow !== false && !software;
-                  ch.receiveShadow = m3.receiveShadow !== false && !software;
-                  ch.frustumCulled = src.optimization && src.optimization.frustumCulling !== undefined ? src.optimization.frustumCulling : true;
+            function hydrateGlbInstance3D(onDone) {
+              var cancelledGlb = false;
+              var mountedRootRef = null;
+              var mountedLodRef = null;
+              loadModel3DAsset(m3.glbAssetId, 1.0, function (loaded) {
+                if (cancelledGlb) { disposeObject3DTree3D(loaded.root); if (onDone) onDone(function () {}); return; }
+                mountedRootRef = loaded.root;
+                var meshCnt = 0, boneCnt = 0;
+                loaded.root.traverse(function (ch) {
+                  if (ch.isBone) boneCnt++;
+                  if (ch.isMesh) {
+                    meshCnt++;
+                    ch.castShadow = m3.castShadow !== false && !software;
+                    ch.receiveShadow = m3.receiveShadow !== false && !software;
+                    ch.frustumCulled = src.optimization && src.optimization.frustumCulling !== undefined ? src.optimization.frustumCulling : true;
+                  }
+                });
+                if (meshCnt === 0 && boneCnt > 0) grp.add(new THREE.SkeletonHelper(loaded.root));
+                grp.add(loaded.root);
+                loadedRoots3D.set(src.id, loaded.root);
+                if (src.optimization && src.optimization.lodEnabled && src.optimization.lodAssetId && assetMap.has(src.optimization.lodAssetId)) {
+                  loadModel3DAsset(src.optimization.lodAssetId, 1.0, function (lodRes) {
+                    if (cancelledGlb) { disposeObject3DTree3D(lodRes.root); return; }
+                    mountedLodRef = lodRes.root;
+                    lodRes.root.visible = false;
+                    grp.add(lodRes.root);
+                    lodBindings3D.set(src.id, { high: loaded.root, low: lodRes.root, dist: Math.max(5, src.optimization.lodDistance || 35), usingLow: false });
+                  });
+                }
+                var p3Src = src.physics3d;
+                var needsTriCam = (p3Src && p3Src.shape === 'mesh_exact') || m3.shape === 'arch' || ((!p3Src || p3Src.bodyType !== 'dynamic') && (!p3Src || p3Src.cameraCollision !== 'never'));
+                if (needsTriCam) {
+                  grp.position.set(t3.x, t3.y, t3.z);
+                  grp.rotation.set(t3.rx * DEG2RAD, t3.ry * DEG2RAD, t3.rz * DEG2RAD);
+                  grp.scale.set(t3.sx, t3.sy, t3.sz);
+                  trimeshCache.set(src.id, extractTrimeshFromObject3D(grp));
+                }
+                var extraIds = Array.from(new Set((src.animStateMachine && src.animStateMachine.states ? src.animStateMachine.states : []).map(function (s) { return s.assetId; }).filter(function (id) { return id && id !== m3.glbAssetId && assetMap.has(id); })));
+                if ((loaded.animations && loaded.animations.length > 0) || extraIds.length > 0) {
+                  var mixer = new THREE.AnimationMixer(loaded.root);
+                  var am = new Map();
+                  loaded.animations.forEach(function (cl) {
+                    var act = mixer.clipAction(cl);
+                    am.set(cl.name, act);
+                    am.set(m3.glbAssetId + ':' + cl.name, act);
+                    if (!am.has('__asset_first__:' + m3.glbAssetId)) am.set('__asset_first__:' + m3.glbAssetId, act);
+                  });
+                  var initKey = (st.activeAnimAssetId || '') + ':' + (st.activeClip || (loaded.animations[0] ? loaded.animations[0].name : ''));
+                  var initAct = (st.activeAnimAssetId && st.activeClip && am.get(initKey)) || (st.activeClip && am.get(st.activeClip)) || (st.activeAnimAssetId && am.get('__asset_first__:' + st.activeAnimAssetId)) || (loaded.animations[0] ? am.get(loaded.animations[0].name) : null);
+                  if (initAct) {
+                    var loopKind = st.animLoopMode === 'LoopOnce' ? THREE.LoopOnce : st.animLoopMode === 'LoopPingPong' ? THREE.LoopPingPong : THREE.LoopRepeat;
+                    initAct.setLoop(loopKind, st.animLoopMode === 'LoopOnce' ? 1 : Infinity);
+                    initAct.clampWhenFinished = st.animLoopMode === 'LoopOnce';
+                    initAct.timeScale = st.animTimeScale || 1;
+                    initAct.reset().play();
+                  }
+                  var mixerEntry = { mixer: mixer, actions: am, activeKey: initAct ? initKey : null, activeAction: initAct || null };
+                  mixerMap.set(src.id, mixerEntry);
+                  extraIds.forEach(function (eid) {
+                    loadModel3DAsset(eid, false, function (eg) {
+                      if (cancelledGlb) return;
+                      (eg.animations || []).forEach(function (rawEcl) {
+                        var ecl = retargetClipForRoot3D(rawEcl, loaded.root);
+                        var eAct = mixer.clipAction(ecl);
+                        if (!am.has(ecl.name)) am.set(ecl.name, eAct);
+                        am.set(eid + ':' + ecl.name, eAct);
+                        if (!am.has('__asset_first__:' + eid)) am.set('__asset_first__:' + eid, eAct);
+                      });
+                      if (st.activeAnimAssetId === eid) mixerEntry.activeKey = null;
+                    });
+                  });
+                }
+                if (onDone) {
+                  onDone(function () {
+                    cancelledGlb = true;
+                    var mxOld = mixerMap.get(src.id);
+                    if (mxOld) { mxOld.mixer.stopAllAction(); mixerMap.delete(src.id); }
+                    lodBindings3D.delete(src.id);
+                    loadedRoots3D.delete(src.id);
+                    if (mountedRootRef) { grp.remove(mountedRootRef); disposeObject3DTree3D(mountedRootRef); mountedRootRef = null; }
+                    if (mountedLodRef) { grp.remove(mountedLodRef); disposeObject3DTree3D(mountedLodRef); mountedLodRef = null; }
+                    while (grp.children.length > 0) { var chG = grp.children[0]; grp.remove(chG); disposeObject3DTree3D(chG); }
+                  });
                 }
               });
-              if (meshCnt === 0 && boneCnt > 0) grp.add(new THREE.SkeletonHelper(loaded.root));
-              grp.add(loaded.root);
-              loadedRoots3D.set(src.id, loaded.root);
-              if (src.optimization && src.optimization.lodEnabled && src.optimization.lodAssetId && assetMap.has(src.optimization.lodAssetId)) {
-                loadModel3DAsset(src.optimization.lodAssetId, 1.0, function (lodRes) {
-                  lodRes.root.visible = false;
-                  grp.add(lodRes.root);
-                  lodBindings3D.set(src.id, { high: loaded.root, low: lodRes.root, dist: Math.max(5, src.optimization.lodDistance || 35), usingLow: false });
-                });
-              }
-              var p3Src = src.physics3d;
-              var needsTriCam = (p3Src && p3Src.shape === 'mesh_exact') || m3.shape === 'arch' || ((!p3Src || p3Src.bodyType !== 'dynamic') && (!p3Src || p3Src.cameraCollision !== 'never'));
-              if (needsTriCam) {
-                grp.position.set(t3.x, t3.y, t3.z);
-                grp.rotation.set(t3.rx * DEG2RAD, t3.ry * DEG2RAD, t3.rz * DEG2RAD);
-                grp.scale.set(t3.sx, t3.sy, t3.sz);
-                trimeshCache.set(src.id, extractTrimeshFromObject3D(grp));
-              }
-              var extraIds = Array.from(new Set((src.animStateMachine && src.animStateMachine.states ? src.animStateMachine.states : []).map(function (s) { return s.assetId; }).filter(function (id) { return id && id !== m3.glbAssetId && assetMap.has(id); })));
-              if ((loaded.animations && loaded.animations.length > 0) || extraIds.length > 0) {
-                var mixer = new THREE.AnimationMixer(loaded.root);
-                var am = new Map();
-                loaded.animations.forEach(function (cl) {
-                  var act = mixer.clipAction(cl);
-                  am.set(cl.name, act);
-                  am.set(m3.glbAssetId + ':' + cl.name, act);
-                  if (!am.has('__asset_first__:' + m3.glbAssetId)) am.set('__asset_first__:' + m3.glbAssetId, act);
-                });
-                var initKey = (st.activeAnimAssetId || '') + ':' + (st.activeClip || (loaded.animations[0] ? loaded.animations[0].name : ''));
-                var initAct = (st.activeAnimAssetId && st.activeClip && am.get(initKey)) || (st.activeClip && am.get(st.activeClip)) || (st.activeAnimAssetId && am.get('__asset_first__:' + st.activeAnimAssetId)) || (loaded.animations[0] ? am.get(loaded.animations[0].name) : null);
-                if (initAct) {
-                  var loopKind = st.animLoopMode === 'LoopOnce' ? THREE.LoopOnce : st.animLoopMode === 'LoopPingPong' ? THREE.LoopPingPong : THREE.LoopRepeat;
-                  initAct.setLoop(loopKind, st.animLoopMode === 'LoopOnce' ? 1 : Infinity);
-                  initAct.clampWhenFinished = st.animLoopMode === 'LoopOnce';
-                  initAct.timeScale = st.animTimeScale || 1;
-                  initAct.reset().play();
-                }
-                var mixerEntry = { mixer: mixer, actions: am, activeKey: initAct ? initKey : null, activeAction: initAct || null };
-                mixerMap.set(src.id, mixerEntry);
-                extraIds.forEach(function (eid) {
-                  loadModel3DAsset(eid, false, function (eg) {
-                    (eg.animations || []).forEach(function (rawEcl) {
-                      var ecl = retargetClipForRoot3D(rawEcl, loaded.root);
-                      var eAct = mixer.clipAction(ecl);
-                      if (!am.has(ecl.name)) am.set(ecl.name, eAct);
-                      am.set(eid + ':' + ecl.name, eAct);
-                      if (!am.has('__asset_first__:' + eid)) am.set('__asset_first__:' + eid, eAct);
-                    });
-                    if (st.activeAnimAssetId === eid) mixerEntry.activeKey = null;
-                  });
-                });
-              }
-            });
+            }
+            if (currentScene.worldStreaming && currentScene.worldStreaming.enabled) {
+              var gList = streamedGlbTargets3D.get(m3.glbAssetId) || [];
+              gList.push({ hydrate: hydrateGlbInstance3D });
+              streamedGlbTargets3D.set(m3.glbAssetId, gList);
+            } else {
+              hydrateGlbInstance3D(null);
+            }
             attachNode3D(src, grp);
             meshBindings.set(src.id, grp);
           } else {
@@ -2331,8 +2899,23 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             var mat = (ccVal > 0 || transVal > 0) && THREE.MeshPhysicalMaterial
               ? new THREE.MeshPhysicalMaterial(Object.assign({}, matOpts, { clearcoat: ccVal, clearcoatRoughness: m3.clearcoatRoughness !== undefined ? m3.clearcoatRoughness : 0.12, transmission: transVal, ior: 1.48 }))
               : new THREE.MeshStandardMaterial(matOpts);
+            function bindOrStreamTex3D(assetId, slot, isColor) {
+              if (!assetId || !assetMap.has(assetId)) return;
+              if (currentScene.worldStreaming && currentScene.worldStreaming.enabled) {
+                var tList = streamedTexTargets3D.get(assetId) || [];
+                tList.push({ mat: mat, slot: slot, isColor: isColor });
+                streamedTexTargets3D.set(assetId, tList);
+                return;
+              }
+              texLoader.load(assetMap.get(assetId).path, function (t) {
+                if (isColor) t.colorSpace = THREE.SRGBColorSpace;
+                mat[slot] = t;
+                if (slot === 'aoMap') mat.aoMapIntensity = 0.9;
+                mat.needsUpdate = true;
+              });
+            }
             if (m3.textureAssetId && assetMap.has(m3.textureAssetId)) {
-              texLoader.load(assetMap.get(m3.textureAssetId).path, function (t) { t.colorSpace = THREE.SRGBColorSpace; mat.map = t; mat.needsUpdate = true; });
+              bindOrStreamTex3D(m3.textureAssetId, 'map', true);
             } else if (m3.shape === 'plane') {
               var gCan = document.createElement('canvas'); gCan.width = 256; gCan.height = 256;
               var gCtx = gCan.getContext('2d');
@@ -2345,21 +2928,13 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
                 mat.map = gTex; mat.needsUpdate = true;
               }
             }
-            if (m3.normalAssetId && assetMap.has(m3.normalAssetId)) {
-              texLoader.load(assetMap.get(m3.normalAssetId).path, function (t) { mat.normalMap = t; mat.needsUpdate = true; });
-            }
-            if (m3.roughnessAssetId && assetMap.has(m3.roughnessAssetId)) {
-              texLoader.load(assetMap.get(m3.roughnessAssetId).path, function (t) { mat.roughnessMap = t; mat.needsUpdate = true; });
-            }
-            if (m3.metalnessAssetId && assetMap.has(m3.metalnessAssetId)) {
-              texLoader.load(assetMap.get(m3.metalnessAssetId).path, function (t) { mat.metalnessMap = t; mat.needsUpdate = true; });
-            }
-            if (m3.emissiveAssetId && assetMap.has(m3.emissiveAssetId)) {
-              texLoader.load(assetMap.get(m3.emissiveAssetId).path, function (t) { t.colorSpace = THREE.SRGBColorSpace; mat.emissiveMap = t; mat.needsUpdate = true; });
-            }
+            bindOrStreamTex3D(m3.normalAssetId, 'normalMap', false);
+            bindOrStreamTex3D(m3.roughnessAssetId, 'roughnessMap', false);
+            bindOrStreamTex3D(m3.metalnessAssetId, 'metalnessMap', false);
+            bindOrStreamTex3D(m3.emissiveAssetId, 'emissiveMap', true);
             if (m3.aoAssetId && assetMap.has(m3.aoAssetId)) {
               if (pbrGeo.attributes && pbrGeo.attributes.uv && !pbrGeo.attributes.uv2) pbrGeo.setAttribute('uv2', pbrGeo.attributes.uv);
-              texLoader.load(assetMap.get(m3.aoAssetId).path, function (t) { mat.aoMap = t; mat.aoMapIntensity = 0.9; mat.needsUpdate = true; });
+              bindOrStreamTex3D(m3.aoAssetId, 'aoMap', false);
             }
             var mesh = new THREE.Mesh(pbrGeo, mat);
             mesh.castShadow = m3.castShadow !== false && !software;
@@ -2384,27 +2959,6 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             worldGroup.add(sbGroup);
             softBodyMeshes.set(src.id, nMeshes);
           }
-
-          if (src.vehicle && src.vehicle.enabled) {
-            var vSim = createVehicle4WState(t3.x, t3.y, t3.z, t3.ry || 0, src.vehicle);
-            vehSims.set(src.id, vSim);
-            var vKindInit = src.vehicle.vehicleKind || 'car';
-            var vPartsInit = src.vehicle.parts;
-            if ((vKindInit === 'car' || vKindInit === 'moto') && (!vPartsInit || !vPartsInit.wheelFL)) {
-              var wRad = Math.max(0.18, src.vehicle.wheelRadius || 0.42);
-              var wGeo = new THREE.CylinderGeometry(wRad, wRad, 0.34, 12);
-              wGeo.rotateZ(Math.PI / 2);
-              var wMat = new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.75 });
-              var wSlice = vKindInit === 'moto' ? [vSim.wheels[0], vSim.wheels[2]] : vSim.wheels;
-              var wMeshes = wSlice.map(function (wh) {
-                var wm = new THREE.Mesh(wGeo, wMat);
-                wm.position.set(wh.worldX, wh.worldY, wh.worldZ);
-                worldGroup.add(wm);
-                return wm;
-              });
-              vehicleWheelMeshes.set(src.id, wMeshes);
-            }
-          }
         } else if (src.type === 'light_3d' && src.light3d) {
           var l3 = src.light3d;
           var holder = new THREE.Group();
@@ -2426,6 +2980,27 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           attachNode3D(src, holder);
           meshBindings.set(src.id, holder);
           lightBindings.set(src.id, lo);
+        }
+        if (src.vehicle && src.vehicle.enabled) {
+          var vSim = createVehicle4WState(t3.x, t3.y, t3.z, t3.ry || 0, src.vehicle);
+          vehSims.set(src.id, vSim);
+          var vKindInit = src.vehicle.vehicleKind || 'car';
+          var vPartsInit = src.vehicle.parts;
+          if ((vKindInit === 'car' || vKindInit === 'moto') && (!vPartsInit || !vPartsInit.wheelFL)) {
+            var wRad = Math.max(0.18, src.vehicle.wheelRadius || 0.42);
+            var wWid = Math.max(0.12, src.vehicle.wheelWidth || (vKindInit === 'moto' ? 0.22 : 0.3));
+            var wGeo = new THREE.CylinderGeometry(wRad, wRad, wWid, 12);
+            wGeo.rotateZ(Math.PI / 2);
+            var wMat = new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.75 });
+            var wSlice = vKindInit === 'moto' ? [vSim.wheels[0], vSim.wheels[2]] : vSim.wheels;
+            var wMeshes = wSlice.map(function (wh) {
+              var wm = new THREE.Mesh(wGeo, wMat);
+              wm.position.set(wh.worldX, wh.worldY, wh.worldZ);
+              worldGroup.add(wm);
+              return wm;
+            });
+            vehicleWheelMeshes.set(src.id, wMeshes);
+          }
         }
         return st;
       }
@@ -2536,8 +3111,11 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
         } catch (_) {}
       }
       sim3dAccumulator = 0;
+      activeSim.hasAdaptiveQuality = (currentScene.objects || []).some(function (o) {
+        return o.visible && (o.components || []).some(function (c) { return c.enabled && c.type === 'portal.adaptive_quality'; });
+      });
       mountSceneWidgets(currentScene);
-      refreshWidgetsDom();
+      refreshWidgetsDom(true);
     }
 
     function logScriptError3D(errKey, scriptName, err) {
@@ -3462,6 +4040,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
     if (window.NexusPortal) { window.NexusPortal.loadingFinished(); window.NexusPortal.gameplayStart(); }
 
     var lastT = performance.now();
+    var adaptiveFrames3D = 0, adaptiveElapsed3D = 0, lowFpsStreak3D = 0, highFpsStreak3D = 0;
     function frame(now) {
       if (software) {
         setTimeout(function () { requestAnimationFrame(frame); }, 42);
@@ -3470,6 +4049,41 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
       }
       var dt = Math.min(0.05, Math.max(0.001, (now - lastT) / 1000));
       lastT = now;
+      if (!software && activeSim && !paused) {
+        adaptiveFrames3D++;
+        adaptiveElapsed3D += dt;
+        if (adaptiveElapsed3D >= 0.5) {
+          var curFps3D = adaptiveFrames3D / adaptiveElapsed3D;
+          adaptiveFrames3D = 0;
+          adaptiveElapsed3D = 0;
+          var perfMode3D = (currentScene && (currentScene.performanceProfile || (currentScene.renderQuality && currentScene.renderQuality.performanceMode))) || 'balanced_60';
+          if (perfMode3D === 'balanced_60' || perfMode3D === 'balanced_60fps' || activeSim.hasAdaptiveQuality) {
+            var maxSceneDpr = Math.min(window.devicePixelRatio || 1, getMaxDpr3D(currentScene));
+            if (curFps3D < 48) {
+              highFpsStreak3D = 0;
+              lowFpsStreak3D++;
+              if (lowFpsStreak3D >= 4 && currentActiveDpr3D > 1.0) {
+                currentActiveDpr3D = Math.max(1.0, Number((currentActiveDpr3D - 0.25).toFixed(2)));
+                webgl.setPixelRatio(currentActiveDpr3D);
+                resizeRenderer();
+                lowFpsStreak3D = 0;
+              }
+            } else if (curFps3D >= 58) {
+              lowFpsStreak3D = 0;
+              highFpsStreak3D++;
+              if (highFpsStreak3D >= 12 && currentActiveDpr3D < maxSceneDpr) {
+                currentActiveDpr3D = Math.min(maxSceneDpr, Number((currentActiveDpr3D + 0.25).toFixed(2)));
+                webgl.setPixelRatio(currentActiveDpr3D);
+                resizeRenderer();
+                highFpsStreak3D = 0;
+              }
+            } else {
+              lowFpsStreak3D = Math.max(0, lowFpsStreak3D - 1);
+              highFpsStreak3D = Math.max(0, highFpsStreak3D - 1);
+            }
+          }
+        }
+      }
       if (!paused && activeSim) {
         activeSim.elapsedTime += dt;
         if (activeDialogue3D && !activeDialogue3D.finishedTyping) {
@@ -3588,7 +4202,8 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           if (sunLightRef) { sunLightRef.position.set(dn.sunPosition[0], dn.sunPosition[1], dn.sunPosition[2]); sunLightRef.color.set(sunOv.color || dn.sunColor); sunLightRef.intensity = sunOv.intensity !== undefined ? sunOv.intensity : dn.sunIntensity; }
           if (ambientLightRef) { ambientLightRef.color.set(dn.ambientColor); ambientLightRef.intensity = dn.ambientIntensity; }
           if (threeScene.fog) threeScene.fog.color.set(dn.fogColor);
-          threeScene.background = new THREE.Color(dn.horizonColor);
+          if (threeScene.background && threeScene.background.isColor) threeScene.background.set(dn.horizonColor);
+          else threeScene.background = new THREE.Color(dn.horizonColor);
         } else if (sunLightRef && (sunOv.intensity !== undefined || sunOv.color !== undefined)) {
           if (sunOv.intensity !== undefined) sunLightRef.intensity = sunOv.intensity;
           if (sunOv.color !== undefined) sunLightRef.color.set(sunOv.color);
@@ -3603,8 +4218,18 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           });
           return hasC || Boolean(x.source.aiAgent && x.source.aiAgent.enabled && x.source.aiAgent.mode !== 'idle');
         }
+        var primaryPlayer3d = resolvePlayer3d(objs);
+        if (activeStreamState3D) {
+          var sAnchor = primaryPlayer3d ? primaryPlayer3d.t3 : { x: activeSim.cameraState.lookAtX, y: activeSim.cameraState.lookAtY, z: activeSim.cameraState.lookAtZ };
+          stepStreamingContext3D(activeStreamState3D, objs, sAnchor, activeSim.cameraState, getCameraForwardXZ3D(activeSim.cameraState));
+        }
+
         var dynamicBodies = objs.filter(function (o) {
           if (!o.visible || hasParentInScene3d(o)) return false;
+          if (activeStreamState3D) {
+            var actB = activeStreamState3D.objectActivity.get(o.id) || 'near';
+            if (actB === 'far' || actB === 'unloaded') return false;
+          }
           if (activeSim.mountedActorId === o.id && activeSim.mountedVehicleId) return false;
           if (o.type !== 'mesh_3d' && o.type !== 'container') return false;
           if (o.type === 'mesh_3d' && o.source.mesh3d && (o.source.mesh3d.shape === 'terrain' || o.source.mesh3d.shape === 'water' || o.source.mesh3d.shape === 'grass_field')) return false;
@@ -3629,9 +4254,9 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           return false;
         }
         var staticSolids = objs.filter(function (o) {
+          if (activeStreamState3D && activeStreamState3D.objectActivity.get(o.id) === 'unloaded') return false;
           return o.visible && !dynamicIdSet.has(o.id) && !isDescendantOfDynamic3d(o) && !(activeSim.mountedActorId === o.id && activeSim.mountedVehicleId) && o.type === 'mesh_3d' && (!o.source.mesh3d || o.source.mesh3d.shape !== 'grass_field') && (!o.source.physics3d || o.source.physics3d.enabled !== false) && (!o.source.physics3d || o.source.physics3d.bodyType !== 'dynamic');
         });
-        var primaryPlayer3d = resolvePlayer3d(objs);
 
         var aiObsBoxes3D = staticSolids.filter(function (s) {
           var shp = s.source.mesh3d && s.source.mesh3d.shape;
@@ -4400,15 +5025,22 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
                 wMs.forEach(function (wm, wi) {
                   var wh = vState.wheels[wSliceStep[wi] !== undefined ? wSliceStep[wi] : wi];
                   wm.position.set(wh.worldX, wh.worldY, wh.worldZ);
-                  wm.rotation.set(wh.spinRad, vState.yawRad - wh.steerAngleRad, 0, 'YXZ');
+                  wm.rotation.set(wh.spinRad, vState.yawRad - wh.steerAngleRad, vState.rollRad, 'YZX');
                 });
               }
               if (vCfg.parts) {
+                var restL = Math.max(0.2, vCfg.suspensionRestLen || 0.65);
+                var cosP = Math.cos(vState.pitchRad), sinP = Math.sin(vState.pitchRad);
+                var cosR = Math.cos(vState.rollRad), sinR = Math.sin(vState.rollRad);
+                var cosTilt = Math.max(0.35, cosR * cosP);
+                var minLY = -(restL * 1.45 + 0.35), maxLY = restL * 0.45 + 0.35;
                 [vCfg.parts.wheelFL, vCfg.parts.wheelFR, vCfg.parts.wheelRL, vCfg.parts.wheelRR].forEach(function (pid, wIdx) {
                   if (!pid) return;
                   var pn = meshBindings.get(pid), ps = objs.find(function (x) { return x.id === pid; }), wh = vState.wheels[wIdx];
                   if (pn && ps && wh) {
-                    pn.position.set(ps.t3.x, ps.t3.y + wh.compression * 0.28, ps.t3.z);
+                    var targetLY = (wh.worldY - vState.y - ps.t3.x * sinR * cosP + ps.t3.z * sinP) / cosTilt;
+                    var clampedLY = Math.max(minLY, Math.min(maxLY, targetLY));
+                    pn.position.set(ps.t3.x, clampedLY, ps.t3.z);
                     var bq = new THREE.Quaternion().setFromEuler(new THREE.Euler((ps.t3.rx || 0) * DEG2RAD, (ps.t3.ry || 0) * DEG2RAD, (ps.t3.rz || 0) * DEG2RAD, 'XYZ'));
                     var rq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), wh.spinRad);
                     var sq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -wh.steerAngleRad);
@@ -4580,6 +5212,11 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           });
           objs.forEach(function (o) {
             if (!o.visible) return;
+            if (activeStreamState3D) {
+              var actSc = activeStreamState3D.objectActivity.get(o.id) || 'near';
+              if (actSc === 'far' || actSc === 'unloaded') return;
+              if (actSc === 'medium' && (activeStreamState3D.frameIndex % 3) !== 0) return;
+            }
             (o.source.scriptBindings || []).forEach(function (b) {
               if (!b.enabled) return;
               var sc = compiledScripts.get(b.scriptId);
@@ -4839,14 +5476,19 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
 
         objs.forEach(function (o) {
           var mesh = meshBindings.get(o.id);
+          var vis = o.visible;
           if (mesh) {
-            var vis = o.visible;
+            if (vis && activeStreamState3D) {
+              var actV = activeStreamState3D.objectActivity.get(o.id) || 'near';
+              if (actV === 'unloaded' || (actV === 'far' && activeStreamState3D.cfg.enableHlod)) vis = false;
+              else if (activeStreamState3D.culledObjectIds.has(o.id)) vis = false;
+            }
             var opt = o.source.optimization;
             var lodEnt = lodBindings3D.get(o.id);
             if (vis && opt) {
               var cDist = Math.hypot(o.t3.x - camera.position.x, o.t3.y - camera.position.y, o.t3.z - camera.position.z);
               var cullD = opt.cullDistance || (opt.lodEnabled && opt.lodDistance ? opt.lodDistance * 2.2 : 0);
-              if (opt.lodEnabled && cullD && cDist > cullD) vis = false;
+              if (cullD && cDist > cullD) vis = false;
               else {
                 if (lodEnt) {
                   var wantLow = cDist >= lodEnt.dist;
@@ -4876,12 +5518,12 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
               }
             }
             mesh.visible = vis;
-            if (!foliageBindings.has(o.id)) {
+            if (vis && !foliageBindings.has(o.id)) {
               if (mesh.userData.vehicleAnimatedPart) {
                 mesh.scale.set(o.t3.sx, o.t3.sy, o.t3.sz);
               } else if (!mesh.userData.boneAttached) {
                 mesh.position.set(o.t3.x, o.t3.y, o.t3.z);
-                mesh.rotation.set(o.t3.rx * DEG2RAD, o.t3.ry * DEG2RAD, o.t3.rz * DEG2RAD);
+                mesh.rotation.set(o.t3.rx * DEG2RAD, o.t3.ry * DEG2RAD, o.t3.rz * DEG2RAD, (o.source.vehicle && o.source.vehicle.enabled) ? 'YXZ' : 'XYZ');
               } else if (o.source.boneSocket) {
                 var sk = o.source.boneSocket;
                 mesh.position.set(sk.offsetX || 0, sk.offsetY || 0, sk.offsetZ || 0);
@@ -4891,7 +5533,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
             }
           }
           var mm = mixerMap.get(o.id);
-          if (mm) {
+          if (mm && vis) {
             var desiredKey = (o.activeAnimAssetId || '') + ':' + (o.activeClip || '');
             if ((o.activeClip || o.activeAnimAssetId) && desiredKey !== mm.activeKey) {
               var nxtAct = (o.activeAnimAssetId && o.activeClip && mm.actions.get(desiredKey)) || (o.activeClip && mm.actions.get(o.activeClip)) || (o.activeAnimAssetId && mm.actions.get('__asset_first__:' + o.activeAnimAssetId));
@@ -5252,7 +5894,7 @@ export function generateNexus3DRuntimeJs(options: Html5CompileOptions): string {
           }
         }
 
-        refreshWidgetsDom();
+        refreshWidgetsDom(false);
       }
       webgl.render(threeScene, camera);
     }

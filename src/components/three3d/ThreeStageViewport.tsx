@@ -1210,7 +1210,8 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
         group.rotation.set(
           THREE.MathUtils.degToRad(t.rx),
           THREE.MathUtils.degToRad(t.ry),
-          THREE.MathUtils.degToRad(t.rz)
+          THREE.MathUtils.degToRad(t.rz),
+          obj.vehicle?.enabled ? 'YXZ' : 'XYZ'
         );
         group.scale.set(
           Math.max(0.05, t.sx),
@@ -1592,7 +1593,8 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
         folderGroup.rotation.set(
           THREE.MathUtils.degToRad(t.rx),
           THREE.MathUtils.degToRad(t.ry),
-          THREE.MathUtils.degToRad(t.rz)
+          THREE.MathUtils.degToRad(t.rz),
+          obj.vehicle?.enabled ? 'YXZ' : 'XYZ'
         );
         folderGroup.scale.set(
           Math.max(0.05, t.sx),
@@ -1673,7 +1675,8 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
             new THREE.Euler(
               THREE.MathUtils.degToRad(t.rx),
               THREE.MathUtils.degToRad(t.ry),
-              THREE.MathUtils.degToRad(t.rz)
+              THREE.MathUtils.degToRad(t.rz),
+              obj.vehicle?.enabled ? 'YXZ' : 'XYZ'
             )
           );
           const off = obj.physics3d?.offset ?? { x: 0, y: 0, z: 0 };
@@ -1755,69 +1758,113 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
       collidersRoot.add(coneWire);
     }
 
-    // Depurador Visual de Físicas (Gizmos): amortiguadores, pontones de agua, vectores y gravedad local
-    if (showPhysicsGizmos) {
-      const sphGeo = disposer.trackGeometry(new THREE.SphereGeometry(0.16, 10, 8));
+    // Depurador Visual de Físicas (Gizmos): malla alámbrica de tamaño de rueda, amortiguadores, pontones y vectores
+    {
+      const sphGeo = disposer.trackGeometry(new THREE.SphereGeometry(0.14, 10, 8));
       for (const obj of scene.objects) {
         if (!obj.visible || !obj.vehicle?.enabled) continue;
-        const t = obj.transform3d ?? DEFAULT_T3D;
         const vCfg = obj.vehicle;
+        const partSet = new Set(
+          [
+            obj.id,
+            vCfg.parts?.wheelFL,
+            vCfg.parts?.wheelFR,
+            vCfg.parts?.wheelRL,
+            vCfg.parts?.wheelRR,
+            vCfg.parts?.propellerId,
+            vCfg.parts?.cameraId,
+          ].filter(Boolean) as string[]
+        );
+        const isVehOrPartSelected =
+          selectedIds.some((sid) => partSet.has(sid)) ||
+          scene.objects.some((ch) => ch.parentId === obj.id && selectedIds.includes(ch.id));
+        if (!showPhysicsGizmos && !isVehOrPartSelected) continue;
+
+        const t = obj.transform3d ?? DEFAULT_T3D;
         const kind = vCfg.vehicleKind ?? 'car';
         const q = new THREE.Quaternion().setFromEuler(
           new THREE.Euler(
             THREE.MathUtils.degToRad(t.rx),
             THREE.MathUtils.degToRad(t.ry),
-            THREE.MathUtils.degToRad(t.rz)
+            THREE.MathUtils.degToRad(t.rz),
+            'YXZ'
           )
         );
         const pos = new THREE.Vector3(t.x, t.y, t.z);
 
-        // Vector dirección hacia adelante (+Z local) con punta de flecha
-        const fwdDir = new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize();
-        const rightDir = new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize();
-        const arrowStart = pos.clone().add(new THREE.Vector3(0, 0.28, 0));
-        const arrowTip = arrowStart.clone().addScaledVector(fwdDir, 3.6);
-        const arrowWingL = arrowTip.clone().addScaledVector(fwdDir, -0.55).addScaledVector(rightDir, -0.38);
-        const arrowWingR = arrowTip.clone().addScaledVector(fwdDir, -0.55).addScaledVector(rightDir, 0.38);
-        const arrowPts = [arrowStart, arrowTip, arrowTip, arrowWingL, arrowTip, arrowWingR];
-        const arrowGeo = disposer.trackGeometry(new THREE.BufferGeometry().setFromPoints(arrowPts));
-        const arrowMat = disposer.trackMaterial(
-          new THREE.LineBasicMaterial({ color: '#facc15', depthTest: false, transparent: true, opacity: 0.96 })
-        );
-        const arrowLine = new THREE.LineSegments(arrowGeo, arrowMat);
-        arrowLine.renderOrder = 998;
-        collidersRoot.add(arrowLine);
+        if (showPhysicsGizmos) {
+          // Vector dirección hacia adelante (+Z local) con punta de flecha
+          const fwdDir = new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize();
+          const rightDir = new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize();
+          const arrowStart = pos.clone().add(new THREE.Vector3(0, 0.28, 0));
+          const arrowTip = arrowStart.clone().addScaledVector(fwdDir, 3.6);
+          const arrowWingL = arrowTip.clone().addScaledVector(fwdDir, -0.55).addScaledVector(rightDir, -0.38);
+          const arrowWingR = arrowTip.clone().addScaledVector(fwdDir, -0.55).addScaledVector(rightDir, 0.38);
+          const arrowPts = [arrowStart, arrowTip, arrowTip, arrowWingL, arrowTip, arrowWingR];
+          const arrowGeo = disposer.trackGeometry(new THREE.BufferGeometry().setFromPoints(arrowPts));
+          const arrowMat = disposer.trackMaterial(
+            new THREE.LineBasicMaterial({ color: '#facc15', depthTest: false, transparent: true, opacity: 0.96 })
+          );
+          const arrowLine = new THREE.LineSegments(arrowGeo, arrowMat);
+          arrowLine.renderOrder = 998;
+          collidersRoot.add(arrowLine);
+        }
 
         if (kind === 'car' || kind === 'moto') {
           const hw = kind === 'moto' ? 0 : (vCfg.trackWidth || 1.92) * 0.5;
           const hl = (vCfg.wheelBase || 2.5) * 0.5;
-          const rest = Math.max(0.35, vCfg.suspensionRestLen || 0.65);
-          const wheelR = Math.max(0.2, vCfg.wheelRadius || 0.42);
-          const wheelOffsets =
+          const rest = Math.max(0.2, vCfg.suspensionRestLen || 0.65);
+          const wheelR = Math.max(0.18, vCfg.wheelRadius || 0.42);
+          const wheelW = Math.max(0.12, vCfg.wheelWidth ?? (kind === 'moto' ? 0.22 : 0.3));
+          const partIds = [vCfg.parts?.wheelFL, vCfg.parts?.wheelFR, vCfg.parts?.wheelRL, vCfg.parts?.wheelRR];
+          const defaultOffsets =
             kind === 'moto'
-              ? [new THREE.Vector3(0, 0, hl), new THREE.Vector3(0, 0, -hl)]
+              ? [new THREE.Vector3(0, -(rest * 0.85), hl), new THREE.Vector3(0, -(rest * 0.85), -hl)]
               : [
-                  new THREE.Vector3(-hw, 0, hl),
-                  new THREE.Vector3(hw, 0, hl),
-                  new THREE.Vector3(-hw, 0, -hl),
-                  new THREE.Vector3(hw, 0, -hl),
+                  new THREE.Vector3(-hw, -(rest * 0.85), hl),
+                  new THREE.Vector3(hw, -(rest * 0.85), hl),
+                  new THREE.Vector3(-hw, -(rest * 0.85), -hl),
+                  new THREE.Vector3(hw, -(rest * 0.85), -hl),
                 ];
-          const suspPts: THREE.Vector3[] = [];
-          const wheelMat = disposer.trackMaterial(
-            new THREE.MeshBasicMaterial({ color: '#22d3ee', depthTest: false, transparent: true, opacity: 0.95 })
+          const wheelOffsets = defaultOffsets.map((defOff, wi) => {
+            const pid = kind === 'moto' ? (wi === 0 ? partIds[0] : partIds[2]) : partIds[wi];
+            const pObj = pid ? scene.objects.find((cand) => cand.id === pid) : undefined;
+            if (pObj?.transform3d) {
+              return new THREE.Vector3(pObj.transform3d.x, pObj.transform3d.y, pObj.transform3d.z);
+            }
+            return defOff;
+          });
+
+          const wheelCylGeo = disposer.trackGeometry(new THREE.CylinderGeometry(wheelR, wheelR, wheelW, 18));
+          wheelCylGeo.rotateZ(Math.PI / 2);
+          const wheelEdgesGeo = disposer.trackGeometry(new THREE.EdgesGeometry(wheelCylGeo, 12));
+          const wheelWireMat = disposer.trackMaterial(
+            new THREE.LineBasicMaterial({ color: '#22d3ee', depthTest: false, transparent: true, opacity: 0.96 })
           );
+          const contactRingGeo = disposer.trackGeometry(new THREE.RingGeometry(wheelR * 0.35, wheelR * 0.52, 16));
+          contactRingGeo.rotateX(-Math.PI / 2);
+          const contactMat = disposer.trackMaterial(
+            new THREE.MeshBasicMaterial({ color: '#34d399', side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.85 })
+          );
+
+          const suspPts: THREE.Vector3[] = [];
           for (const wo of wheelOffsets) {
-            const topW = wo.clone().applyQuaternion(q).add(pos);
-            const botW = wo
-              .clone()
-              .add(new THREE.Vector3(0, -(rest + wheelR * 0.5), 0))
-              .applyQuaternion(q)
-              .add(pos);
-            suspPts.push(topW, botW);
-            const wm = new THREE.Mesh(sphGeo, wheelMat);
-            wm.position.copy(botW);
-            wm.renderOrder = 998;
-            collidersRoot.add(wm);
+            const topW = new THREE.Vector3(wo.x, 0, wo.z).applyQuaternion(q).add(pos);
+            const hubW = wo.clone().applyQuaternion(q).add(pos);
+            const botW = wo.clone().add(new THREE.Vector3(0, -wheelR, 0)).applyQuaternion(q).add(pos);
+            suspPts.push(topW, hubW);
+
+            const wheelCage = new THREE.LineSegments(wheelEdgesGeo, wheelWireMat);
+            wheelCage.position.copy(hubW);
+            wheelCage.quaternion.copy(q);
+            wheelCage.renderOrder = 999;
+            collidersRoot.add(wheelCage);
+
+            const ringMesh = new THREE.Mesh(contactRingGeo, contactMat);
+            ringMesh.position.copy(botW);
+            ringMesh.quaternion.copy(q);
+            ringMesh.renderOrder = 998;
+            collidersRoot.add(ringMesh);
           }
           const suspGeo = disposer.trackGeometry(new THREE.BufferGeometry().setFromPoints(suspPts));
           const suspMat = disposer.trackMaterial(
@@ -1826,7 +1873,7 @@ export const ThreeStageViewport: React.FC<ThreeStageViewportProps> = ({
           const suspLines = new THREE.LineSegments(suspGeo, suspMat);
           suspLines.renderOrder = 998;
           collidersRoot.add(suspLines);
-        } else if (kind === 'boat') {
+        } else if (showPhysicsGizmos && kind === 'boat') {
           const pontoons = getBoatPontoonLocalOffsets(vCfg.boatSize ?? 'speedboat', vCfg.trackWidth, vCfg.wheelBase);
           const pMat = disposer.trackMaterial(
             new THREE.MeshBasicMaterial({ color: '#38bdf8', depthTest: false, transparent: true, opacity: 0.95 })

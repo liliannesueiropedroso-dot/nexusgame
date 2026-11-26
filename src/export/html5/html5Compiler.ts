@@ -109,6 +109,17 @@ export async function compileProjectToHtml5Zip(
     activeSceneId: project.activeSceneId,
     scenes: structuredClone(project.scenes),
     scripts: project.scripts ? structuredClone(project.scripts) : [],
+    plugins: (project.plugins ?? [])
+      .filter((p) => p.enabled && p.scope !== 'editor')
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        version: p.version,
+        scope: p.scope,
+        enabled: p.enabled,
+        permissions: [...p.permissions],
+        code: p.code,
+      })),
     dialogues: project.dialogues ? structuredClone(project.dialogues) : [],
     dataTables: project.dataTables ? structuredClone(project.dataTables) : [],
     i18n: project.i18n ? structuredClone(project.i18n) : undefined,
